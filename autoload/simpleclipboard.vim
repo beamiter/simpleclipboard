@@ -1,76 +1,178 @@
 vim9script
 
-# ----------------- 日志功能 -----------------
-#
-# 在你的 vimrc 中添加 `let g:simpleclipboard_debug = 1` 来启用日志
-#
+# =============================================================
+# 日志与工具函数
+# =============================================================
+
 def Log(msg: string, hl: string = 'None')
   if get(g:, 'simpleclipboard_debug', 0) == 0
     return
   endif
-
   echohl hl
   echom '[SimpleClipboard] ' .. msg
   echohl None
 enddef
 
-# =============================================================
-# 守护进程管理逻辑 (Daemon Management Logic)
-# =============================================================
-
-# 配置守护进程和相关文件的路径
-# 用户可以在 vimrc 中通过 `let g:simpleclipboard_daemon_path = '...'` 来覆盖
-g:simpleclipboard_daemon_path = get(g:, 'simpleclipboard_daemon_path', expand('~/.vim/plugged/simpleclipboard/lib/simpleclipboard-daemon'))
-const DAEMON_PATH: string = g:simpleclipboard_daemon_path
-const PID_FILE = '/tmp/simpleclipboard.pid'
-const SOCKET_FILE = '/tmp/simpleclipboard.sock'
-
-# 初始化Vim实例计数器
-if !exists('g:simpleclipboard_vim_instances')
-  g:simpleclipboard_vim_instances = 0
-endif
-
-# 检查守护进程是否正在运行 (内部函数)
-def IsDaemonRunning(): bool
-  if !filereadable(PID_FILE)
-    return false
+# 取运行时目录（优先 XDG_RUNTIME_DIR，回退 /tmp）
+def RuntimeDir(): string
+  var dir = getenv('XDG_RUNTIME_DIR')
+  if dir ==# ''
+    dir = '/tmp'
   endif
-  var pid = trim(readfile(PID_FILE)[0])
-  if pid == ''
-    return false
-  endif
-
-  # 先执行命令，忽略其输出
-  silent system('kill -0 ' .. pid)
-
-  # 然后检查 v:shell_error
-  # 如果命令成功 (进程存在)，v:shell_error 会是 0
-  return v:shell_error == 0
+  return dir
 enddef
 
-# 启动守护进程的函数 (导出)
-export def StartDaemon()
-  g:simpleclipboard_vim_instances += 1
-  Log($"Vim instance count incremented to: {g:simpleclipboard_vim_instances}")
+def PidFile(): string
+  return RuntimeDir() .. '/simpleclipboard.pid'
+enddef
 
-  if IsDaemonRunning()
-    Log('Daemon is already running.')
+def SocketFile(): string
+  return RuntimeDir() .. '/simpleclipboard.sock'
+enddef
+
+# 判断 socket 文件是否存在（socket 对 filereadable 可能返回 0，用 getftype 兼容）
+def SocketExists(sock: string): bool
+  return filereadable(sock) || (has('unix') && getftype(sock) ==# 'socket')
+enddef
+
+# 在 runtimepath 中查找某文件
+def FindInRuntimepath(rel: string): string
+  for dir in split(&runtimepath, ',')
+    var path = dir .. '/' .. rel
+    if filereadable(path)
+      return path
+    endif
+  endfor
+  return ''
+enddef
+
+# 查找守护进程可执行文件
+def FindDaemon(): string
+  var override = get(g:, 'simpleclipboard_daemon_path', '')
+  if type(override) == v:t_string && override !=# '' && executable(override)
+    return override
+  endif
+
+  var path = FindInRuntimepath('lib/simpleclipboard-daemon')
+  if path !=# '' && executable(path)
+    return path
+  endif
+
+  return ''
+enddef
+
+# 选择动态库文件名（Linux/macOS）
+def LibName(): string
+  if has('mac')
+    return 'libsimpleclipboard.dylib'
+  endif
+  return 'libsimpleclipboard.so'
+enddef
+
+# 加载动态库：优先 g:simpleclipboard_libpath；否则在 runtimepath/lib 下寻找
+var client_lib: string = ''
+
+def TryLoadLib(): void
+  if client_lib !=# ''
     return
   endif
 
-  if !executable(DAEMON_PATH)
+  var override = get(g:, 'simpleclipboard_libpath', '')
+  if type(override) == v:t_string && override !=# ''
+    if filereadable(override)
+      client_lib = override
+      Log('Found lib via g:simpleclipboard_libpath: ' .. client_lib, 'MoreMsg')
+      return
+    else
+      Log('g:simpleclipboard_libpath set but file not found: ' .. override, 'WarningMsg')
+    endif
+  endif
+
+  var libname = LibName()
+  var path = FindInRuntimepath('lib/' .. libname)
+  if path !=# ''
+    client_lib = path
+    Log('Found lib in runtimepath: ' .. path, 'MoreMsg')
+  endif
+enddef
+
+# =============================================================
+# Daemon 就绪检测与等待
+# =============================================================
+
+# 检测守护进程是否就绪
+# - 优先尝试连接 Unix Socket（使用 call('sockconnect', ...) 动态调用，兼容无 +channel 的 Vim）
+# - 不可连接时回退到仅检查 socket 文件是否存在
+def IsDaemonReady(): bool
+  var sock = SocketFile()
+  if !SocketExists(sock)
+    return false
+  endif
+
+  if exists('*sockconnect')
+    try
+      var ch = call('sockconnect', ['unix', sock, {timeout: 100}])
+      if type(ch) == v:t_number && ch > 0
+        if exists('*ch_close')
+          call('ch_close', [ch])
+        endif
+        return true
+      endif
+    catch
+      # ignore runtime errors if sockconnect fails
+    endtry
+    return false
+  endif
+
+  # 无 sockconnect 功能时，退回到 socket 文件存在性判断
+  return true
+enddef
+
+# 等待守护进程在指定时间内就绪
+def WaitForDaemon(timeout_ms: number): bool
+  var elapsed = 0
+  while elapsed < timeout_ms
+    if IsDaemonReady()
+      return true
+    endif
+    sleep 50m
+    elapsed += 50
+  endwhile
+  return false
+enddef
+
+# =============================================================
+# 守护进程管理
+# =============================================================
+
+export def StartDaemon()
+  var enabled = get(g:, 'simpleclipboard_daemon_enabled', 1)
+  if !enabled
+    Log('Daemon disabled by g:simpleclipboard_daemon_enabled.', 'Comment')
+    return
+  endif
+
+  if IsDaemonReady()
+    Log('Daemon already running (socket ready).', 'MoreMsg')
+    return
+  endif
+
+  var daemon = FindDaemon()
+  if daemon ==# ''
     echohl ErrorMsg
-    echom $"[SimpleClipboard] Daemon executable not found or not executable: {DAEMON_PATH}"
-    echom "[SimpleClipboard] Please set `g:simpleclipboard_daemon_path` in your vimrc to the correct path."
+    echom '[SimpleClipboard] Daemon executable not found. ' ..
+          'Set g:simpleclipboard_daemon_path or put simpleclipboard-daemon into runtimepath/lib/.'
     echohl None
     return
   endif
 
-  Log('Starting daemon...')
-  # 启动 job，我们不再关心它的返回值（job 对象）
-  var job_obj = job_start([DAEMON_PATH], {'out_io': 'null', 'err_io': 'null'})
+  Log('Starting daemon: ' .. daemon)
+  var job_obj = job_start([daemon], {
+        out_io: 'null',
+        err_io: 'null',
+        stoponexit: 'none',
+      })
 
-  # 检查 job 是否成功启动
   if job_obj is v:null
     echohl ErrorMsg
     echom '[SimpleClipboard] Failed to start daemon job!'
@@ -78,103 +180,104 @@ export def StartDaemon()
     return
   endif
 
-  # 等待一小会儿，给守护进程足够的时间来创建 PID 文件
-  sleep 150m 
-
-  # 确认守护进程是否真的在运行 (通过它自己创建的PID文件)
-  if IsDaemonRunning()
-    Log('Daemon confirmed to be running via PID file.')
+  if WaitForDaemon(1500)
+    Log('Daemon is up (socket detected).', 'MoreMsg')
   else
     echohl WarningMsg
-    echom '[SimpleClipboard] Daemon job started, but failed to confirm it is running. Check daemon logs if any.'
+    echom '[SimpleClipboard] Daemon started but not ready (timeout).'
     echohl None
   endif
 enddef
 
-# 停止守护进程的函数 (导出)
 export def StopDaemon()
-  g:simpleclipboard_vim_instances -= 1
-  Log($"Vim instance count decremented to: {g:simpleclipboard_vim_instances}")
-
-  if g:simpleclipboard_vim_instances > 0
-    Log('Other Vim instances are still running. Daemon will not be stopped.')
+  var autostop = get(g:, 'simpleclipboard_daemon_autostop', 0)
+  if !autostop
+    Log('Autostop disabled; skip stopping daemon.', 'Comment')
     return
   endif
 
-  if !IsDaemonRunning()
-    return
+  var pidfile = PidFile()
+  var sock = SocketFile()
+
+  if filereadable(pidfile)
+    try
+      var pid = trim(readfile(pidfile)[0])
+      if pid !=# ''
+        Log('Stopping daemon with PID: ' .. pid .. '...')
+        system('kill ' .. pid)
+      endif
+    catch
+      # ignore errors
+    endtry
+    try
+      delete(pidfile)
+    catch
+      # ignore
+    endtry
   endif
 
-  var pid = trim(readfile(PID_FILE)[0])
-  Log($"Stopping daemon with PID: {pid}...")
+  if SocketExists(sock)
+    try
+      delete(sock)
+    catch
+      # ignore
+    endtry
+  endif
 
-  system('kill ' .. pid)
-
-  if filereadable(PID_FILE) | delete(PID_FILE) | endif
-  if filereadable(SOCKET_FILE) | delete(SOCKET_FILE) | endif
-
-  Log('Daemon stopped and files cleaned up.')
+  Log('Daemon stop requested and files cleaned (if any).', 'MoreMsg')
 enddef
 
-
 # =============================================================
-# 复制逻辑 (Clipboard Logic)
+# 复制逻辑（守护进程优先，命令行工具与 OSC52 作为回退）
 # =============================================================
-
-var lib: string = ''
-
-def TryLoadLib(): void
-  if lib != ''
-    return
-  endif
-
-  if type(g:simpleclipboard_libpath) == v:t_string && g:simpleclipboard_libpath !=# ''
-    if filereadable(g:simpleclipboard_libpath)
-      lib = g:simpleclipboard_libpath
-      Log($"Found lib via g:simpleclipboard_libpath: {lib}", 'MoreMsg')
-      return
-    else
-      Log($"g:simpleclipboard_libpath set but file not found: {g:simpleclipboard_libpath}", 'WarningMsg')
-    endif
-  endif
-
-  var libname = 'libsimpleclipboard.so'
-  for dir in split(&runtimepath, ',')
-    # 修正：插件的lib文件通常在 'lib/' 目录下，而不是 'target/release'
-    var path = dir .. '/lib/' .. libname
-    if filereadable(path)
-      lib = path
-      Log($"Found lib in runtimepath: {path}", 'MoreMsg')
-      break
-    endif
-  endfor
-enddef
 
 def CopyViaRust(text: string): bool
-  Log('Attempting copy via Rust (Daemon)...', 'Question')
+  Log('Attempting copy via Rust (daemon)...', 'Question')
   TryLoadLib()
-  if lib == ''
-    Log('Skipped Rust: client library (libsimpleclipboard.so) not found.', 'Comment')
+  if client_lib ==# ''
+    Log('Skipped Rust: client library not found.', 'Comment')
     return false
   endif
 
   try
-    var result = libcallnr(lib, 'rust_set_clipboard', text) == 1
-    if result
+    if libcallnr(client_lib, 'rust_set_clipboard', text) == 1
       Log('Success: Sent text to daemon.', 'ModeMsg')
-    else
-      Log('Failed: Could not send text to daemon. Is it running?', 'ErrorMsg')
+      return true
     endif
-    return result
+
+    # 首次尝试失败：按需启动守护进程并重试
+    if get(g:, 'simpleclipboard_daemon_enabled', 1)
+      Log('First try failed. Starting daemon on-demand...', 'WarningMsg')
+      StartDaemon()
+      if WaitForDaemon(1500) && libcallnr(client_lib, 'rust_set_clipboard', text) == 1
+        Log('Success after starting daemon.', 'ModeMsg')
+        return true
+      endif
+    endif
+
+    Log('Failed: Could not send text to daemon.', 'ErrorMsg')
+    return false
   catch
-    Log($"Failed: Error calling client library. Details: {v:exception}", 'ErrorMsg')
+    Log('Error calling client library: ' .. v:exception, 'ErrorMsg')
     return false
   endtry
 enddef
 
 def CopyViaCmds(text: string): bool
   Log('Attempting copy via external commands...', 'Question')
-  # ... (这部分代码保持不变) ...
+
+  # macOS
+  if has('mac') || executable('pbcopy')
+    Log('Trying: pbcopy (macOS)', 'Identifier')
+    system('pbcopy', text)
+    if v:shell_error == 0
+      Log('Success: Copied via pbcopy.', 'ModeMsg')
+      return true
+    endif
+    Log('Failed: pbcopy command failed.', 'WarningMsg')
+  endif
+
+  # Wayland
   if exists('$WAYLAND_DISPLAY') && executable('wl-copy')
     Log('Trying: wl-copy (Wayland)', 'Identifier')
     system('wl-copy', text)
@@ -185,6 +288,7 @@ def CopyViaCmds(text: string): bool
     Log('Failed: wl-copy command failed.', 'WarningMsg')
   endif
 
+  # X11: xsel
   if executable('xsel')
     Log('Trying: xsel (X11)', 'Identifier')
     system('xsel --clipboard --input', text)
@@ -195,6 +299,7 @@ def CopyViaCmds(text: string): bool
     Log('Failed: xsel command failed.', 'WarningMsg')
   endif
 
+  # X11: xclip
   if executable('xclip')
     Log('Trying: xclip (X11)', 'Identifier')
     system('xclip -selection clipboard', text)
@@ -205,13 +310,13 @@ def CopyViaCmds(text: string): bool
     Log('Failed: xclip command failed.', 'WarningMsg')
   endif
 
-  Log('Skipped Cmds: No suitable command (wl-copy, xsel, xclip) found or all failed.', 'Comment')
+  Log('Skipped Cmds: No suitable command (pbcopy/wl-copy/xsel/xclip) found or all failed.', 'Comment')
   return false
 enddef
 
 def CopyViaOsc52(text: string): bool
   Log('Attempting copy via OSC52 terminal sequence...', 'Question')
-  # ... (这部分代码保持不变) ...
+
   if !executable('base64')
     Log('Skipped OSC52: `base64` command not executable.', 'Comment')
     return false
@@ -220,7 +325,7 @@ def CopyViaOsc52(text: string): bool
   var payload = text
   var limit = 1000000
   if strchars(payload) > limit
-    Log($"Text truncated to {limit} characters for OSC52.", 'Comment')
+    Log('Text truncated to ' .. limit .. ' characters for OSC52.', 'Comment')
     payload = strcharpart(payload, 0, limit)
   endif
 
@@ -235,8 +340,8 @@ def CopyViaOsc52(text: string): bool
   endif
 
   var seq = exists('$TMUX')
-  ? "\x1bPtmux;\x1b]52;c;" .. b64 .. "\x07\x1b\\"
-  : "\x1b]52;c;" .. b64 .. "\x07"
+    ? "\x1bPtmux;\x1b]52;c;" .. b64 .. "\x07\x1b\\"
+    : "\x1b]52;c;" .. b64 .. "\x07"
 
   try
     if has('unix') && filereadable('/dev/tty')
@@ -249,32 +354,29 @@ def CopyViaOsc52(text: string): bool
     endif
     return true
   catch
-    Log($"Failed: Error writing OSC52 sequence. Details: {v:exception}", 'ErrorMsg')
+    Log('Failed: Error writing OSC52 sequence. Details: ' .. v:exception, 'ErrorMsg')
     return false
   endtry
 enddef
 
-
 export def CopyToSystemClipboard(text: string): bool
-  # 优先使用守护进程
+  # 优先使用守护进程，其次外部命令，最后 OSC52
   return CopyViaRust(text) || CopyViaCmds(text) || CopyViaOsc52(text)
 enddef
 
 export def CopyYankedToClipboard()
-  # ... (这部分代码保持不变) ...
   var txt = getreg('"')
   if txt ==# ''
     return
   endif
   if !CopyToSystemClipboard(txt)
     echohl WarningMsg
-    echom 'SimpleClipboard: copy failed. Check daemon, or install wl-copy/xsel, or ensure OSC52.'
+    echom 'SimpleClipboard: copy failed. Check daemon, or install wl-copy/xsel/xclip, or ensure OSC52.'
     echohl None
   endif
 enddef
 
 export def CopyRangeToClipboard(l1: number, l2: number)
-  # ... (这部分代码保持不变) ...
   var lines = getline(l1, l2)
   var txt = join(lines, "\n")
   if CopyToSystemClipboard(txt)
