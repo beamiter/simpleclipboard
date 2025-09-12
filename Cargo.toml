@@ -8,6 +8,15 @@ crate-type = ["cdylib"]
 
 [dependencies]
 arboard = "3.6.1"
+bincode = { version = "2.0.1", features = ["serde"] }
+chrono = "0.4.42"
+lazy_static = "1.5.0"
+listenfd = "1.0.2"
+serde = { version = "1.0.219", features = ["derive"] }
+
+[[bin]]
+name = "simpleclipboard-daemon"
+path = "src/daemon.rs"
 
 [profile.release]
 opt-level = 3

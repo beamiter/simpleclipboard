@@ -1,22 +1,40 @@
-use std::ffi::CStr;
-use std::os::raw::{c_char, c_int};
+// src/lib.rs
 
-/// 设置系统剪贴板文本（返回 1 成功，0 失败）
-/// - Linux 下 arboard 会在 X11/Wayland 间自动工作（依赖 DISPLAY/WAYLAND_DISPLAY 环境）
-/// - 输入作为 UTF-8 处理；如果不是严格 UTF-8，使用 lossy 转换避免报错
+use std::ffi::CStr;
+use std::io::Write;
+use std::os::raw::{c_char, c_int};
+use std::os::unix::net::UnixStream;
+
+const SOCKET_PATH: &str = "/tmp/simpleclipboard.sock";
+
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_set_clipboard(input: *const c_char) -> c_int {
     if input.is_null() {
-        return 0;
+        return 0; // 输入为空
     }
 
-    let text: String = unsafe {
-        // 尽量容忍非 UTF-8，避免直接失败
-        CStr::from_ptr(input).to_string_lossy().into_owned()
-    };
+    let text: String = unsafe { CStr::from_ptr(input).to_string_lossy().into_owned() };
 
-    match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
-        Ok(_) => 1,
-        Err(_) => 0,
+    // 尝试连接到守护进程的 socket
+    match UnixStream::connect(SOCKET_PATH) {
+        Ok(mut stream) => {
+            // --- 修改这里 ---
+            let config = bincode::config::standard();
+            let encoded: Vec<u8> = match bincode::encode_to_vec(&text, config) {
+                Ok(enc) => enc,
+                Err(_) => return 0, // 序列化失败
+            };
+            // ----------------
+
+            // 将数据写入流
+            match stream.write_all(&encoded) {
+                Ok(_) => 1, // 发送成功
+                Err(_) => 0, // 写入失败
+            }
+        }
+        Err(_) => {
+            // 连接守护进程失败
+            0
+        }
     }
 }
