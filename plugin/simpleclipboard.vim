@@ -10,12 +10,12 @@ if !has('vim9script')
   finish
 endif
 
-# 选项：是否自动在 yank 后复制到系统剪贴板（默认启用）
+# 是否在 yank 后自动复制
 if !exists('g:simpleclipboard_auto_copy')
   g:simpleclipboard_auto_copy = 1
 endif
 
-# 选项：手动指定 Rust 库路径（默认在 &runtimepath/**/lib/libsimpleclipboard.so 中自动查找）
+# 可选：手动指定 Rust 库路径（绝对路径）
 if !exists('g:simpleclipboard_libpath')
   g:simpleclipboard_libpath = ''
 endif
@@ -29,8 +29,8 @@ nnoremap <Plug>(SimpleCopyYank) <Cmd>SimpleCopyYank<CR>
 if !exists('g:simpleclipboard_no_default_mappings') || !g:simpleclipboard_no_default_mappings
   # 普通模式：复制寄存器内容到系统剪贴板
   nmap <leader>y <Plug>(SimpleCopyYank)
-  # 可视模式：复制选中文本到系统剪贴板
-  vmap <leader>y :<C-U>SimpleCopyRange<CR>
+  # 可视模式：把选区复制到系统剪贴板（传递范围）
+  xnoremap <leader>y :<C-U>'<,'>SimpleCopyRange<CR>
 endif
 
 # 自动在 yank 后复制
