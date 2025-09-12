@@ -4,15 +4,6 @@ vim9script
 # 日志与工具函数
 # =============================================================
 
-def Log(msg: string, hl: string = 'None')
-  if get(g:, 'simpleclipboard_debug', 0) == 0
-    return
-  endif
-  echohl hl
-  echom '[SimpleClipboard] ' .. msg
-  echohl None
-enddef
-
 # 取运行时目录（优先 XDG_RUNTIME_DIR，回退 /tmp）
 def RuntimeDir(): string
   var dir = getenv('XDG_RUNTIME_DIR')
@@ -33,6 +24,30 @@ enddef
 # 判断 socket 文件是否存在（socket 对 filereadable 可能返回 0，用 getftype 兼容）
 def SocketExists(sock: string): bool
   return filereadable(sock) || (has('unix') && getftype(sock) ==# 'socket')
+enddef
+
+def Log(msg: string, hl: string = 'None')
+  if get(g:, 'simpleclipboard_debug', 0) == 0
+    return
+  endif
+
+  if get(g:, 'simpleclipboard_debug_to_file', 0)
+    try
+      var f = get(g:, 'simpleclipboard_debug_file', RuntimeDir() .. '/simpleclipboard.log')
+      var line = strftime('%Y-%m-%d %H:%M:%S ') .. msg
+      writefile([line], expand(f), 'a')
+    catch
+      # 如果写文件失败，退回 echom
+      echohl hl
+      echom '[SimpleClipboard] ' .. msg
+      echohl None
+    endtry
+    return
+  endif
+
+  echohl hl
+  echom '[SimpleClipboard] ' .. msg
+  echohl None
 enddef
 
 # 在 runtimepath 中查找某文件
@@ -119,7 +134,7 @@ def IsDaemonReady(): bool
         return true
       endif
     catch
-      # ignore runtime errors if sockconnect fails
+      # ignore
     endtry
     return false
   endif
@@ -167,6 +182,8 @@ export def StartDaemon()
   endif
 
   Log('Starting daemon: ' .. daemon)
+
+  # 注意：去掉不兼容的 'detach' 选项，仅保留 stoponexit: 'none'
   var job_obj = job_start([daemon], {
         out_io: 'null',
         err_io: 'null',
@@ -174,10 +191,16 @@ export def StartDaemon()
       })
 
   if job_obj is v:null
-    echohl ErrorMsg
-    echom '[SimpleClipboard] Failed to start daemon job!'
-    echohl None
-    return
+    # 兜底：极老版本 Vim 使用 shell 后台启动
+    try
+      var cmd = 'nohup ' .. shellescape(daemon) .. ' >/dev/null 2>&1 &'
+      system(cmd)
+    catch
+      echohl ErrorMsg
+      echom '[SimpleClipboard] Failed to start daemon via job_start and shell fallback.'
+      echohl None
+      return
+    endtry
   endif
 
   if WaitForDaemon(1500)
@@ -207,7 +230,7 @@ export def StopDaemon()
         system('kill ' .. pid)
       endif
     catch
-      # ignore errors
+      # ignore
     endtry
     try
       delete(pidfile)
@@ -263,14 +286,44 @@ def CopyViaRust(text: string): bool
   endtry
 enddef
 
+# 用异步 job_start 发送数据，避免同步 system 引起的重绘闪屏
+def StartCopyJob(argv: list<string>, text: string): bool
+  if exists('*job_start')
+    try
+      var job = job_start(argv, {out_io: 'null', err_io: 'null', in_io: 'pipe'})
+      if job isnot v:null
+        try
+          # 有 chansend/chanclose 用之；无则走后面的 system 兜底
+          if exists('*chansend')
+            call('chansend', [job, text])
+          else
+            throw 'no_chansend'
+          endif
+          if exists('*chanclose')
+            call('chanclose', [job, 'in'])
+          endif
+          return true
+        catch
+          # 发送失败则回退到同步 system
+        endtry
+      endif
+    catch
+      # job_start 不可用或出错，走兜底
+    endtry
+  endif
+
+  # 兜底：同步 system（老 Vim 或无 chansend）
+  system(join(map(copy(argv), 'shellescape(v:val)'), ' '), text)
+  return v:shell_error == 0
+enddef
+
 def CopyViaCmds(text: string): bool
   Log('Attempting copy via external commands...', 'Question')
 
   # macOS
   if has('mac') || executable('pbcopy')
     Log('Trying: pbcopy (macOS)', 'Identifier')
-    system('pbcopy', text)
-    if v:shell_error == 0
+    if StartCopyJob(['pbcopy'], text)
       Log('Success: Copied via pbcopy.', 'ModeMsg')
       return true
     endif
@@ -280,8 +333,7 @@ def CopyViaCmds(text: string): bool
   # Wayland
   if exists('$WAYLAND_DISPLAY') && executable('wl-copy')
     Log('Trying: wl-copy (Wayland)', 'Identifier')
-    system('wl-copy', text)
-    if v:shell_error == 0
+    if StartCopyJob(['wl-copy'], text)
       Log('Success: Copied via wl-copy.', 'ModeMsg')
       return true
     endif
@@ -291,8 +343,7 @@ def CopyViaCmds(text: string): bool
   # X11: xsel
   if executable('xsel')
     Log('Trying: xsel (X11)', 'Identifier')
-    system('xsel --clipboard --input', text)
-    if v:shell_error == 0
+    if StartCopyJob(['xsel', '--clipboard', '--input'], text)
       Log('Success: Copied via xsel.', 'ModeMsg')
       return true
     endif
@@ -302,8 +353,7 @@ def CopyViaCmds(text: string): bool
   # X11: xclip
   if executable('xclip')
     Log('Trying: xclip (X11)', 'Identifier')
-    system('xclip -selection clipboard', text)
-    if v:shell_error == 0
+    if StartCopyJob(['xclip', '-selection', 'clipboard'], text)
       Log('Success: Copied via xclip.', 'ModeMsg')
       return true
     endif
@@ -315,6 +365,11 @@ def CopyViaCmds(text: string): bool
 enddef
 
 def CopyViaOsc52(text: string): bool
+  if get(g:, 'simpleclipboard_disable_osc52', 0)
+    Log('Skipped OSC52: disabled by g:simpleclipboard_disable_osc52.', 'Comment')
+    return false
+  endif
+
   Log('Attempting copy via OSC52 terminal sequence...', 'Question')
 
   if !executable('base64')
@@ -348,9 +403,9 @@ def CopyViaOsc52(text: string): bool
       writefile([seq], '/dev/tty', 'b')
       Log('Success: Sent OSC52 sequence to /dev/tty.', 'ModeMsg')
     else
-      silent! echon seq
-      redraw!
-      Log('Success: Sent OSC52 sequence via echo.', 'ModeMsg')
+      # 为避免闪屏，不用 echon/redraw 路径
+      Log('Skipped OSC52 echo path: /dev/tty not available.', 'Comment')
+      return false
     endif
     return true
   catch
@@ -364,7 +419,7 @@ export def CopyToSystemClipboard(text: string): bool
   return CopyViaRust(text) || CopyViaCmds(text) || CopyViaOsc52(text)
 enddef
 
-export def CopyYankedToClipboard()
+export def CopyYankedToClipboard(_timer_id: any = 0)
   var txt = getreg('"')
   if txt ==# ''
     return
