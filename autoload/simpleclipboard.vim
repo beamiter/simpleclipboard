@@ -378,7 +378,7 @@ def CopyViaOsc52(text: string): bool
   endif
 
   var payload = text
-  var limit = 1000000
+  var limit = 16000000
   if strchars(payload) > limit
     Log('Text truncated to ' .. limit .. ' characters for OSC52.', 'Comment')
     payload = strcharpart(payload, 0, limit)
