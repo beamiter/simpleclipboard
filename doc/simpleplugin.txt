@@ -1,0 +1,173 @@
+*simpleplugin.txt*    Simple Vim9 Plugin with Rust Backend
+
+Author: Your Name
+Version: 1.0.0
+
+==============================================================================
+CONTENTS                                               *simpleplugin-contents*
+
+1. Introduction                                    |simpleplugin-introduction|
+2. Installation                                    |simpleplugin-installation|
+3. Commands                                           |simpleplugin-commands|
+4. Mappings                                           |simpleplugin-mappings|
+5. Configuration                                 |simpleplugin-configuration|
+6. Functions                                         |simpleplugin-functions|
+7. Troubleshooting                             |simpleplugin-troubleshooting|
+
+==============================================================================
+1. Introduction                                    *simpleplugin-introduction*
+
+Simple Vim9 Plugin is a demonstration of how to create a Vim plugin using
+Vim9 script with a Rust backend for performance-critical operations.
+
+The plugin provides text manipulation, statistics, and transformation
+functions with both Rust implementations (for performance) and Vim fallbacks
+(for compatibility).
+
+==============================================================================
+2. Installation                                    *simpleplugin-installation*
+
+Requirements:
+- Vim 9.0+ with vim9script support
+- Rust toolchain (for building the backend)
+
+Using vim-plug:
+>
+    Plug 'username/simple-vim9-plugin', { 'do': 'cargo build --release' }
+<
+
+Manual installation:
+1. Clone the repository to your Vim pack directory
+2. Run `cargo build --release` in the plugin directory
+3. Restart Vim
+
+==============================================================================
+3. Commands                                           *simpleplugin-commands*
+
+Text Transformation:
+    :SimpleUppercase            Convert current line to uppercase
+    :SimpleRustUppercase        Convert using Rust backend
+    :SimpleLowercase            Convert current line to lowercase
+    :SimpleCapitalize           Capitalize first character
+    :SimpleTitleCase            Convert to Title Case
+
+Text Operations:
+    :SimpleReverse              Reverse current line
+    :SimpleNormalizeSpaces      Normalize whitespace
+
+Statistics:
+    :SimpleCountWords           Count words in current line
+    :SimpleCountChars           Count characters in current line
+    :SimpleStats                Show detailed statistics
+    :SimpleCheckPalindrome      Check if line is a palindrome
+
+Batch Operations:
+    :SimpleUppercaseAll         Convert all lines to uppercase
+    :SimpleNormalizeAllSpaces   Normalize spaces in all lines
+
+Utility:
+    :SimpleStatus               Show plugin status
+    :SimpleTest                 Test Rust functions
+    :SimpleInit                 Manual initialization
+
+==============================================================================
+4. Mappings                                           *simpleplugin-mappings*
+
+Default mappings (leader = \):
+
+Text transformation:
+    <leader>su              Uppercase current line
+    <leader>sU              Uppercase using Rust
+    <leader>sl              Lowercase current line
+    <leader>sc              Capitalize current line
+    <leader>st              Title case current line
+
+Text operations:
+    <leader>sr              Reverse current line
+    <leader>sn              Normalize spaces
+
+Statistics:
+    <leader>sw              Count words
+    <leader>sh              Count characters
+    <leader>ss              Show detailed stats
+    <leader>sp              Check palindrome
+
+Visual mode:
+    <leader>sv              Count words in selection
+    <leader>su              Uppercase selection
+
+Utility:
+    <leader>si              Show status
+
+==============================================================================
+5. Configuration                                 *simpleplugin-configuration*
+
+                                        *g:simpleplugin_no_default_mappings*
+Disable default key mappings:
+>
+    let g:simpleplugin_no_default_mappings = 1
+<
+
+                                          *g:simpleplugin_enable_auto_init*
+Disable automatic initialization:
+>
+    let g:simpleplugin_enable_auto_init = 0
+<
+
+                                           *g:simpleplugin_verbose_errors*
+Enable verbose error messages:
+>
+    let g:simpleplugin_verbose_errors = 1
+<
+
+==============================================================================
+6. Functions                                         *simpleplugin-functions*
+
+The plugin provides several autoload functions that can be called directly:
+
+Text transformation:
+    simpleplugin#UppercaseCurrentLine()
+    simpleplugin#RustUppercaseCurrentLine()
+    simpleplugin#LowercaseCurrentLine()
+    simpleplugin#CapitalizeCurrentLine()
+    simpleplugin#TitleCaseCurrentLine()
+
+Text operations:
+    simpleplugin#ReverseCurrentLine()
+    simpleplugin#NormalizeSpaces()
+
+Statistics:
+    simpleplugin#CountWordsInLine()
+    simpleplugin#CountCharsInLine()
+    simpleplugin#GetDetailedStats()
+    simpleplugin#CheckPalindrome()
+
+Selection processing:
+    simpleplugin#CountWordsInSelection()
+    simpleplugin#UppercaseSelection()
+
+Utility:
+    simpleplugin#Initialize()
+    simpleplugin#TestRustLib()
+    simpleplugin#GetStatus()
+    simpleplugin#ShowDetailedStatus()
+
+==============================================================================
+7. Troubleshooting                             *simpleplugin-troubleshooting*
+
+Problem: "Rust library not found" error
+Solution: Run `cargo build --release` in the plugin directory
+
+Problem: "undefined symbol" errors
+Solution: Ensure you're using a compatible Rust version and rebuild
+
+Problem: Plugin not working
+Solution: Check status with :SimpleStatus and test with :SimpleTest
+
+Problem: Performance issues
+Solution: The Rust backend should be faster; check if it's properly loaded
+
+For more help, visit: https://github.com/username/simple-vim9-plugin
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:

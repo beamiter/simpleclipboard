@@ -1,0 +1,12 @@
+g:simpleplugin_enable_auto_init	simpleplugin.txt	/*g:simpleplugin_enable_auto_init*
+g:simpleplugin_no_default_mappings	simpleplugin.txt	/*g:simpleplugin_no_default_mappings*
+g:simpleplugin_verbose_errors	simpleplugin.txt	/*g:simpleplugin_verbose_errors*
+simpleplugin-commands	simpleplugin.txt	/*simpleplugin-commands*
+simpleplugin-configuration	simpleplugin.txt	/*simpleplugin-configuration*
+simpleplugin-contents	simpleplugin.txt	/*simpleplugin-contents*
+simpleplugin-functions	simpleplugin.txt	/*simpleplugin-functions*
+simpleplugin-installation	simpleplugin.txt	/*simpleplugin-installation*
+simpleplugin-introduction	simpleplugin.txt	/*simpleplugin-introduction*
+simpleplugin-mappings	simpleplugin.txt	/*simpleplugin-mappings*
+simpleplugin-troubleshooting	simpleplugin.txt	/*simpleplugin-troubleshooting*
+simpleplugin.txt	simpleplugin.txt	/*simpleplugin.txt*
