@@ -37,7 +37,6 @@ def Log(msg: string, hl: string = 'None')
       var line = strftime('%Y-%m-%d %H:%M:%S ') .. msg
       writefile([line], expand(f), 'a')
     catch
-      # 如果写文件失败，退回 echom
       echohl hl
       echom '[SimpleClipboard] ' .. msg
       echohl None
@@ -115,31 +114,28 @@ enddef
 # Daemon 就绪检测与等待
 # =============================================================
 
-# 检测守护进程是否就绪
-# - 优先尝试连接 Unix Socket（使用 call('sockconnect', ...) 动态调用，兼容无 +channel 的 Vim）
-# - 不可连接时回退到仅检查 socket 文件是否存在
 def IsDaemonReady(): bool
   var sock = SocketFile()
   if !SocketExists(sock)
     return false
   endif
 
+  # 在较新的 Vim 上优先使用 sockconnect 进行真实连通性检测
   if exists('*sockconnect')
     try
       var ch = call('sockconnect', ['unix', sock, {timeout: 100}])
       if type(ch) == v:t_number && ch > 0
-        if exists('*ch_close')
-          call('ch_close', [ch])
-        endif
+        ch_close(ch)
         return true
       endif
     catch
-      # ignore
+      Log('sockconnect failed: ' .. v:exception, 'Comment')
     endtry
     return false
   endif
 
-  # 无 sockconnect 功能时，退回到 socket 文件存在性判断
+  # 兼容较老的 +channel：没有 sockconnect 时退回到“仅判断 socket 文件存在”
+  Log('sockconnect() not available; fallback to socket file existence.', 'Comment')
   return true
 enddef
 
@@ -183,25 +179,21 @@ export def StartDaemon()
 
   Log('Starting daemon: ' .. daemon)
 
-  # 注意：去掉不兼容的 'detach' 选项，仅保留 stoponexit: 'none'
-  var job_obj = job_start([daemon], {
-        out_io: 'null',
-        err_io: 'null',
-        stoponexit: 'none',
-      })
-
-  if job_obj is v:null
-    # 兜底：极老版本 Vim 使用 shell 后台启动
-    try
-      var cmd = 'nohup ' .. shellescape(daemon) .. ' >/dev/null 2>&1 &'
-      system(cmd)
-    catch
-      echohl ErrorMsg
-      echom '[SimpleClipboard] Failed to start daemon via job_start and shell fallback.'
-      echohl None
-      return
-    endtry
-  endif
+  try
+    var job_obj = job_start([daemon], {
+          out_io: 'null',
+          err_io: 'null',
+          stoponexit: 'none',
+        })
+    if job_obj is v:null
+      throw 'job_start returned v:null'
+    endif
+  catch
+    echohl ErrorMsg
+    echom '[SimpleClipboard] Failed to start daemon via job_start: ' .. v:exception
+    echohl None
+    return
+  endtry
 
   if WaitForDaemon(1500)
     Log('Daemon is up (socket detected).', 'MoreMsg')
@@ -268,7 +260,6 @@ def CopyViaRust(text: string): bool
       return true
     endif
 
-    # 首次尝试失败：按需启动守护进程并重试
     if get(g:, 'simpleclipboard_daemon_enabled', 1)
       Log('First try failed. Starting daemon on-demand...', 'WarningMsg')
       StartDaemon()
@@ -286,35 +277,20 @@ def CopyViaRust(text: string): bool
   endtry
 enddef
 
-# 用异步 job_start 发送数据，避免同步 system 引起的重绘闪屏
+# 仅使用异步 job + chansend；不再使用同步 system 兜底
 def StartCopyJob(argv: list<string>, text: string): bool
-  if exists('*job_start')
-    try
-      var job = job_start(argv, {out_io: 'null', err_io: 'null', in_io: 'pipe'})
-      if job isnot v:null
-        try
-          # 有 chansend/chanclose 用之；无则走后面的 system 兜底
-          if exists('*chansend')
-            call('chansend', [job, text])
-          else
-            throw 'no_chansend'
-          endif
-          if exists('*chanclose')
-            call('chanclose', [job, 'in'])
-          endif
-          return true
-        catch
-          # 发送失败则回退到同步 system
-        endtry
-      endif
-    catch
-      # job_start 不可用或出错，走兜底
-    endtry
-  endif
-
-  # 兜底：同步 system（老 Vim 或无 chansend）
-  system(join(map(copy(argv), 'shellescape(v:val)'), ' '), text)
-  return v:shell_error == 0
+  try
+    var job = job_start(argv, {out_io: 'null', err_io: 'null', in_io: 'pipe'})
+    if job is v:null
+      return false
+    endif
+    call('chansend', [job, text])
+    call('chanclose', [job, 'in'])
+    return true
+  catch
+    Log('StartCopyJob error: ' .. v:exception, 'WarningMsg')
+    return false
+  endtry
 enddef
 
 def CopyViaCmds(text: string): bool
@@ -403,7 +379,6 @@ def CopyViaOsc52(text: string): bool
       writefile([seq], '/dev/tty', 'b')
       Log('Success: Sent OSC52 sequence to /dev/tty.', 'ModeMsg')
     else
-      # 为避免闪屏，不用 echon/redraw 路径
       Log('Skipped OSC52 echo path: /dev/tty not available.', 'Comment')
       return false
     endif
