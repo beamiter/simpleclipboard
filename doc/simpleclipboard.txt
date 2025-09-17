@@ -1,0 +1,320 @@
+simpleclipboard.txt SimpleClipboard - 让没有 +clipboard 的 Vim 也能可靠复制到系统剪贴板
+
+Version: 0.1.0
+Maintainer: 你
+License: See repository
+
+==============================================================================
+介绍 simpleclipboard
+
+SimpleClipboard 是一个面向 Vim（非 Neovim）的 Vim9 插件，目标是在没有
++clipboard 功能的环境中也能稳定、低延迟地把文本复制到系统剪贴板。
+
+它采用分层回退策略：
+
+Rust 守护进程（Unix Socket）+ 动态库（首选，最快最稳）
+外部命令（pbcopy/wl-copy/xsel/xclip）
+终端 OSC52 序列（最后兜底）
+支持 Linux 与 macOS。Windows 暂不支持。Neovim 暂不支持（Vim9 脚本）。
+
+主要能力：
+
+普通模式/可视模式一键复制到系统剪贴板（默认 y）
+Yank 后自动复制到系统剪贴板（TextYankPost）
+守护进程自动启动/可选自动停止
+详细调试日志（支持写文件）
+Wayland/X11/macOS 与 tmux 的常见路径兼容
+==============================================================================
+安装与构建 simpleclipboard-install
+
+安装插件（任选一种）
+packpath 包管理：将插件目录放入 ~/.vim/pack/.../start/simpleclipboard
+vim-plug: Plug 'yourname/simpleclipboard'
+dein 等：按各自文档添加
+构建 Rust 后端
+需要 Rust 稳定版（cargo）
+在插件根目录执行:
+Linux: 运行 ./install.sh
+产物将复制到 ./lib/ 目录：libsimpleclipboard.so 与 simpleclipboard-daemon
+macOS: 手动构建并复制:
+cargo build --release
+mkdir -p lib
+cp target/release/libsimpleclipboard.dylib lib/
+cp target/release/simpleclipboard-daemon lib/
+确保插件目录在 'runtimepath' 中
+插件会在 runtimepath/lib 中查找：
+libsimpleclipboard.so（Linux）或 libsimpleclipboard.dylib（macOS）
+simpleclipboard-daemon 可执行文件
+可选：通过全局变量覆盖绝对路径，详见 |simpleclipboard-options|。
+
+生成帮助标签
+:helptags <plugin_root>/doc
+==============================================================================
+快速上手 simpleclipboard-quick
+
+默认映射
+
+普通模式：y 复制当前无名寄存器内容到系统剪贴板
+可视模式：y 复制选区到系统剪贴板
+Yank 后自动复制（默认开启）
+
+在 TextYankPost 事件上触发，等价于自动执行 :SimpleCopyYank
+常用命令
+
+:SimpleCopyYank
+:[range]SimpleCopyRange
+守护进程（默认启用，VimEnter 自动启动）
+
+若已运行则复用
+退出时默认不自动停止（避免影响其他 Vim 实例），可配置
+==============================================================================
+命令与映射 simpleclipboard-commands
+simpleclipboard-mappings
+
+命令:
+:SimpleCopyYank
+将当前无名寄存器（"）内容复制到系统剪贴板。
+失败时会在 :messages 提示失败原因与回退路径。
+
+:[range]SimpleCopyRange
+    将给定行范围的文本复制到系统剪贴板。
+    默认范围为当前缓冲区全部行（-range=%）。
+映射:
+(SimpleCopyYank)
+可在普通模式中直接触发 :SimpleCopyYank。
+
+默认映射（可通过 g:simpleclipboard_no_default_mappings 禁用）:
+nmap y (SimpleCopyYank)
+xnoremap y :<c-u
+
+==============================================================================
+选项 simpleclipboard-options
+
+以下选项均可在 vimrc 中设置；若不设置，采用下列默认值。
+
+守护进程相关:
+g:simpleclipboard_daemon_enabled (默认: 1)
+是否启用守护进程相关逻辑（Rust 通道）。置 0 则完全跳过守护进程。
+
+g:simpleclipboard_daemon_autostart        (默认: 1)
+    VimEnter 自动启动守护进程。推荐开启。
+
+g:simpleclipboard_daemon_autostop         (默认: 0)
+    VimLeave 自动停止守护进程。默认关闭，避免多个 Vim 使用同一守护进程时被误杀。
+    开启后通过 PID 文件 kill 对应进程，并尝试清理 sock 与 pid 文件。
+自动复制:
+g:simpleclipboard_auto_copy (默认: 1)
+TextYankPost 自动复制无名寄存器到系统剪贴板。
+
+路径覆盖:
+g:simpleclipboard_libpath (默认: '')
+指定 Rust 客户端动态库绝对路径。
+若不设置，将在 runtimepath/lib 下寻找：
+- Linux: libsimpleclipboard.so
+- macOS: libsimpleclipboard.dylib
+
+g:simpleclipboard_daemon_path             (默认: '')
+    指定守护进程可执行文件的绝对路径。
+    若不设置，将在 runtimepath/lib 下寻找 simpleclipboard-daemon。
+映射:
+g:simpleclipboard_no_default_mappings (默认: 0)
+置 1 关闭默认 y 映射。
+
+调试与回退:
+g:simpleclipboard_debug (默认: 0)
+置 1 打印调试日志（:messages）；结合 g:simpleclipboard_debug_to_file 可转文件。
+
+g:simpleclipboard_debug_to_file           (默认: 0)
+    置 1 将日志写到文件（默认 $XDG_RUNTIME_DIR/simpleclipboard.log）。
+    可通过 g:simpleclipboard_debug_file 指定日志文件绝对路径。
+
+g:simpleclipboard_disable_osc52           (默认: 0)
+    置 1 禁用 OSC52 兜底路径（某些终端/路径会闪屏或不支持）。
+额外（仅用于日志文件路径覆盖）:
+g:simpleclipboard_debug_file (默认: $XDG_RUNTIME_DIR/simpleclipboard.log)
+当 g:simpleclipboard_debug_to_file=1 时生效。
+
+==============================================================================
+函数（API） simpleclipboard-functions
+
+autoload/simpleclipboard.vim 提供以下函数（可编程调用）:
+
+simpleclipboard#StartDaemon()
+    尝试启动守护进程；若 socket 就绪则返回，不重复启动。
+
+simpleclipboard#StopDaemon()
+    若 g:simpleclipboard_daemon_autostop=1，则读取 PID 文件并 kill 之，
+    尝试删除 pid 与 sock 文件。
+
+simpleclipboard#CopyToSystemClipboard({text}) -> bool
+    将给定 {text} 复制到系统剪贴板。遵循“守护进程 -> 外部命令 -> OSC52”回退。
+    成功返回 v:true，失败返回 v:false。
+
+simpleclipboard#CopyYankedToClipboard([{timer_id}]) 
+    读取无名寄存器内容并复制（留给 TextYankPost 与手动调用；空内容则返回）。
+
+simpleclipboard#CopyRangeToClipboard({l1}, {l2})
+    复制 [l1, l2] 行的文本到系统剪贴板。成功时会回显 “Copied selection...”。
+==============================================================================
+工作原理与依赖 simpleclipboard-arch
+
+优先级与回退：
+
+Rust 守护进程（Unix socket）+ 动态库
+
+libcallnr() -> rust_set_clipboard() -> 连接 $XDG_RUNTIME_DIR/simpleclipboard.sock
+守护进程接收后通过 arboard 设置系统剪贴板
+若首次失败且启用了守护进程，会尝试 on-demand 启动再发一次
+外部命令
+
+macOS: pbcopy
+Wayland: wl-copy（需 $WAYLAND_DISPLAY）
+X11: xsel / xclip
+通过 job_start + chansend 异步写入，避免阻塞 UI
+OSC52
+
+需 base64 命令；将文本 base64 后写入 /dev/tty
+若在 tmux 中，自动加 tmux 透传封装
+默认上限 16MB；过大时截断
+Rust 守护进程（simpleclipboard-daemon）:
+
+监听 unix socket：$XDG_RUNTIME_DIR/simpleclipboard.sock（无则回退 /tmp）
+PID 文件：$XDG_RUNTIME_DIR/simpleclipboard.pid
+socket 权限：0600
+单次消息上限：16MB
+支持 systemd socket activation（listenfd）；若由 systemd 传入监听 FD，会直接接管
+Rust 动态库（libsimpleclipboard.so/.dylib）:
+
+暴露 C ABI：int rust_set_clipboard(const char*)
+会尝试连接 $XDG_RUNTIME_DIR/simpleclipboard.sock 与 /tmp 回退路径
+Vim 依赖：
+
+Vim 8.2+ 且支持 Vim9 脚本
++job +channel 必需；+timers 可选（用于异步 TextYankPost）
+sockconnect() 存在时用于检测 socket 真连通性；否则退回“仅判断 socket 文件存在”
+外部命令（回退）：
+
+pbcopy / wl-copy / xsel / xclip / base64
+==============================================================================
+环境变量与生成的文件 simpleclipboard-env-files
+
+环境变量:
+
+XDG_RUNTIME_DIR 用于放置 simpleclipboard.sock / .pid / .log
+WAYLAND_DISPLAY 存在则优先尝试 wl-copy
+TMUX 存在则对 OSC52 增加 tmux 封装透传
+文件:
+
+$XDG_RUNTIME_DIR/simpleclipboard.sock Unix socket（0600）
+$XDG_RUNTIME_DIR/simpleclipboard.pid 守护进程 PID
+$XDG_RUNTIME_DIR/simpleclipboard.log 当 g:simpleclipboard_debug_to_file=1 时
+==============================================================================
+安全性与限制 simpleclipboard-security
+
+守护进程的 socket 权限设为 0600，仅本用户可访问。
+当 XDG_RUNTIME_DIR 不存在时，回退到 /tmp。仍会设置 0600 权限，但路径可见。
+OSC52 会向 /dev/tty 写入控制序列；某些终端/多路复用器可能屏蔽或闪屏。
+单次复制大小上限 16MB（守护进程与客户端均限制）。OSC52 过大时会截断。
+g:simpleclipboard_daemon_autostop 默认关闭，避免杀死被其他 Vim 实例复用的守护进程。
+==============================================================================
+systemd（可选） simpleclipboard-systemd
+
+守护进程支持 listenfd，你可以使用 systemd --user 启动与 socket 激活。
+
+示例：~/.config/systemd/user/simpleclipboard.socket
+
+[Unit]
+Description=SimpleClipboard user socket
+
+[Socket]
+ListenStream=%t/simpleclipboard.sock
+SocketMode=0600
+
+[Install]
+WantedBy=default.target
+<
+示例：~/.config/systemd/user/simpleclipboard.service
+
+[Unit]
+Description=SimpleClipboard daemon
+
+[Service]
+ExecStart=/absolute/path/to/simpleclipboard-daemon
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+<
+启用并启动：
+
+systemctl --user enable --now simpleclipboard.socket
+<
+Vim 端可设置 g:simpleclipboard_daemon_autostart=0，以避免重复启动。
+
+==============================================================================
+疑难解答 simpleclipboard-troubleshooting
+
+“Daemon executable not found ...”
+
+确保 simpleclipboard-daemon 位于 runtimepath/lib/，或设置 g:simpleclipboard_daemon_path
+:echo &runtimepath 确认路径；:messages 查看日志
+“client library not found”
+
+确保 libsimpleclipboard.so（或 .dylib）位于 runtimepath/lib/，或设置 g:simpleclipboard_libpath
+Wayland/X11/macOS 回退失败
+
+安装对应命令：wl-copy / xsel / xclip / pbcopy
+检查环境变量 WAYLAND_DISPLAY 是否存在（Wayland）
+OSC52 无效或闪屏
+
+终端可能禁用 OSC52；tmux 需允许透传（tmux 3.3+ 可参考 set -g allow-passthrough on）
+若不希望使用 OSC52：g:simpleclipboard_disable_osc52 = 1
+旧版 Vim 无 sockconnect()
+
+插件将退回到“仅检测 socket 文件存在”，可能误判已就绪。建议升级 Vim。
+自动复制未触发
+
+确认 g:simpleclipboard_auto_copy = 1
+:verbose autocmd TextYankPost 查看是否注册
+某些非常老的 Vim 没有 timer_start，插件已回退为同步调用
+大文本失败
+
+超过 16MB 会被拒绝（Rust 通道）或被 OSC52 截断。请分段复制。
+诊断
+
+g:simpleclipboard_debug = 1
+若担心重绘：g:simpleclipboard_debug_to_file = 1 并查看 $XDG_RUNTIME_DIR/simpleclipboard.log
+==============================================================================
+示例配置 simpleclipboard-examples
+
+" 关闭默认 <leader>y，自己定义
+let g:simpleclipboard_no_default_mappings = 1
+nmap <leader>Y <Plug>(SimpleCopyYank)
+xnoremap <leader>Y :<C-U>'<,'>SimpleCopyRange<CR>
+
+" 不使用守护进程，仅靠外部命令与 OSC52
+let g:simpleclipboard_daemon_enabled = 0
+
+" 指定 Rust 动态库与守护进程路径（绝对路径）
+let g:simpleclipboard_libpath = '/opt/simpleclipboard/libsimpleclipboard.so'
+let g:simpleclipboard_daemon_path = '/opt/simpleclipboard/simpleclipboard-daemon'
+
+" 关闭 OSC52 兜底
+let g:simpleclipboard_disable_osc52 = 1
+
+" 开启调试，写入文件
+let g:simpleclipboard_debug = 1
+let g:simpleclipboard_debug_to_file = 1
+let g:simpleclipboard_debug_file = expand('~/.local/state/simpleclipboard.log')
+<
+
+==============================================================================
+作者与致谢 simpleclipboard-credits
+
+Rust 剪贴板：arboard
+Socket activation：listenfd
+序列化：bincode
+终止信号处理：ctrlc
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:noet
