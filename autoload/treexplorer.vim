@@ -1,13 +1,18 @@
 vim9script
-import autoload 'treexplorer_backend.vim' as Backend
 
+# =============================================================
 # 配置
+# =============================================================
 g:simpletree_width = get(g:, 'simpletree_width', 30)
 g:simpletree_hide_dotfiles = get(g:, 'simpletree_hide_dotfiles', 1)
 g:simpletree_page = get(g:, 'simpletree_page', 200)
 g:simpletree_keep_focus = get(g:, 'simpletree_keep_focus', 1)
+g:simpletree_debug = get(g:, 'simpletree_debug', 0)
+g:simpletree_daemon_path = get(g:, 'simpletree_daemon_path', '')
 
-# 脚本状态
+# =============================================================
+# 前端状态
+# =============================================================
 var s_bufnr: number = -1
 var s_winid: number = 0
 var s_root: string = ''
@@ -19,7 +24,18 @@ var s_loading: dict<bool> = {}            # path -> true
 var s_pending: dict<number> = {}          # path -> request id
 var s_line_index: list<dict<any>> = []    # 渲染行对应的节点
 
-# ========== 工具函数 ==========
+# =============================================================
+# 后端状态（合并）
+# =============================================================
+var s_bjob: any = v:null     # 后端 job 句柄（any，避免类型冲突）
+var s_brunning: bool = false
+var s_bbuf: string = ''      # 处理分包的缓冲
+var s_bnext_id = 0
+var s_bcbs: dict<any> = {}   # id -> {OnChunk, OnDone, OnError}
+
+# =============================================================
+# 工具函数
+# =============================================================
 def AbsPath(p: string): string
   if p ==# ''
     return simplify(fnamemodify(getcwd(), ':p'))
@@ -35,23 +51,12 @@ def IsDir(p: string): bool
   return isdirectory(p)
 enddef
 
-def Join(base: string, name: string): string
-  return simplify(fnamemodify(base .. '/' .. name, ':p'))
-enddef
-
-def GetNodeState(path: string): dict<any>
-  if !has_key(s_state, path)
-    s_state[path] = {expanded: false}
-  endif
-  return s_state[path]
-enddef
-
 def BufValid(): bool
   return s_bufnr > 0 && bufexists(s_bufnr)
 enddef
 
 def WinValid(): bool
-  return s_winid != 0 && win_gotoid(s_winid)
+  return s_winid != 0 && win_id2win(s_winid) > 0
 enddef
 
 def OtherWindowId(): number
@@ -64,11 +69,202 @@ def OtherWindowId(): number
   return 0
 enddef
 
-# ========== 后端交互 ==========
+def Log(msg: string, hl: string = 'None')
+  if get(g:, 'simpletree_debug', 0) == 0
+    return
+  endif
+  try
+    echohl hl
+    echom '[SimpleTree] ' .. msg
+  catch
+  finally
+    echohl None
+  endtry
+enddef
+
+def GetNodeState(path: string): dict<any>
+  if !has_key(s_state, path)
+    s_state[path] = {expanded: false}
+  endif
+  return s_state[path]
+enddef
+
+# =============================================================
+# 后端（合并）
+# =============================================================
+def BNextId(): number
+  s_bnext_id += 1
+  return s_bnext_id
+enddef
+
+def BFindBackend(): string
+  var override = get(g:, 'simpletree_daemon_path', '')
+  if type(override) == v:t_string && override !=# '' && executable(override)
+    return override
+  endif
+  for dir in split(&runtimepath, ',')
+    var p = dir .. '/lib/simpletree-daemon'
+    if executable(p)
+      return p
+    endif
+  endfor
+  return ''
+enddef
+
+def BIsRunning(): bool
+  return s_brunning
+enddef
+
+def BEnsureBackend(cmd: string = ''): bool
+  if BIsRunning()
+    return true
+  endif
+  var cmdExe = cmd
+  if cmdExe ==# ''
+    cmdExe = BFindBackend()
+  endif
+  if cmdExe ==# '' || !executable(cmdExe)
+    echohl ErrorMsg
+    echom '[SimpleTree] backend not found. Set g:simpletree_daemon_path or put simpletree-daemon into runtimepath/lib/.'
+    echohl None
+    return false
+  endif
+
+  s_bbuf = ''
+  try
+    s_bjob = job_start([cmdExe], {
+      in_io: 'pipe',
+      out_mode: 'raw',
+      out_cb: (ch, msg) => {
+        s_bbuf ..= msg
+        var lines = split(s_bbuf, "\n", 1)
+        var last_idx = len(lines) - 1
+        s_bbuf = last_idx >= 0 ? lines[last_idx] : ''
+        for i in range(0, len(lines) - 2)
+          var line = lines[i]
+          if line ==# ''
+            continue
+          endif
+          var ev: any
+          try
+            ev = json_decode(line)
+          catch
+            continue
+          endtry
+          if type(ev) != v:t_dict || !has_key(ev, 'type')
+            continue
+          endif
+          if ev.type ==# 'list_chunk'
+            var id = ev.id
+            if has_key(s_bcbs, id)
+              if has_key(ev, 'entries')
+                try
+                  s_bcbs[id].OnChunk(ev.entries)
+                catch
+                endtry
+              endif
+              if get(ev, 'done', v:false)
+                try
+                  s_bcbs[id].OnDone()
+                catch
+                endtry
+                call remove(s_bcbs, id)
+              endif
+            endif
+          elseif ev.type ==# 'error'
+            var id = get(ev, 'id', 0)
+            if id != 0 && has_key(s_bcbs, id)
+              try
+                s_bcbs[id].OnError(get(ev, 'message', ''))
+              catch
+              endtry
+              call remove(s_bcbs, id)
+            else
+              Log('backend error: ' .. get(ev, 'message', ''))
+            endif
+          endif
+        endfor
+      },
+      err_mode: 'nl',
+      err_cb: (ch, line) => {
+        Log('[stderr] ' .. line)
+      },
+      exit_cb: (ch, code) => {
+        Log('backend exited with code ' .. code)
+        s_brunning = false
+        s_bjob = v:null
+        s_bbuf = ''
+        s_bcbs = {}
+      },
+      stoponexit: 'term',
+    })
+  catch
+    s_bjob = v:null
+    s_brunning = false
+    echohl ErrorMsg
+    echom '[SimpleTree] job_start failed: ' .. v:exception
+    echohl None
+    return false
+  endtry
+
+  s_brunning = (s_bjob != v:null)
+  return s_brunning
+enddef
+
+def BStop(): void
+  if s_bjob != v:null
+    try
+      call('job_stop', [s_bjob])
+    catch
+    endtry
+  endif
+  s_brunning = false
+  s_bjob = v:null
+  s_bbuf = ''
+  s_bcbs = {}
+enddef
+
+def BSend(req: dict<any>): void
+  if !BIsRunning()
+    return
+  endif
+  try
+    call('chansend', [s_bjob, json_encode(req) .. "\n"])
+  catch
+  endtry
+enddef
+
+def BList(path: string, show_hidden: bool, max: number, OnChunk: func, OnDone: func, OnError: func): number
+  if !BEnsureBackend()
+    try
+      OnError('backend not available')
+    catch
+    endtry
+    return 0
+  endif
+  var id = BNextId()
+  s_bcbs[id] = {OnChunk: OnChunk, OnDone: OnDone, OnError: OnError}
+  BSend({type: 'list', id: id, path: path, show_hidden: show_hidden, max: max})
+  return id
+enddef
+
+def BCancel(id: number): void
+  if id <= 0 || !BIsRunning()
+    return
+  endif
+  BSend({type: 'cancel', id: id})
+  if has_key(s_bcbs, id)
+    call remove(s_bcbs, id)
+  endif
+enddef
+
+# =============================================================
+# 前端 <-> 后端
+# =============================================================
 def CancelPending(path: string)
   if has_key(s_pending, path)
     try
-      Backend.Cancel(s_pending[path])
+      BCancel(s_pending[path])
     catch
     endtry
     call remove(s_pending, path)
@@ -76,30 +272,27 @@ def CancelPending(path: string)
 enddef
 
 def ScanDirAsync(path: string)
-  # 已有缓存或正在加载则跳过
   if has_key(s_cache, path) || get(s_loading, path, v:false)
     return
   endif
 
-  # 如果之前有未完成请求，先取消
   CancelPending(path)
 
   s_loading[path] = true
   var acc: list<dict<any>> = []
   var p = path
+  var req_id: number = 0   # 关键：先声明，供下面的 lambda 捕获
 
-  var req_id = Backend.List(
+  req_id = BList(
     p,
     !s_hide_dotfiles,
     g:simpletree_page,
     (entries) => {
-      # 分块回调
       acc += entries
       s_cache[p] = acc
       Render()
     },
     () => {
-      # 完成回调
       s_loading[p] = false
       s_cache[p] = acc
       if has_key(s_pending, p) && s_pending[p] == req_id
@@ -108,15 +301,11 @@ def ScanDirAsync(path: string)
       Render()
     },
     (_msg) => {
-      # 错误回调
       s_loading[p] = false
       if has_key(s_pending, p) && s_pending[p] == req_id
         call remove(s_pending, p)
       endif
-      # 可选：回显错误
-      if get(g:, 'simpletree_debug', 0)
-        echom '[SimpleTree] list error for ' .. p
-      endif
+      Log('list error for ' .. p)
       Render()
     }
   )
@@ -128,10 +317,11 @@ def ScanDirAsync(path: string)
   endif
 enddef
 
-# ========== 渲染 ==========
+# =============================================================
+# 渲染
+# =============================================================
 def EnsureWindowAndBuffer()
   if WinValid()
-    # 确保宽度
     try
       call win_execute(s_winid, 'vertical resize ' .. g:simpletree_width)
     catch
@@ -139,57 +329,46 @@ def EnsureWindowAndBuffer()
     return
   endif
 
-  # 打开左侧垂直窗口
   execute 'topleft vertical ' .. g:simpletree_width .. 'vsplit'
   s_winid = win_getid()
   s_bufnr = bufnr('%')
 
-  # 配置缓冲区
   execute 'file SimpleTree'
-  setlocal buftype=nofile
-  setlocal bufhidden=wipe
-  setlocal nobuflisted
-  setlocal noswapfile
-  setlocal nowrap
-  setlocal nonumber
-  setlocal norelativenumber
-  setlocal foldcolumn=0
-  setlocal signcolumn=no
-  setlocal cursorline
-  setlocal winfixwidth
-  setlocal winfixbuf
-  setlocal filetype=simpletree
 
-  # 键位映射（脚本内函数，用 <SID> 调用）
-  nnoremap <silent> <buffer> <CR> :call <SID>OnEnter()<CR>
-  nnoremap <silent> <buffer> l :call <SID>OnExpand()<CR>
-  nnoremap <silent> <buffer> h :call <SID>OnCollapse()<CR>
-  nnoremap <silent> <buffer> R :call <SID>OnRefresh()<CR>
-  nnoremap <silent> <buffer> H :call <SID>OnToggleHidden()<CR>
-  nnoremap <silent> <buffer> q :call <SID>OnClose()<CR>
+  call win_execute(s_winid, 'setlocal buftype=nofile')
+  call win_execute(s_winid, 'setlocal bufhidden=wipe')
+  call win_execute(s_winid, 'setlocal nobuflisted')
+  call win_execute(s_winid, 'setlocal noswapfile')
+  call win_execute(s_winid, 'setlocal nowrap')
+  call win_execute(s_winid, 'setlocal nonumber')
+  call win_execute(s_winid, 'setlocal norelativenumber')
+  call win_execute(s_winid, 'setlocal foldcolumn=0')
+  call win_execute(s_winid, 'setlocal signcolumn=no')
+  call win_execute(s_winid, 'setlocal cursorline')
+  call win_execute(s_winid, 'setlocal winfixwidth')
+  call win_execute(s_winid, 'setlocal winfixbuf')
+  call win_execute(s_winid, 'setlocal filetype=simpletree')
 
-  # 离开/清理时将 winid 归零（避免悬挂）
-  augroup SimpleTreeBuf
-    autocmd!
-    autocmd BufWipeout <buffer> call <SID>OnBufWipe()
-  augroup END
-enddef
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> <CR> :call treexplorer#OnEnter()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> l :call treexplorer#OnExpand()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> h :call treexplorer#OnCollapse()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> R :call treexplorer#OnRefresh()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> H :call treexplorer#OnToggleHidden()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> q :call treexplorer#OnClose()<CR>')
 
-def OnBufWipe()
-  s_winid = 0
-  s_bufnr = -1
+  call win_execute(s_winid, 'augroup SimpleTreeBuf')
+  call win_execute(s_winid, 'autocmd!')
+  call win_execute(s_winid, 'autocmd BufWipeout <buffer> ++once call treexplorer#OnBufWipe()')
+  call win_execute(s_winid, 'augroup END')
 enddef
 
 def BuildLines(path: string, depth: number, lines: list<string>, idx: list<dict<any>>)
-  # 当目录被标记为展开时，展示其内容
   var want = GetNodeState(path).expanded
-
   if !want
     return
   endif
 
   if !has_key(s_cache, path)
-    # 未有缓存，触发加载并放一个提示
     if !get(s_loading, path, v:false)
       ScanDirAsync(path)
     endif
@@ -221,9 +400,10 @@ def Render()
   var lines: list<string> = []
   var idx: list<dict<any>> = []
 
-  # 顶层不显示 root 自身，只显示 root 的 children
-  # 确保 root 是展开状态
-  GetNodeState(s_root).expanded = true
+  # 确保 root 展开（不能对函数返回值做成员赋值，先取变量）
+  var stroot = GetNodeState(s_root)
+  stroot.expanded = true
+
   BuildLines(s_root, 0, lines, idx)
 
   if len(lines) == 0 && get(s_loading, s_root, v:false)
@@ -235,30 +415,42 @@ def Render()
     return
   endif
 
-  # 写入缓冲区
-  var save_winid = win_getid()
-  if WinValid()
-    call win_gotoid(s_winid)
+  try
+    call setbufvar(s_bufnr, '&modifiable', 1)
+  catch
+  endtry
+
+  var out = len(lines) == 0 ? [''] : lines
+  call setbufline(s_bufnr, 1, out)
+
+  var bi = getbufinfo(s_bufnr)
+  if len(bi) > 0
+    var lc = get(bi[0], 'linecount', 0)
+    if lc > len(out)
+      try
+        call deletebufline(s_bufnr, len(out) + 1, lc)
+      catch
+      endtry
+    endif
   endif
-  setlocal modifiable
-  call setline(1, lines)
-  if line('$') > len(lines)
-    execute (len(lines) + 1) .. ',' .. '$delete _'
-  endif
-  setlocal nomodifiable
-  # 保持光标不过界
-  var lnum = line('.')
-  if lnum > max([1, len(lines)])
-    execute 'normal! G'
-  endif
-  if save_winid != s_winid && win_gotoid(save_winid)
-    # 返回原窗口
-  endif
+
+  try
+    call setbufvar(s_bufnr, '&modifiable', 0)
+  catch
+  endtry
+
+  var maxline = max([1, len(out)])
+  try
+    call win_execute(s_winid, 'if line(".") > ' .. maxline .. ' | normal! G | endif')
+  catch
+  endtry
 
   s_line_index = idx
 enddef
 
-# ========== 用户交互 ==========
+# =============================================================
+# 用户交互（导出）
+# =============================================================
 def CursorNode(): dict<any>
   var lnum = line('.')
   if lnum <= 0 || lnum > len(s_line_index)
@@ -281,26 +473,21 @@ def OpenFile(p: string)
     return
   endif
   var keep = !!g:simpletree_keep_focus
-  var back_to_tree = v:false
 
-  # 尽量在其他窗口中打开
   var other = OtherWindowId()
   if other != 0
     call win_gotoid(other)
   else
-    # 只有树一个窗口时，开个新窗
     execute 'vsplit'
   endif
   execute 'edit ' .. fnameescape(p)
 
   if keep
     call win_gotoid(s_winid)
-    back_to_tree = v:true
   endif
 enddef
 
-# ------- 映射触发的脚本内函数 -------
-def OnEnter()
+export def OnEnter()
   var node = CursorNode()
   if empty(node) || get(node, 'loading', v:false)
     return
@@ -312,7 +499,7 @@ def OnEnter()
   endif
 enddef
 
-def OnExpand()
+export def OnExpand()
   var node = CursorNode()
   if empty(node) || get(node, 'loading', v:false)
     return
@@ -322,7 +509,7 @@ def OnExpand()
   endif
 enddef
 
-def OnCollapse()
+export def OnCollapse()
   var node = CursorNode()
   if empty(node) || get(node, 'loading', v:false)
     return
@@ -332,37 +519,44 @@ def OnCollapse()
   endif
 enddef
 
-def OnRefresh()
+export def OnRefresh()
   Refresh()
 enddef
 
-def OnToggleHidden()
+export def OnToggleHidden()
   s_hide_dotfiles = !s_hide_dotfiles
   Refresh()
 enddef
 
-def OnClose()
+export def OnClose()
   Close()
 enddef
 
-# ========== 导出 API，供 :SimpleTree 命令调用 ==========
+export def OnBufWipe()
+  s_winid = 0
+  s_bufnr = -1
+enddef
+
+# =============================================================
+# 导出 API（供命令调用）
+# =============================================================
 export def Toggle(root: string = '')
-  # 若已打开则关闭
   if WinValid()
     Close()
     return
   endif
 
-  if root ==# ''
+  var rootArg = root
+  if rootArg ==# ''
     var cur = expand('%:p')
     if cur ==# '' || !filereadable(cur)
-      root = getcwd()
+      rootArg = getcwd()
     else
-      root = fnamemodify(cur, ':p:h')
+      rootArg = fnamemodify(cur, ':p:h')
     endif
   endif
 
-  s_root = AbsPath(root)
+  s_root = AbsPath(rootArg)
   if !IsDir(s_root)
     echohl ErrorMsg
     echom '[SimpleTree] invalid root: ' .. s_root
@@ -371,32 +565,31 @@ export def Toggle(root: string = '')
   endif
 
   EnsureWindowAndBuffer()
-  # 确保后端运行
-  if !Backend.EnsureBackend()
+  if !BEnsureBackend()
     echohl ErrorMsg
     echom '[SimpleTree] backend not available'
     echohl None
     return
   endif
 
-  # 展开根并触发加载
-  GetNodeState(s_root).expanded = true
+  # 不能对函数返回值直接赋值，先取变量
+  var st = GetNodeState(s_root)
+  st.expanded = true
+
   ScanDirAsync(s_root)
   Render()
 enddef
 
 export def Refresh()
-  # 取消所有挂起请求
   for [p, id] in items(s_pending)
     try
-      Backend.Cancel(id)
+      BCancel(id)
     catch
     endtry
   endfor
   s_pending = {}
   s_loading = {}
   s_cache = {}
-  # 保持展开状态，但重新扫描
   if s_root !=# ''
     ScanDirAsync(s_root)
   endif
@@ -412,4 +605,8 @@ export def Close()
   endif
   s_winid = 0
   s_bufnr = -1
+enddef
+
+export def Stop()
+  BStop()
 enddef
