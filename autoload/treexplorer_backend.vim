@@ -1,16 +1,16 @@
 vim9script
 
-var s:job = v:null
-var s:buf = ''         # 处理分包的缓冲
-var s:next_id = 0
-var s:cbs: dict<any> = {} # id -> {on_chunk, on_done, on_error}
+var s_job = v:null
+var s_buf = ''         # 处理分包的缓冲
+var s_next_id = 0
+var s_cbs: dict<any> = {} # id -> {on_chunk, on_done, on_error}
 
-def s:NextId(): number
-  s:next_id += 1
-  return s:next_id
+def NextId(): number
+  s_next_id += 1
+  return s_next_id
 enddef
 
-def s:FindBackend(): string
+def FindBackend(): string
   var override = get(g:, 'simpletree_daemon_path', '')
   if type(override) == v:t_string && override !=# '' && executable(override)
     return override
@@ -25,7 +25,7 @@ def s:FindBackend(): string
 enddef
 
 export def IsRunning(): bool
-  return s:job isnot v:null && job_status(s:job) ==# 'run'
+  return s_job isnot v:null && job_status(s_job) ==# 'run'
 enddef
 
 export def EnsureBackend(cmd: string = ''): bool
@@ -33,7 +33,7 @@ export def EnsureBackend(cmd: string = ''): bool
     return true
   endif
   if cmd ==# ''
-    cmd = s:FindBackend()
+    cmd = FindBackend()
   endif
   if cmd ==# '' || !executable(cmd)
     echohl ErrorMsg
@@ -42,14 +42,14 @@ export def EnsureBackend(cmd: string = ''): bool
     return false
   endif
 
-  s:buf = ''
-  s:job = job_start([cmd], {
+  s_buf = ''
+  s_job = job_start([cmd], {
     in_io: 'pipe',
     out_mode: 'raw',
     out_cb: (ch, msg) => {
-      s:buf ..= msg
-      var lines = split(s:buf, "\n", 1) " keepempty=1 保留最后的未完整行
-      s:buf = lines[-1]
+      s_buf ..= msg
+      var lines = split(s_buf, "\n", 1) " 保留未完整行
+      s_buf = lines[-1]
       for i in range(0, len(lines) - 2)
         var line = lines[i]
         if line ==# ''
@@ -65,29 +65,29 @@ export def EnsureBackend(cmd: string = ''): bool
         endif
         if ev.type ==# 'list_chunk'
           var id = ev.id
-          if has_key(s:cbs, id)
+          if has_key(s_cbs, id)
             if has_key(ev, 'entries')
               try
-                s:cbs[id].on_chunk(ev.entries)
+                s_cbs[id].on_chunk(ev.entries)
               catch
               endtry
             endif
             if get(ev, 'done', v:false)
               try
-                s:cbs[id].on_done()
+                s_cbs[id].on_done()
               catch
               endtry
-              call remove(s:cbs, id)
+              call remove(s_cbs, id)
             endif
           endif
         elseif ev.type ==# 'error'
           var id = get(ev, 'id', 0)
-          if id != 0 && has_key(s:cbs, id)
+          if id != 0 && has_key(s_cbs, id)
             try
-              s:cbs[id].on_error(get(ev, 'message', ''))
+              s_cbs[id].on_error(get(ev, 'message', ''))
             catch
             endtry
-            call remove(s:cbs, id)
+            call remove(s_cbs, id)
           else
             echom '[SimpleTree] backend error: ' .. get(ev, 'message', '')
           endif
@@ -104,9 +104,9 @@ export def EnsureBackend(cmd: string = ''): bool
       if get(g:, 'simpleclipboard_debug', 0)
         echom '[SimpleTree] backend exited with code ' .. code
       endif
-      s:job = v:null
-      s:buf = ''
-      s:cbs = {}
+      s_job = v:null
+      s_buf = ''
+      s_cbs = {}
     },
     stoponexit: 'term',
   })
@@ -117,46 +117,42 @@ enddef
 export def Stop(): void
   if IsRunning()
     try
-      call job_stop(s:job)
+      call job_stop(s_job)
     catch
     endtry
   endif
-  s:job = v:null
-  s:buf = ''
-  s:cbs = {}
+  s_job = v:null
+  s_buf = ''
+  s_cbs = {}
 enddef
 
-# 发送请求
-def s:Send(req: dict<any>): void
+def Send(req: dict<any>): void
   if !EnsureBackend()
     return
   endif
   try
-    call chansend(s:job, json_encode(req) .. "\n")
+    call chansend(s_job, json_encode(req) .. "\n")
   catch
-    " ignore
   endtry
 enddef
 
-# API：列出目录
 export def List(path: string, show_hidden: bool, max: number, on_chunk: func, on_done: func, on_error: func): number
   if !EnsureBackend()
     call on_error('backend not available')
     return 0
   endif
-  var id = s:NextId()
-  s:cbs[id] = {on_chunk: on_chunk, on_done: on_done, on_error: on_error}
-  s:Send({type: 'list', id: id, path: path, show_hidden: show_hidden, max: max})
+  var id = NextId()
+  s_cbs[id] = {on_chunk: on_chunk, on_done: on_done, on_error: on_error}
+  Send({type: 'list', id: id, path: path, show_hidden: show_hidden, max: max})
   return id
 enddef
 
-# API：取消某个请求
 export def Cancel(id: number): void
   if id <= 0 || !IsRunning()
     return
   endif
-  s:Send({type: 'cancel', id: id})
-  if has_key(s:cbs, id)
-    call remove(s:cbs, id)
+  Send({type: 'cancel', id: id})
+  if has_key(s_cbs, id)
+    call remove(s_cbs, id)
   endif
 enddef
