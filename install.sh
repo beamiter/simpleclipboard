@@ -7,5 +7,6 @@ cargo build --release
 mkdir -p lib
 cp target/release/libsimpleclipboard.so lib/
 cp target/release/simpleclipboard-daemon lib/
+cp target/release/simpletree-daemon lib/
 
 echo "Installed to ./lib. Ensure this plugin directory is on 'runtimepath'."
