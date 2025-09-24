@@ -281,7 +281,7 @@ def ScanDirAsync(path: string)
   s_loading[path] = true
   var acc: list<dict<any>> = []
   var p = path
-  var req_id: number = 0   # 关键：先声明，供下面的 lambda 捕获
+  var req_id: number = 0   # 先声明，供 lambda 捕获
 
   req_id = BList(
     p,
@@ -329,9 +329,12 @@ def EnsureWindowAndBuffer()
     return
   endif
 
-  execute 'topleft vertical ' .. g:simpletree_width .. 'vsplit'
+  # 关键修复：先分屏，再单独 resize，避免 30vsplit 触发 E1050
+  execute 'topleft vertical vsplit'
   s_winid = win_getid()
   s_bufnr = bufnr('%')
+
+  call win_execute(s_winid, 'vertical resize ' .. g:simpletree_width)
 
   execute 'file SimpleTree'
 
@@ -400,7 +403,6 @@ def Render()
   var lines: list<string> = []
   var idx: list<dict<any>> = []
 
-  # 确保 root 展开（不能对函数返回值做成员赋值，先取变量）
   var stroot = GetNodeState(s_root)
   stroot.expanded = true
 
@@ -572,7 +574,6 @@ export def Toggle(root: string = '')
     return
   endif
 
-  # 不能对函数返回值直接赋值，先取变量
   var st = GetNodeState(s_root)
   st.expanded = true
 
