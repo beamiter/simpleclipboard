@@ -62,6 +62,7 @@ async fn main() -> Result<()> {
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
     let out = Arc::new(Mutex::new(tokio::io::stdout()));
+    eprintln!("start");
 
     // 任务取消表：id -> token
     let cancels: Arc<RwLock<HashMap<u64, CancellationToken>>> =
@@ -71,9 +72,11 @@ async fn main() -> Result<()> {
         if line.trim().is_empty() {
             continue;
         }
+        eprintln!("REQ LINE: {line}");
         let req = match serde_json::from_str::<Request>(&line) {
             Ok(r) => r,
             Err(e) => {
+                eprintln!("REQ PARSE ERR: {e}");
                 send_event(
                     out.clone(),
                     &Event::Error {
@@ -85,6 +88,7 @@ async fn main() -> Result<()> {
                 continue;
             }
         };
+        eprintln!("REQ DECODED: {:?}", req);
 
         match req {
             Request::List {
@@ -153,6 +157,7 @@ async fn handle_list(
     out: Arc<Mutex<tokio::io::Stdout>>,
     cancel: CancellationToken,
 ) -> Result<()> {
+    eprintln!("handle_list start id={id} path={:?}", path);
     // 在阻塞线程迭代，提高吞吐，同时响应取消
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Entry>(1024);
     let cancel_clone = cancel.clone();
@@ -205,6 +210,8 @@ async fn handle_list(
         entries.push(e);
     }
     let _ = scan.await;
+
+    eprintln!("handle_list done id={id} entries={}", entries.len());
 
     // 已取消则静默退出
     if cancel.is_cancelled() {

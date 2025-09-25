@@ -134,7 +134,6 @@ def IsDaemonReady(): bool
     return false
   endif
 
-  # 兼容较老的 +channel：没有 sockconnect 时退回到“仅判断 socket 文件存在”
   Log('sockconnect() not available; fallback to socket file existence.', 'Comment')
   return true
 enddef
@@ -185,9 +184,7 @@ export def StartDaemon()
           err_io: 'null',
           stoponexit: 'none',
         })
-    if job_obj is v:null
-      throw 'job_start returned v:null'
-    endif
+    # job_start 失败时会抛出异常，无需检查 v:null
   catch
     echohl ErrorMsg
     echom '[SimpleClipboard] Failed to start daemon via job_start: ' .. v:exception
@@ -277,21 +274,54 @@ def CopyViaRust(text: string): bool
   endtry
 enddef
 
-# 仅使用异步 job + chansend；不再使用同步 system 兜底
+# ===== 关键修正部分开始 =====
+
+# 列表用于保存正在运行的复制任务，防止 job 对象被过早垃圾回收
+var running_copy_jobs: list<job> = []
+
+# 当复制任务的 job 结束时，Vim 会自动调用此回调函数
+def JobExitCallback(job: job, status: number)
+  # 如果任务失败，可以记录日志方便调试
+  if status != 0
+    var job_info = job_info(job)
+    Log($"Copy command '{string(job_info.cmd)}' failed with exit code {status}.", 'WarningMsg')
+  endif
+
+  # 从跟踪列表中移除已完成的 job，避免列表无限增长
+  var idx = running_copy_jobs->index(job)
+  if idx != -1
+    running_copy_jobs->remove(idx)
+  endif
+enddef
+
+# 修正后的函数，用于通过异步 job 运行外部复制命令
 def StartCopyJob(argv: list<string>, text: string): bool
   try
-    var job = job_start(argv, {out_io: 'null', err_io: 'null', in_io: 'pipe'})
-    if job is v:null
-      return false
-    endif
-    call('chansend', [job, text])
-    call('chanclose', [job, 'in'])
+    # 使用 exit_cb 选项来指定任务结束时的回调函数
+    var job = job_start(argv, {
+          \ out_io: 'null',
+          \ err_io: 'null',
+          \ in_io: 'pipe',
+          \ exit_cb: JobExitCallback,
+          \ })
+
+    # 将新创建的 job 对象添加到跟踪列表中，以确保其生命周期
+    add(running_copy_jobs, job)
+
+    # 向 job 的 stdin 发送文本，并立即关闭输入流
+    # ch_close_in 告诉对方进程：数据已经发送完毕
+    ch_sendraw(job, text)
+    ch_close_in(job)
+
     return true
   catch
+    # 如果 job_start 失败，会在这里捕获异常
     Log('StartCopyJob error: ' .. v:exception, 'WarningMsg')
     return false
   endtry
 enddef
+
+# ===== 关键修正部分结束 =====
 
 def CopyViaCmds(text: string): bool
   Log('Attempting copy via external commands...', 'Question')
@@ -391,6 +421,7 @@ enddef
 
 export def CopyToSystemClipboard(text: string): bool
   # 优先使用守护进程，其次外部命令，最后 OSC52
+  # return CopyViaCmds(text)
   return CopyViaRust(text) || CopyViaCmds(text) || CopyViaOsc52(text)
 enddef
 

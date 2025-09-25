@@ -17,6 +17,7 @@ g:simpletree_daemon_path = get(g:, 'simpletree_daemon_path', '')
 command! -nargs=? -complete=dir SimpleTree treexplorer#Toggle(<q-args>)
 command! SimpleTreeRefresh treexplorer#Refresh()
 command! SimpleTreeClose treexplorer#Close()
+command! SimpleTreeDebug call treexplorer#DebugStatus()
 
 nnoremap <silent> <leader>e <Cmd>SimpleTree<CR>
 

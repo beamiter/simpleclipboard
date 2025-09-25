@@ -18,6 +18,7 @@ listenfd = "1.0.2"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.145"
 tokio = { version = "1.47.1", features = ["full", "io-std", "io-util", "macros", "rt-multi-thread", "sync"] }
+tokio-stream = "0.1.17"
 tokio-util = "0.7.16"
 
 [[bin]]
@@ -26,6 +27,9 @@ path = "src/daemon.rs"
 [[bin]]
 name = "simpletree-daemon"
 path = "src/simpletree_daemon.rs"
+
+[dev-dependencies]
+tempfile = "3.23.0"
 
 [profile.release]
 opt-level = 3
