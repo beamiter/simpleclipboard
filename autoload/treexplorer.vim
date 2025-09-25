@@ -419,7 +419,6 @@ def EnsureWindowAndBuffer()
   execute 'topleft vertical vsplit'
   s_winid = win_getid()
 
-  # 创建独立缓冲，不影响右侧原缓冲
   call win_execute(s_winid, 'silent enew')
   s_bufnr = winbufnr(s_winid)
 
@@ -448,7 +447,6 @@ def EnsureWindowAndBuffer()
     Log('EnsureWindowAndBuffer: ' .. cmd)
   endfor
 
-  # mappings（根路径操作 + h/l）
   call win_execute(s_winid, 'nnoremap <silent> <buffer> <CR> :call treexplorer#OnEnter()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> l :call treexplorer#OnExpand()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> h :call treexplorer#OnCollapse()<CR>')
@@ -521,7 +519,6 @@ def Render()
   var lines: list<string> = []
   var idx: list<dict<any>> = []
 
-  # 根保持展开（不折叠根）
   var stroot = GetNodeState(s_root)
   stroot.expanded = true
   Log('Render: root expanded=true s_root="' .. s_root .. '"')
@@ -614,7 +611,6 @@ def SetRoot(new_root: string, lock: bool = false)
   st.expanded = true
   Log('SetRoot: root expanded set true')
 
-  # 清理旧状态
   for [p, id] in items(s_pending)
     try
       BCancel(id)
@@ -697,7 +693,7 @@ def CursorNode(): dict<any>
   return node
 enddef
 
-# 根据路径定位到树中的行；找不到则退到顶部
+# 不再在找不到目标时跳到顶部，保持当前位置
 def FocusPath(path: string): void
   Log('FocusPath enter path="' .. path .. '"')
   if !WinValid()
@@ -715,20 +711,18 @@ def FocusPath(path: string): void
       break
     endif
   endfor
-  try
-    if target > 0
+  if target > 0
+    try
       call win_execute(s_winid, 'normal! ' .. target .. 'G')
       Log('FocusPath: moved cursor to line ' .. target)
-    else
-      call win_execute(s_winid, 'normal! gg')
-      Log('FocusPath: path not found, moved to top')
-    endif
-  catch
-    Log('FocusPath: win_execute exception ' .. v:exception, 'ErrorMsg')
-  endtry
+    catch
+      Log('FocusPath: win_execute exception ' .. v:exception, 'ErrorMsg')
+    endtry
+  else
+    Log('FocusPath: path not found, keep cursor unmoved')
+  endif
 enddef
 
-# 将游标定位到某目录的第一个子项（若已展开或出现 Loading）
 def FocusFirstChild(dir_path: string): void
   Log('FocusFirstChild enter dir_path="' .. dir_path .. '"')
   if !WinValid()
@@ -767,7 +761,7 @@ def FocusFirstChild(dir_path: string): void
 enddef
 
 # 折叠最近的已展开祖先：
-# - 若遇到根 s_root，则不折叠根、且不移动光标（保持当前位置）
+# - 若遇到根 s_root，则不折叠根、且不移动光标
 # - 有可折叠祖先则折叠并定位到该祖先
 # - 若没有祖先可折叠，且父目录不是根，则定位到父目录；父目录为根则不移动
 def CollapseNearestExpandedAncestor(path: string): void
@@ -791,7 +785,6 @@ def CollapseNearestExpandedAncestor(path: string): void
     endif
     p = nextp
   endwhile
-  # 没有可折叠的祖先
   var parent = fnamemodify(path, ':h')
   if parent !=# '' && parent !=# s_root
     FocusPath(parent)
@@ -891,6 +884,12 @@ export def OnCollapse()
       Log('OnCollapse: collapse current dir path="' .. node.path .. '"')
       ToggleDir(node.path)
     else
+      # 顶层（父为根）且已折叠时，保持不动
+      var parent = fnamemodify(node.path, ':h')
+      if parent ==# s_root
+        Log('OnCollapse: top-level collapsed dir, keep cursor unmoved')
+        return
+      endif
       Log('OnCollapse: dir is collapsed, collapse parent chain from "' .. node.path .. '"')
       CollapseNearestExpandedAncestor(node.path)
     endif
