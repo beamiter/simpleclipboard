@@ -29,7 +29,7 @@ var s_line_index: list<dict<any>> = []    # 渲染行对应的节点
 # =============================================================
 var s_bjob: any = v:null     # 后端 job 句柄（any，避免类型冲突）
 var s_brunning: bool = false
-var s_bbuf: string = ''      # 处理分包的缓冲
+var s_bbuf: string = ''      # 处理分包的缓冲（nl 模式下不再使用）
 var s_bnext_id = 0
 var s_bcbs: dict<any> = {}   # id -> {OnChunk, OnDone, OnError}
 
@@ -164,77 +164,69 @@ def BEnsureBackend(cmd: string = ''): bool
   try
     s_bjob = job_start([cmdExe], {
       in_io: 'pipe',
-      out_mode: 'raw',
-      out_cb: (ch, msg) => {
-        Log('out_cb: raw chunk len=' .. strlen(msg))
-        s_bbuf ..= msg
-        var lines = split(s_bbuf, "\n", 1)
-        var last_idx = len(lines) - 1
-        s_bbuf = last_idx >= 0 ? lines[last_idx] : ''
-        Log('out_cb: split lines=' .. (len(lines) - 1) .. ' remainder_len=' .. strlen(s_bbuf))
-        for i in range(0, len(lines) - 2)
-          var line = lines[i]
-          if line ==# ''
-            Log('out_cb: skip empty line')
-            continue
-          endif
-          var ev: any
-          try
-            ev = json_decode(line)
-            Log('out_cb: json decoded ok: ' .. line)
-          catch
-            Log('out_cb: json_decode failed, line="' .. line .. '"', 'WarningMsg')
-            continue
-          endtry
-          if type(ev) != v:t_dict || !has_key(ev, 'type')
-            Log('out_cb: unexpected event shape', 'WarningMsg')
-            continue
-          endif
-          if ev.type ==# 'list_chunk'
-            var id = ev.id
-            Log('out_cb: list_chunk id=' .. id .. ' entries=' .. len(get(ev, 'entries', [])) .. ' done=' .. (get(ev, 'done', v:false) ? 'true' : 'false'), 'MoreMsg')
-            if has_key(s_bcbs, id)
-              if has_key(ev, 'entries')
-                try
-                  s_bcbs[id].OnChunk(ev.entries)
-                  Log('out_cb: OnChunk dispatched id=' .. id .. ' acc_len maybe growing')
-                catch
-                  Log('out_cb: OnChunk handler exception id=' .. id .. ' ex=' .. v:exception, 'ErrorMsg')
-                endtry
-              endif
-              if get(ev, 'done', v:false)
-                try
-                  s_bcbs[id].OnDone()
-                  Log('out_cb: OnDone dispatched id=' .. id)
-                catch
-                  Log('out_cb: OnDone handler exception id=' .. id .. ' ex=' .. v:exception, 'ErrorMsg')
-                endtry
-                call remove(s_bcbs, id)
-                Log('out_cb: callbacks removed id=' .. id)
-              endif
-            else
-              Log('out_cb: id not found in s_bcbs: ' .. id, 'WarningMsg')
-            endif
-          elseif ev.type ==# 'error'
-            var id = get(ev, 'id', 0)
-            var msg2 = get(ev, 'message', '')
-            Log('out_cb: error event id=' .. id .. ' message="' .. msg2 .. '"', 'ErrorMsg')
-            if id != 0 && has_key(s_bcbs, id)
+      # 关键修复：后端按行输出 JSON -> 使用 nl 模式，让 Vim 帮忙按行切割
+      out_mode: 'nl',
+      out_cb: (ch, line) => {
+        if line ==# ''
+          Log('out_cb: skip empty line')
+          return
+        endif
+        var ev: any
+        try
+          ev = json_decode(line)
+          Log('out_cb: json decoded ok: ' .. line)
+        catch
+          Log('out_cb: json_decode failed, line="' .. line .. '"', 'WarningMsg')
+          return
+        endtry
+        if type(ev) != v:t_dict || !has_key(ev, 'type')
+          Log('out_cb: unexpected event shape', 'WarningMsg')
+          return
+        endif
+        if ev.type ==# 'list_chunk'
+          var id = ev.id
+          Log('out_cb: list_chunk id=' .. id .. ' entries=' .. len(get(ev, 'entries', [])) .. ' done=' .. (get(ev, 'done', v:false) ? 'true' : 'false'), 'MoreMsg')
+          if has_key(s_bcbs, id)
+            if has_key(ev, 'entries')
               try
-                s_bcbs[id].OnError(msg2)
-                Log('out_cb: OnError dispatched id=' .. id)
+                s_bcbs[id].OnChunk(ev.entries)
+                Log('out_cb: OnChunk dispatched id=' .. id)
               catch
-                Log('out_cb: OnError handler exception id=' .. id .. ' ex=' .. v:exception, 'ErrorMsg')
+                Log('out_cb: OnChunk handler exception id=' .. id .. ' ex=' .. v:exception, 'ErrorMsg')
+              endtry
+            endif
+            if get(ev, 'done', v:false)
+              try
+                s_bcbs[id].OnDone()
+                Log('out_cb: OnDone dispatched id=' .. id)
+              catch
+                Log('out_cb: OnDone handler exception id=' .. id .. ' ex=' .. v:exception, 'ErrorMsg')
               endtry
               call remove(s_bcbs, id)
-              Log('out_cb: callbacks removed after error id=' .. id)
-            else
-              Log('backend error (no id): ' .. msg2, 'ErrorMsg')
+              Log('out_cb: callbacks removed id=' .. id)
             endif
           else
-            Log('out_cb: unknown ev.type="' .. ev.type .. '"', 'WarningMsg')
+            Log('out_cb: id not found in s_bcbs: ' .. id, 'WarningMsg')
           endif
-        endfor
+        elseif ev.type ==# 'error'
+          var id = get(ev, 'id', 0)
+          var msg2 = get(ev, 'message', '')
+          Log('out_cb: error event id=' .. id .. ' message="' .. msg2 .. '"', 'ErrorMsg')
+          if id != 0 && has_key(s_bcbs, id)
+            try
+              s_bcbs[id].OnError(msg2)
+              Log('out_cb: OnError dispatched id=' .. id)
+            catch
+              Log('out_cb: OnError handler exception id=' .. id .. ' ex=' .. v:exception, 'ErrorMsg')
+            endtry
+            call remove(s_bcbs, id)
+            Log('out_cb: callbacks removed after error id=' .. id)
+          else
+            Log('backend error (no id): ' .. msg2, 'ErrorMsg')
+          endif
+        else
+          Log('out_cb: unknown ev.type="' .. ev.type .. '"', 'WarningMsg')
+        endif
       },
       err_mode: 'nl',
       err_cb: (ch, line) => {
@@ -289,7 +281,7 @@ def BSend(req: dict<any>): void
   try
     var json = json_encode(req) .. "\n"
     Log('BSend: ' .. json)
-    # 使用现代化的直接调用
+    # 直接向 job 发送原始数据
     ch_sendraw(s_bjob, json)
   catch
     Log('BSend exception: ' .. v:exception, 'ErrorMsg')
