@@ -23,7 +23,7 @@ tokio-util = "0.7.16"
 
 [[bin]]
 name = "simpleclipboard-daemon"
-path = "src/daemon.rs"
+path = "src/simpleclipboard_daemon.rs"
 [[bin]]
 name = "simpletree-daemon"
 path = "src/simpletree_daemon.rs"
