@@ -27,6 +27,17 @@ var s_loading: dict<bool> = {}            # path -> true
 var s_pending: dict<number> = {}          # path -> request id
 var s_line_index: list<dict<any>> = []    # 渲染行对应的节点
 
+# 剪贴板（复制/剪切）
+var s_clipboard: dict<any> = {mode: '', items: []}  # {mode: 'copy'|'cut', items: [paths...]}
+
+# 帮助面板状态
+var s_help_winid: number = 0
+var s_help_bufnr: number = -1
+
+# Reveal 定位
+var s_reveal_target: string = ''
+var s_reveal_timer: number = 0
+
 # =============================================================
 # 后端状态（合并）
 # =============================================================
@@ -65,6 +76,206 @@ def IsDir(p: string): bool
   var res = isdirectory(p)
   Log('IsDir("' .. p .. '") => ' .. (res ? 'true' : 'false'))
   return res
+enddef
+
+def PathJoin(a: string, b: string): string
+  if a ==# ''
+    return AbsPath(b)
+  endif
+  if b ==# ''
+    return AbsPath(a)
+  endif
+  return simplify(a .. '/' .. b)
+enddef
+
+def PathExists(p: string): bool
+  return filereadable(p) || isdirectory(p)
+enddef
+
+# 递归复制：文件或目录
+def CopyPath(src: string, dst: string): bool
+  Log('CopyPath "' .. src .. '" -> "' .. dst .. '"')
+  if isdirectory(src)
+    if !isdirectory(dst)
+      try
+        call mkdir(dst, 'p')
+      catch
+        Log('CopyPath: mkdir exception ' .. v:exception, 'ErrorMsg')
+        return false
+      endtry
+      try
+        if exists('*getfperm') && exists('*setfperm')
+          var p = getfperm(src)
+          if type(p) == v:t_string && p !=# ''
+            call setfperm(dst, p)
+          endif
+        endif
+      catch
+        Log('CopyPath: setfperm dir ex ' .. v:exception, 'WarningMsg')
+      endtry
+    endif
+    try
+      for name in readdir(src)
+        if name ==# '.' || name ==# '..'
+          continue
+        endif
+        if !CopyPath(PathJoin(src, name), PathJoin(dst, name))
+          return false
+        endif
+      endfor
+    catch
+      Log('CopyPath: readdir exception ' .. v:exception, 'ErrorMsg')
+      return false
+    endtry
+    return true
+  else
+    try
+      call mkdir(fnamemodify(dst, ':h'), 'p')
+    catch
+      Log('CopyPath: mkdir parent exception ' .. v:exception, 'ErrorMsg')
+      return false
+    endtry
+    try
+      if writefile(readfile(src, 'b'), dst, 'b') != 0
+        Log('CopyPath: writefile failed dst=' .. dst, 'ErrorMsg')
+        return false
+      endif
+      if exists('*getfperm') && exists('*setfperm')
+        var p2 = getfperm(src)
+        if type(p2) == v:t_string && p2 !=# ''
+          call setfperm(dst, p2)
+        endif
+      endif
+      return true
+    catch
+      Log('CopyPath: file copy exception ' .. v:exception, 'ErrorMsg')
+      return false
+    endtry
+  endif
+enddef
+
+# 递归删除
+def DeletePathRecursive(p: string): bool
+  Log('DeletePathRecursive "' .. p .. '"')
+  if !PathExists(p)
+    return true
+  endif
+  try
+    var rc = delete(p, 'rf')
+    return rc == 0
+  catch
+    Log('DeletePathRecursive: delete rf ex ' .. v:exception, 'WarningMsg')
+  endtry
+  if isdirectory(p)
+    try
+      for name in readdir(p)
+        if name ==# '.' || name ==# '..'
+          continue
+        endif
+        if !DeletePathRecursive(PathJoin(p, name))
+          return false
+        endif
+      endfor
+    catch
+      Log('DeletePathRecursive: readdir exception ' .. v:exception, 'ErrorMsg')
+      return false
+    endtry
+    try
+      return delete(p, 'd') == 0
+    catch
+      Log('DeletePathRecursive: delete dir ex ' .. v:exception, 'ErrorMsg')
+      return false
+    endtry
+  else
+    try
+      return delete(p) == 0
+    catch
+      Log('DeletePathRecursive: delete file ex ' .. v:exception, 'ErrorMsg')
+      return false
+    endtry
+  endif
+enddef
+
+# 移动（剪切）：先尝试 rename；失败则 Copy + Delete
+def MovePath(src: string, dst: string): bool
+  Log('MovePath "' .. src .. '" -> "' .. dst .. '"')
+  try
+    call mkdir(fnamemodify(dst, ':h'), 'p')
+  catch
+    Log('MovePath: mkdir parent ex ' .. v:exception, 'ErrorMsg')
+    return false
+  endtry
+  try
+    var rc = rename(src, dst)
+    if rc == 0
+      return true
+    endif
+    Log('MovePath: rename failed rc=' .. rc .. ', fallback to copy+delete', 'WarningMsg')
+  catch
+    Log('MovePath: rename exception ' .. v:exception .. ', fallback to copy+delete', 'WarningMsg')
+  endtry
+  if !CopyPath(src, dst)
+    return false
+  endif
+  return DeletePathRecursive(src)
+enddef
+
+# 冲突处理：询问覆盖或改名或放弃
+# 返回最终目标路径，或空字符串表示取消
+def ResolveConflict(destDir: string, base: string): string
+  var dst = PathJoin(destDir, base)
+  if !PathExists(dst)
+    return dst
+  endif
+  var prompt = 'Target exists: ' .. dst .. '. [o]verwrite / [r]ename / [c]ancel: '
+  var ans = input(prompt)
+  if ans ==# 'o' || ans ==# 'O'
+    return dst
+  elseif ans ==# 'r' || ans ==# 'R'
+    var newname = input('New name: ', base)
+    if newname ==# ''
+      return ''
+    endif
+    return ResolveConflict(destDir, newname)
+  else
+    return ''
+  endif
+enddef
+
+# 新建时：循环直到唯一名字或取消
+def AskUniqueName(destDir: string, base: string): string
+  var name = base
+  while name !=# ''
+    var dst = PathJoin(destDir, name)
+    if !PathExists(dst)
+      return dst
+    endif
+    name = input('Exists: ' .. dst .. ' . Input another name (empty to cancel): ', name .. ' copy')
+  endwhile
+  return ''
+enddef
+
+# 只刷新一个目录并在展开时重新扫描
+def InvalidateAndRescan(dir_path: string)
+  Log('InvalidateAndRescan dir="' .. dir_path .. '"')
+  CancelPending(dir_path)
+  if has_key(s_cache, dir_path)
+    call remove(s_cache, dir_path)
+  endif
+  if has_key(s_loading, dir_path)
+    call remove(s_loading, dir_path)
+  endif
+  if GetNodeState(dir_path).expanded
+    ScanDirAsync(dir_path)
+  endif
+enddef
+
+# 操作目的目录：目录取自身；文件取父目录
+def TargetDirForNode(node: dict<any>): string
+  if empty(node)
+    return ''
+  endif
+  return node.is_dir ? node.path : fnamemodify(node.path, ':h')
 enddef
 
 def BufValid(): bool
@@ -454,11 +665,21 @@ def EnsureWindowAndBuffer()
   call win_execute(s_winid, 'nnoremap <silent> <buffer> H :call treexplorer#OnToggleHidden()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> q :call treexplorer#OnClose()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> s :call treexplorer#OnRootHere()<CR>')
-  call win_execute(s_winid, 'nnoremap <silent> <buffer> U :call treexplorer#OnRootUp()<CR>')
+  call win_execute(s_winid, 'nnoremap <nowait> <silent> <buffer> U :call treexplorer#OnRootUp()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> C :call treexplorer#OnRootPrompt()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> . :call treexplorer#OnRootCwd()<CR>')
-  call win_execute(s_winid, 'nnoremap <silent> <buffer> d :call treexplorer#OnRootCurrent()<CR>')
+  call win_execute(s_winid, 'nnoremap <nowait> <silent> <buffer> d :call treexplorer#OnRootCurrent()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> L :call treexplorer#OnToggleRootLock()<CR>')
+  # File ops
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> c :call treexplorer#OnCopy()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> x :call treexplorer#OnCut()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> p :call treexplorer#OnPaste()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> a :call treexplorer#OnNewFile()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> A :call treexplorer#OnNewFolder()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> r :call treexplorer#OnRename()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> D :call treexplorer#OnDelete()<CR>')
+  # Help
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> ? :call treexplorer#ShowHelp()<CR>')
   Log('EnsureWindowAndBuffer: mappings set')
 
   call win_execute(s_winid, 'augroup SimpleTreeBuf')
@@ -760,10 +981,7 @@ def FocusFirstChild(dir_path: string): void
   endif
 enddef
 
-# 折叠最近的已展开祖先：
-# - 若遇到根 s_root，则不折叠根、且不移动光标
-# - 有可折叠祖先则折叠并定位到该祖先
-# - 若没有祖先可折叠，且父目录不是根，则定位到父目录；父目录为根则不移动
+# 折叠最近的已展开祖先
 def CollapseNearestExpandedAncestor(path: string): void
   Log('CollapseNearestExpandedAncestor enter path="' .. path .. '"')
   var p = fnamemodify(path, ':h')
@@ -870,8 +1088,7 @@ export def OnExpand()
   endif
 enddef
 
-# h：目录已展开时折叠当前；目录已折叠或文件时折叠最近的已展开父目录；
-#    父为根或没有祖先时保持光标不动
+# h：目录已展开时折叠当前；目录已折叠或文件时折叠最近的已展开父目录
 export def OnCollapse()
   Log('OnCollapse', 'Title')
   var node = CursorNode()
@@ -884,7 +1101,6 @@ export def OnCollapse()
       Log('OnCollapse: collapse current dir path="' .. node.path .. '"')
       ToggleDir(node.path)
     else
-      # 顶层（父为根）且已折叠时，保持不动
       var parent = fnamemodify(node.path, ':h')
       if parent ==# s_root
         Log('OnCollapse: top-level collapsed dir, keep cursor unmoved')
@@ -920,6 +1136,425 @@ export def OnBufWipe()
   Log('OnBufWipe', 'Title')
   s_winid = 0
   s_bufnr = -1
+enddef
+
+# ===== 文件操作：复制/剪切/粘贴/新建/重命名/删除 =====
+export def OnCopy()
+  Log('OnCopy', 'Title')
+  var node = CursorNode()
+  if empty(node) || get(node, 'loading', v:false)
+    echo '[SimpleTree] nothing to copy'
+    return
+  endif
+  s_clipboard = {mode: 'copy', items: [node.path]}
+  echo '[SimpleTree] copy: ' .. node.path
+  Log('OnCopy set clipboard copy ' .. string(s_clipboard))
+enddef
+
+export def OnCut()
+  Log('OnCut', 'Title')
+  var node = CursorNode()
+  if empty(node) || get(node, 'loading', v:false)
+    echo '[SimpleTree] nothing to cut'
+    return
+  endif
+  s_clipboard = {mode: 'cut', items: [node.path]}
+  echo '[SimpleTree] cut: ' .. node.path
+  Log('OnCut set clipboard cut ' .. string(s_clipboard))
+enddef
+
+export def OnPaste()
+  Log('OnPaste', 'Title')
+  if type(s_clipboard) != v:t_dict || get(s_clipboard, 'mode', '') ==# '' || len(get(s_clipboard, 'items', [])) == 0
+    echo '[SimpleTree] clipboard empty'
+    Log('OnPaste: clipboard empty', 'WarningMsg')
+    return
+  endif
+  var node = CursorNode()
+  if empty(node)
+    echo '[SimpleTree] no target selected'
+    return
+  endif
+  var destDir = TargetDirForNode(node)
+  if destDir ==# '' || !isdirectory(destDir)
+    echo '[SimpleTree] invalid target directory'
+    return
+  endif
+
+  var mode = s_clipboard.mode
+  var srcs: list<string> = s_clipboard.items
+  var focused = ''
+
+  for src in srcs
+    if !PathExists(src)
+      echo '[SimpleTree] skip missing: ' .. src
+      continue
+    endif
+    var base = fnamemodify(src, ':t')
+    var dst = ResolveConflict(destDir, base)
+    if dst ==# ''
+      echo '[SimpleTree] skip: ' .. base
+      continue
+    endif
+    if PathExists(dst) && (mode ==# 'copy' || mode ==# 'cut')
+      call DeletePathRecursive(dst)
+    endif
+    var ok = false
+    if mode ==# 'copy'
+      ok = CopyPath(src, dst)
+    else
+      ok = MovePath(src, dst)
+    endif
+    if ok
+      echo '[SimpleTree] ' .. (mode ==# 'copy' ? 'copied' : 'moved') .. ': ' .. base .. ' -> ' .. destDir
+      focused = dst
+      InvalidateAndRescan(destDir)
+      if mode ==# 'cut'
+        var sp = fnamemodify(src, ':h')
+        if sp !=# destDir
+          InvalidateAndRescan(sp)
+        endif
+      endif
+    else
+      echohl ErrorMsg
+      echom '[SimpleTree] failed to ' .. (mode ==# 'copy' ? 'copy' : 'move') .. ': ' .. src
+      echohl None
+    endif
+  endfor
+
+  Render()
+  if focused !=# ''
+    Refresh()
+    RevealPath(focused)
+  endif
+
+  if mode ==# 'cut'
+    s_clipboard = {mode: '', items: []}
+  endif
+enddef
+
+export def OnNewFile()
+  Log('OnNewFile', 'Title')
+  var node = CursorNode()
+  if empty(node)
+    echo '[SimpleTree] no target selected'
+    return
+  endif
+  var destDir = TargetDirForNode(node)
+  if destDir ==# '' || !isdirectory(destDir)
+    echo '[SimpleTree] invalid target directory'
+    return
+  endif
+  var name = input('New file name: ')
+  if name ==# ''
+    Log('OnNewFile: empty name', 'WarningMsg')
+    return
+  endif
+  if name =~ '[\/]'
+    echohl ErrorMsg | echom '[SimpleTree] name cannot contain path separator' | echohl None
+    return
+  endif
+  var dst = AskUniqueName(destDir, name)
+  if dst ==# ''
+    Log('OnNewFile: canceled or no unique name')
+    return
+  endif
+  try
+    if writefile([], dst, 'b') != 0
+      echohl ErrorMsg | echom '[SimpleTree] create file failed: ' .. dst | echohl None
+      return
+    endif
+  catch
+    echohl ErrorMsg | echom '[SimpleTree] create file exception: ' .. v:exception | echohl None
+    return
+  endtry
+  echo '[SimpleTree] created file: ' .. dst
+  Refresh()
+  RevealPath(dst)
+enddef
+
+export def OnNewFolder()
+  Log('OnNewFolder', 'Title')
+  var node = CursorNode()
+  if empty(node)
+    echo '[SimpleTree] no target selected'
+    return
+  endif
+  var destDir = TargetDirForNode(node)
+  if destDir ==# '' || !isdirectory(destDir)
+    echo '[SimpleTree] invalid target directory'
+    return
+  endif
+  var name = input('New folder name: ')
+  if name ==# ''
+    Log('OnNewFolder: empty name', 'WarningMsg')
+    return
+  endif
+  if name =~ '[\/]'
+    echohl ErrorMsg | echom '[SimpleTree] name cannot contain path separator' | echohl None
+    return
+  endif
+  var dst = AskUniqueName(destDir, name)
+  if dst ==# ''
+    Log('OnNewFolder: canceled or no unique name')
+    return
+  endif
+  try
+    call mkdir(dst, 'p')
+  catch
+    echohl ErrorMsg | echom '[SimpleTree] create folder exception: ' .. v:exception | echohl None
+    return
+  endtry
+  echo '[SimpleTree] created folder: ' .. dst
+  Refresh()
+  RevealPath(dst)
+enddef
+
+export def OnRename()
+  Log('OnRename', 'Title')
+  var node = CursorNode()
+  if empty(node) || get(node, 'loading', v:false)
+    echo '[SimpleTree] nothing to rename'
+    return
+  endif
+  var src = node.path
+  var parent = fnamemodify(src, ':h')
+  var base = fnamemodify(src, ':t')
+  var newname = input('Rename to: ', base)
+  if newname ==# ''
+    Log('OnRename: empty new name', 'WarningMsg')
+    return
+  endif
+  if newname =~ '[\/]'
+    echohl ErrorMsg | echom '[SimpleTree] name cannot contain path separator' | echohl None
+    return
+  endif
+  var dst = PathJoin(parent, newname)
+  if dst ==# src
+    Log('OnRename: same name, skip')
+    return
+  endif
+
+  if PathExists(dst)
+    var ans = input('Target exists. Overwrite? [y]es/[n]o: ')
+    if ans !=# 'y' && ans !=# 'Y'
+      echo '[SimpleTree] rename canceled'
+      return
+    endif
+    if !DeletePathRecursive(dst)
+      echohl ErrorMsg | echom '[SimpleTree] failed to remove existing target' | echohl None
+      return
+    endif
+  endif
+
+  if MovePath(src, dst)
+    echo '[SimpleTree] renamed: ' .. base .. ' -> ' .. newname
+    Refresh()
+    RevealPath(dst)
+  else
+    echohl ErrorMsg | echom '[SimpleTree] rename failed' | echohl None
+  endif
+enddef
+
+export def OnDelete()
+  Log('OnDelete', 'Title')
+  var node = CursorNode()
+  if empty(node) || get(node, 'loading', v:false)
+    echo '[SimpleTree] nothing to delete'
+    return
+  endif
+  var p = node.path
+  if p ==# '' || !PathExists(p)
+    echo '[SimpleTree] path not exists'
+    return
+  endif
+  var ok = 0
+  var msg = 'Delete ' .. (node.is_dir ? 'directory (recursively)' : 'file') .. ' "' .. p .. '" ?'
+  if exists('*confirm')
+    ok = (confirm(msg, "&Yes\n&No", 2) == 1) ? 1 : 0
+  else
+    ok = (input(msg .. ' [y/N]: ') =~? '^y') ? 1 : 0
+  endif
+  if !ok
+    echo '[SimpleTree] delete canceled'
+    return
+  endif
+  var parent = fnamemodify(p, ':h')
+  if !DeletePathRecursive(p)
+    echohl ErrorMsg | echom '[SimpleTree] delete failed' | echohl None
+    return
+  endif
+  echo '[SimpleTree] deleted: ' .. p
+  Refresh()
+  if parent !=# ''
+    RevealPath(parent)
+  endif
+enddef
+
+# ====== 帮助面板（?）======
+def BuildHelpLines(): list<string>
+  return [
+    'SimpleTree 快捷键说明',
+    '----------------------------------------',
+    '<CR>  打开文件 / 展开或折叠目录',
+    'l     展开目录 / 打开文件',
+    'h     折叠当前目录；若已折叠或在文件上，则折叠最近的已展开祖先',
+    'R     刷新树（仅重扫缓存）',
+    'H     显示/隐藏点文件',
+    'q     关闭树窗口',
+    's     将当前节点设为根（目录；文件取父目录）',
+    'U     根上移一层',
+    'C     输入路径作为根',
+    '.     使用当前工作目录作为根',
+    'd     使用当前文件所在目录作为根',
+    'L     切换根锁定',
+    'c     复制当前节点（文件/目录）',
+    'x     剪切当前节点（文件/目录）',
+    'p     粘贴到当前选中目录（或文件的父目录）',
+    'a     在目标目录中新建文件',
+    'A     在目标目录中新建文件夹',
+    'r     重命名当前节点',
+    'D     删除当前节点（目录为递归删除）',
+    '?     显示/关闭本帮助面板',
+    '----------------------------------------',
+    '提示：粘贴/重命名时若存在同名目标：可选择覆盖或重命名；剪切成功后自动清空剪贴板。',
+  ]
+enddef
+
+def HelpWinValid(): bool
+  return s_help_winid != 0 && win_id2win(s_help_winid) > 0
+enddef
+
+def CloseHelp()
+  if HelpWinValid()
+    try
+      call win_execute(s_help_winid, 'close')
+    catch
+    endtry
+  endif
+  s_help_winid = 0
+  s_help_bufnr = -1
+enddef
+
+export def ShowHelp()
+  Log('ShowHelp', 'Title')
+  if HelpWinValid()
+    CloseHelp()
+    return
+  endif
+  var lines = BuildHelpLines()
+  var height = min([max([10, len(lines) + 2]), 30])
+  execute 'botright split'
+  execute printf('resize %d', height)
+  s_help_winid = win_getid()
+  call win_execute(s_help_winid, 'silent enew')
+  s_help_bufnr = winbufnr(s_help_winid)
+  call win_execute(s_help_winid, 'file SimpleTree Help')
+  var opts = [
+    'setlocal buftype=nofile',
+    'setlocal bufhidden=wipe',
+    'setlocal nobuflisted',
+    'setlocal noswapfile',
+    'setlocal nowrap',
+    'setlocal nonumber',
+    'setlocal norelativenumber',
+    'setlocal signcolumn=no',
+    'setlocal foldcolumn=0',
+    'setlocal winfixheight',
+    'setlocal cursorline',
+    'setlocal filetype=simpletreehelp'
+  ]
+  for cmd in opts
+    call win_execute(s_help_winid, cmd)
+  endfor
+
+  call setbufline(s_help_bufnr, 1, lines)
+  var bi = getbufinfo(s_help_bufnr)
+  if len(bi) > 0
+    var lc = get(bi[0], 'linecount', 0)
+    if lc > len(lines)
+      call deletebufline(s_help_bufnr, len(lines) + 1, lc)
+    endif
+  endif
+  call win_execute(s_help_winid, 'setlocal nomodifiable')
+  call win_execute(s_help_winid, 'nnoremap <silent> <buffer> q :close<CR>')
+  if WinValid()
+    call win_gotoid(s_winid)
+  endif
+enddef
+
+# ====== Reveal：展开并定位到目标路径 ======
+def FocusIfPresent(path: string): bool
+  for i in range(len(s_line_index))
+    if get(s_line_index[i], 'path', '') ==# path
+      FocusPath(path)
+      return true
+    endif
+  endfor
+  return false
+enddef
+
+def RevealTimerCb(_id: number)
+  if s_reveal_target ==# ''
+    return
+  endif
+  if FocusIfPresent(s_reveal_target)
+    s_reveal_target = ''
+  endif
+enddef
+
+def RevealPath(path: string)
+  Log('RevealPath enter path="' .. path .. '"', 'Title')
+  if path ==# '' || s_root ==# ''
+    return
+  endif
+  var ap = AbsPath(path)
+  s_reveal_target = ap
+
+  var cur_dir = filereadable(ap) ? fnamemodify(ap, ':h') : ap
+  var r = s_root
+  var guard = 0
+  var chain: list<string> = []
+  while cur_dir !=# '' && cur_dir !=# r && guard < 500
+    chain->insert(cur_dir, 0)
+    var nextp = fnamemodify(cur_dir, ':h')
+    if nextp ==# cur_dir
+      break
+    endif
+    cur_dir = nextp
+    guard += 1
+  endwhile
+
+  for d in chain
+    var d_state = GetNodeState(d)
+    d_state.expanded = true
+    if !has_key(s_cache, d)
+      ScanDirAsync(d)
+    endif
+  endfor
+  var r_state = GetNodeState(r)
+  r_state.expanded = true
+  var parent = fnamemodify(ap, ':h')
+  if parent !=# '' && !has_key(s_cache, parent)
+    ScanDirAsync(parent)
+  endif
+  Render()
+
+  if exists('*timer_start')
+    try
+      if s_reveal_timer != 0
+        call timer_stop(s_reveal_timer)
+      endif
+    catch
+    endtry
+    try
+      s_reveal_timer = timer_start(100, (id) => RevealTimerCb(id), {repeat: 30})
+    catch
+      FocusPath(ap)
+    endtry
+  else
+    FocusPath(ap)
+  endif
 enddef
 
 # =============================================================
@@ -975,10 +1610,14 @@ export def Toggle(root: string = '')
   st.expanded = true
   Log('Toggle: root expanded set true')
 
-  Log('Toggle: ScanDirAsync start')
   ScanDirAsync(s_root)
-  Log('Toggle: Render start')
   Render()
+
+  # 打开后展开并定位到当前文件
+  var curf = expand('%:p')
+  if curf !=# '' && filereadable(curf)
+    RevealPath(fnamemodify(curf, ':p'))
+  endif
 enddef
 
 export def Refresh()
@@ -1038,3 +1677,8 @@ export def DebugStatus()
   echo '  cache_keys: ' .. string(keys(s_cache))
   Log('DebugStatus logged', 'MoreMsg')
 enddef
+
+# =============================================================
+# 用户命令
+# =============================================================
+command! -nargs=? SimpleTree call treexplorer#Toggle(<q-args>)
