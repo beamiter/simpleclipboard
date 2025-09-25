@@ -27,9 +27,9 @@ var s_line_index: list<dict<any>> = []    # 渲染行对应的节点
 # =============================================================
 # 后端状态（合并）
 # =============================================================
-var s_bjob: any = v:null     # 后端 job 句柄（any，避免类型冲突）
+var s_bjob: any = v:null
 var s_brunning: bool = false
-var s_bbuf: string = ''      # 处理分包的缓冲（nl 模式下不再使用）
+var s_bbuf: string = ''
 var s_bnext_id = 0
 var s_bcbs: dict<any> = {}   # id -> {OnChunk, OnDone, OnError}
 
@@ -146,10 +146,7 @@ def BEnsureBackend(cmd: string = ''): bool
     Log('BEnsureBackend already running', 'MoreMsg')
     return true
   endif
-  var cmdExe = cmd
-  if cmdExe ==# ''
-    cmdExe = BFindBackend()
-  endif
+  var cmdExe = cmd ==# '' ? BFindBackend() : cmd
   Log('BEnsureBackend resolved cmdExe="' .. cmdExe .. '"')
   if cmdExe ==# '' || !executable(cmdExe)
     echohl ErrorMsg
@@ -164,8 +161,7 @@ def BEnsureBackend(cmd: string = ''): bool
   try
     s_bjob = job_start([cmdExe], {
       in_io: 'pipe',
-      # 关键修复：后端按行输出 JSON -> 使用 nl 模式，让 Vim 帮忙按行切割
-      out_mode: 'nl',
+      out_mode: 'nl',  # 关键修复：后端按行输出，使用 nl 模式
       out_cb: (ch, line) => {
         if line ==# ''
           Log('out_cb: skip empty line')
@@ -281,7 +277,6 @@ def BSend(req: dict<any>): void
   try
     var json = json_encode(req) .. "\n"
     Log('BSend: ' .. json)
-    # 直接向 job 发送原始数据
     ch_sendraw(s_bjob, json)
   catch
     Log('BSend exception: ' .. v:exception, 'ErrorMsg')
@@ -352,7 +347,7 @@ def ScanDirAsync(path: string)
   Log('ScanDirAsync set loading=true path="' .. path .. '"')
   var acc: list<dict<any>> = []
   var p = path
-  var req_id: number = 0   # 先声明，供 lambda 捕获
+  var req_id: number = 0
 
   req_id = BList(
     p,
@@ -412,18 +407,23 @@ def EnsureWindowAndBuffer()
     return
   endif
 
-  # 关键修复：先分屏，再单独 resize，避免 30vsplit 触发 E1050
-  Log('EnsureWindowAndBuffer: create vsplit')
+  # 修复：创建独立的树窗口与独立缓冲，不影响右侧现有缓冲
+  Log('EnsureWindowAndBuffer: create vsplit (tree on the left)')
   execute 'topleft vertical vsplit'
   s_winid = win_getid()
-  s_bufnr = bufnr('%')
 
+  # 在树窗口中创建一个全新的缓冲
+  call win_execute(s_winid, 'silent enew')
+  s_bufnr = winbufnr(s_winid)
+
+  # 设置树缓冲的名字
+  call win_execute(s_winid, 'file SimpleTree')
+
+  # 调整宽度
   call win_execute(s_winid, 'vertical resize ' .. g:simpletree_width)
   Log('EnsureWindowAndBuffer: created winid=' .. s_winid .. ' bufnr=' .. s_bufnr)
 
-  execute 'file SimpleTree'
-
-  # setlocal options
+  # setlocal options（针对树缓冲，不影响右侧原缓冲）
   var opts = [
     'setlocal buftype=nofile',
     'setlocal bufhidden=wipe',
