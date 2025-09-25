@@ -6,7 +6,8 @@ vim9script
 g:simpletree_width = get(g:, 'simpletree_width', 30)
 g:simpletree_hide_dotfiles = get(g:, 'simpletree_hide_dotfiles', 1)
 g:simpletree_page = get(g:, 'simpletree_page', 200)
-g:simpletree_keep_focus = get(g:, 'simpletree_keep_focus', 1)
+# 打开文件后保持焦点在文件缓冲区
+g:simpletree_keep_focus = get(g:, 'simpletree_keep_focus', 0)
 g:simpletree_debug = get(g:, 'simpletree_debug', 0)
 g:simpletree_daemon_path = get(g:, 'simpletree_daemon_path', '')
 g:simpletree_root_locked = get(g:, 'simpletree_root_locked', 1)
@@ -168,7 +169,7 @@ def BEnsureBackend(cmd: string = ''): bool
   try
     s_bjob = job_start([cmdExe], {
       in_io: 'pipe',
-      out_mode: 'nl',  # 后端按行输出，使用 nl 模式
+      out_mode: 'nl',
       out_cb: (ch, line) => {
         if line ==# ''
           Log('out_cb: skip empty line')
@@ -447,14 +448,13 @@ def EnsureWindowAndBuffer()
     Log('EnsureWindowAndBuffer: ' .. cmd)
   endfor
 
-  # mappings（新增根路径操作）
+  # mappings（根路径操作 + h/l）
   call win_execute(s_winid, 'nnoremap <silent> <buffer> <CR> :call treexplorer#OnEnter()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> l :call treexplorer#OnExpand()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> h :call treexplorer#OnCollapse()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> R :call treexplorer#OnRefresh()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> H :call treexplorer#OnToggleHidden()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> q :call treexplorer#OnClose()<CR>')
-  # 新增：根路径切换与锁定
   call win_execute(s_winid, 'nnoremap <silent> <buffer> s :call treexplorer#OnRootHere()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> U :call treexplorer#OnRootUp()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> C :call treexplorer#OnRootPrompt()<CR>')
@@ -521,6 +521,7 @@ def Render()
   var lines: list<string> = []
   var idx: list<dict<any>> = []
 
+  # 根保持展开（不折叠根）
   var stroot = GetNodeState(s_root)
   stroot.expanded = true
   Log('Render: root expanded=true s_root="' .. s_root .. '"')
@@ -613,7 +614,7 @@ def SetRoot(new_root: string, lock: bool = false)
   st.expanded = true
   Log('SetRoot: root expanded set true')
 
-  # 清理旧的加载状态，重新扫描新根
+  # 清理旧状态
   for [p, id] in items(s_pending)
     try
       BCancel(id)
@@ -696,6 +697,110 @@ def CursorNode(): dict<any>
   return node
 enddef
 
+# 根据路径定位到树中的行；找不到则退到顶部
+def FocusPath(path: string): void
+  Log('FocusPath enter path="' .. path .. '"')
+  if !WinValid()
+    Log('FocusPath: window invalid', 'WarningMsg')
+    return
+  endif
+  if path ==# ''
+    Log('FocusPath: empty path', 'WarningMsg')
+    return
+  endif
+  var target: number = 0
+  for i in range(len(s_line_index))
+    if get(s_line_index[i], 'path', '') ==# path
+      target = i + 1
+      break
+    endif
+  endfor
+  try
+    if target > 0
+      call win_execute(s_winid, 'normal! ' .. target .. 'G')
+      Log('FocusPath: moved cursor to line ' .. target)
+    else
+      call win_execute(s_winid, 'normal! gg')
+      Log('FocusPath: path not found, moved to top')
+    endif
+  catch
+    Log('FocusPath: win_execute exception ' .. v:exception, 'ErrorMsg')
+  endtry
+enddef
+
+# 将游标定位到某目录的第一个子项（若已展开或出现 Loading）
+def FocusFirstChild(dir_path: string): void
+  Log('FocusFirstChild enter dir_path="' .. dir_path .. '"')
+  if !WinValid()
+    Log('FocusFirstChild: window invalid', 'WarningMsg')
+    return
+  endif
+  var idx_dir = -1
+  var dir_depth = -1
+  for i in range(len(s_line_index))
+    if get(s_line_index[i], 'path', '') ==# dir_path
+      idx_dir = i
+      dir_depth = get(s_line_index[i], 'depth', -1)
+      break
+    endif
+  endfor
+  if idx_dir < 0
+    Log('FocusFirstChild: dir not found in index', 'WarningMsg')
+    return
+  endif
+  var next_idx = idx_dir + 1
+  if next_idx < len(s_line_index)
+    var next = s_line_index[next_idx]
+    if get(next, 'depth', -1) == dir_depth + 1
+      try
+        call win_execute(s_winid, 'normal! ' .. (next_idx + 1) .. 'G')
+        Log('FocusFirstChild: moved to first child line ' .. (next_idx + 1))
+      catch
+        Log('FocusFirstChild: win_execute exception ' .. v:exception, 'ErrorMsg')
+      endtry
+    else
+      Log('FocusFirstChild: next line is not a child (depth mismatch)')
+    endif
+  else
+    Log('FocusFirstChild: no next line')
+  endif
+enddef
+
+# 折叠最近的已展开祖先：
+# - 若遇到根 s_root，则不折叠根、且不移动光标（保持当前位置）
+# - 有可折叠祖先则折叠并定位到该祖先
+# - 若没有祖先可折叠，且父目录不是根，则定位到父目录；父目录为根则不移动
+def CollapseNearestExpandedAncestor(path: string): void
+  Log('CollapseNearestExpandedAncestor enter path="' .. path .. '"')
+  var p = fnamemodify(path, ':h')
+  while p !=# ''
+    if p ==# s_root
+      Log('CollapseNearestExpandedAncestor: parent is root, keep cursor unmoved')
+      return
+    endif
+    if GetNodeState(p).expanded
+      Log('CollapseNearestExpandedAncestor: collapse target "' .. p .. '"')
+      ToggleDir(p)
+      FocusPath(p)
+      return
+    endif
+    var nextp = fnamemodify(p, ':h')
+    if nextp ==# p
+      Log('CollapseNearestExpandedAncestor: reached path top, break to avoid loop')
+      break
+    endif
+    p = nextp
+  endwhile
+  # 没有可折叠的祖先
+  var parent = fnamemodify(path, ':h')
+  if parent !=# '' && parent !=# s_root
+    FocusPath(parent)
+    Log('CollapseNearestExpandedAncestor: focus parent "' .. parent .. '"')
+  else
+    Log('CollapseNearestExpandedAncestor: parent is root or empty, keep cursor unmoved')
+  endif
+enddef
+
 def ToggleDir(path: string)
   Log('ToggleDir enter path="' .. path .. '"')
   var st = GetNodeState(path)
@@ -750,6 +855,7 @@ export def OnEnter()
   endif
 enddef
 
+# l：目录上展开并定位第一个子项；文件上打开文件
 export def OnExpand()
   Log('OnExpand', 'Title')
   var node = CursorNode()
@@ -757,14 +863,22 @@ export def OnExpand()
     Log('OnExpand: empty or loading node, return', 'WarningMsg')
     return
   endif
-  if node.is_dir && !GetNodeState(node.path).expanded
-    Log('OnExpand: will expand path="' .. node.path .. '"')
-    ToggleDir(node.path)
+  if node.is_dir
+    if !GetNodeState(node.path).expanded
+      Log('OnExpand: expand dir path="' .. node.path .. '"')
+      ToggleDir(node.path)
+    else
+      Log('OnExpand: dir already expanded path="' .. node.path .. '"')
+    endif
+    FocusFirstChild(node.path)
   else
-    Log('OnExpand: already expanded or not dir')
+    Log('OnExpand: node is file => open path="' .. node.path .. '"')
+    OpenFile(node.path)
   endif
 enddef
 
+# h：目录已展开时折叠当前；目录已折叠或文件时折叠最近的已展开父目录；
+#    父为根或没有祖先时保持光标不动
 export def OnCollapse()
   Log('OnCollapse', 'Title')
   var node = CursorNode()
@@ -772,11 +886,17 @@ export def OnCollapse()
     Log('OnCollapse: empty or loading node, return', 'WarningMsg')
     return
   endif
-  if node.is_dir && GetNodeState(node.path).expanded
-    Log('OnCollapse: will collapse path="' .. node.path .. '"')
-    ToggleDir(node.path)
+  if node.is_dir
+    if GetNodeState(node.path).expanded
+      Log('OnCollapse: collapse current dir path="' .. node.path .. '"')
+      ToggleDir(node.path)
+    else
+      Log('OnCollapse: dir is collapsed, collapse parent chain from "' .. node.path .. '"')
+      CollapseNearestExpandedAncestor(node.path)
+    endif
   else
-    Log('OnCollapse: already collapsed or not dir')
+    Log('OnCollapse: node is file => collapse parent chain')
+    CollapseNearestExpandedAncestor(node.path)
   endif
 enddef
 
@@ -816,7 +936,6 @@ export def Toggle(root: string = '')
 
   var rootArg = root
   if rootArg ==# ''
-    # 锁定：优先使用已锁定的根路径
     if s_root_locked && s_root !=# '' && IsDir(s_root)
       rootArg = s_root
       Log('Toggle: use locked root "' .. rootArg .. '"')
