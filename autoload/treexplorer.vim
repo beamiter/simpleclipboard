@@ -9,6 +9,7 @@ g:simpletree_page = get(g:, 'simpletree_page', 200)
 g:simpletree_keep_focus = get(g:, 'simpletree_keep_focus', 1)
 g:simpletree_debug = get(g:, 'simpletree_debug', 0)
 g:simpletree_daemon_path = get(g:, 'simpletree_daemon_path', '')
+g:simpletree_root_locked = get(g:, 'simpletree_root_locked', 1)
 
 # =============================================================
 # 前端状态
@@ -17,6 +18,7 @@ var s_bufnr: number = -1
 var s_winid: number = 0
 var s_root: string = ''
 var s_hide_dotfiles: bool = !!g:simpletree_hide_dotfiles
+var s_root_locked: bool = !!g:simpletree_root_locked
 
 var s_state: dict<any> = {}               # path -> {expanded: bool}
 var s_cache: dict<list<dict<any>>> = {}   # path -> entries[]
@@ -51,6 +53,11 @@ def AbsPath(p: string): string
   ap = simplify(ap)
   Log('AbsPath result: ' .. ap, 'MoreMsg')
   return ap
+enddef
+
+def ParentDir(p: string): string
+  var up = fnamemodify(p, ':h')
+  return AbsPath(up)
 enddef
 
 def IsDir(p: string): bool
@@ -161,7 +168,7 @@ def BEnsureBackend(cmd: string = ''): bool
   try
     s_bjob = job_start([cmdExe], {
       in_io: 'pipe',
-      out_mode: 'nl',  # 关键修复：后端按行输出，使用 nl 模式
+      out_mode: 'nl',  # 后端按行输出，使用 nl 模式
       out_cb: (ch, line) => {
         if line ==# ''
           Log('out_cb: skip empty line')
@@ -407,23 +414,19 @@ def EnsureWindowAndBuffer()
     return
   endif
 
-  # 修复：创建独立的树窗口与独立缓冲，不影响右侧现有缓冲
   Log('EnsureWindowAndBuffer: create vsplit (tree on the left)')
   execute 'topleft vertical vsplit'
   s_winid = win_getid()
 
-  # 在树窗口中创建一个全新的缓冲
+  # 创建独立缓冲，不影响右侧原缓冲
   call win_execute(s_winid, 'silent enew')
   s_bufnr = winbufnr(s_winid)
 
-  # 设置树缓冲的名字
   call win_execute(s_winid, 'file SimpleTree')
 
-  # 调整宽度
   call win_execute(s_winid, 'vertical resize ' .. g:simpletree_width)
   Log('EnsureWindowAndBuffer: created winid=' .. s_winid .. ' bufnr=' .. s_bufnr)
 
-  # setlocal options（针对树缓冲，不影响右侧原缓冲）
   var opts = [
     'setlocal buftype=nofile',
     'setlocal bufhidden=wipe',
@@ -444,16 +447,22 @@ def EnsureWindowAndBuffer()
     Log('EnsureWindowAndBuffer: ' .. cmd)
   endfor
 
-  # mappings
+  # mappings（新增根路径操作）
   call win_execute(s_winid, 'nnoremap <silent> <buffer> <CR> :call treexplorer#OnEnter()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> l :call treexplorer#OnExpand()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> h :call treexplorer#OnCollapse()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> R :call treexplorer#OnRefresh()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> H :call treexplorer#OnToggleHidden()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> q :call treexplorer#OnClose()<CR>')
+  # 新增：根路径切换与锁定
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> s :call treexplorer#OnRootHere()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> U :call treexplorer#OnRootUp()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> C :call treexplorer#OnRootPrompt()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> . :call treexplorer#OnRootCwd()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> d :call treexplorer#OnRootCurrent()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> L :call treexplorer#OnToggleRootLock()<CR>')
   Log('EnsureWindowAndBuffer: mappings set')
 
-  # autocmds
   call win_execute(s_winid, 'augroup SimpleTreeBuf')
   call win_execute(s_winid, 'autocmd!')
   call win_execute(s_winid, 'autocmd BufWipeout <buffer> ++once call treexplorer#OnBufWipe()')
@@ -570,6 +579,107 @@ def Render()
 
   s_line_index = idx
   Log('Render: index_len=' .. len(idx) .. ' loading_keys=' .. string(keys(s_loading)) .. ' cache_keys=' .. string(keys(s_cache)))
+enddef
+
+# =============================================================
+# 根路径切换与锁定
+# =============================================================
+def SetRoot(new_root: string, lock: bool = false)
+  Log('SetRoot enter new_root="' .. new_root .. '" lock=' .. (lock ? 'true' : 'false'), 'Title')
+  var nr = AbsPath(new_root)
+  if !IsDir(nr)
+    echohl ErrorMsg
+    echom '[SimpleTree] invalid root: ' .. nr
+    echohl None
+    Log('SetRoot: invalid root "' .. nr .. '"', 'ErrorMsg')
+    return
+  endif
+  s_root = nr
+  if lock
+    s_root_locked = true
+    Log('SetRoot: root locked')
+  endif
+
+  EnsureWindowAndBuffer()
+  if !BEnsureBackend()
+    echohl ErrorMsg
+    echom '[SimpleTree] backend not available'
+    echohl None
+    Log('SetRoot: backend not available', 'ErrorMsg')
+    return
+  endif
+
+  var st = GetNodeState(s_root)
+  st.expanded = true
+  Log('SetRoot: root expanded set true')
+
+  # 清理旧的加载状态，重新扫描新根
+  for [p, id] in items(s_pending)
+    try
+      BCancel(id)
+    catch
+      Log('SetRoot: BCancel exception id=' .. id .. ' ex=' .. v:exception, 'ErrorMsg')
+    endtry
+  endfor
+  s_pending = {}
+  s_loading = {}
+  s_cache = {}
+
+  ScanDirAsync(s_root)
+  Render()
+enddef
+
+export def OnToggleRootLock()
+  s_root_locked = !s_root_locked
+  echo '[SimpleTree] root lock: ' .. (s_root_locked ? 'ON' : 'OFF')
+  Log('OnToggleRootLock => ' .. (s_root_locked ? 'ON' : 'OFF'), 'MoreMsg')
+enddef
+
+export def OnRootHere()
+  Log('OnRootHere', 'Title')
+  var node = CursorNode()
+  if empty(node) || get(node, 'loading', v:false)
+    Log('OnRootHere: empty or loading node, return', 'WarningMsg')
+    return
+  endif
+  var p = node.is_dir ? node.path : fnamemodify(node.path, ':h')
+  SetRoot(p)
+enddef
+
+export def OnRootUp()
+  Log('OnRootUp', 'Title')
+  if s_root ==# ''
+    Log('OnRootUp: s_root empty', 'WarningMsg')
+    return
+  endif
+  var up = ParentDir(s_root)
+  if up ==# s_root
+    Log('OnRootUp: already at top?', 'WarningMsg')
+  endif
+  SetRoot(up)
+enddef
+
+export def OnRootPrompt()
+  Log('OnRootPrompt', 'Title')
+  var start = s_root !=# '' ? s_root : getcwd()
+  var inp = input('SimpleTree new root: ', start, 'dir')
+  if inp ==# ''
+    Log('OnRootPrompt: empty input', 'WarningMsg')
+    return
+  endif
+  SetRoot(inp)
+enddef
+
+export def OnRootCwd()
+  Log('OnRootCwd', 'Title')
+  SetRoot(getcwd())
+enddef
+
+export def OnRootCurrent()
+  Log('OnRootCurrent', 'Title')
+  var cur = expand('%:p')
+  var p = (cur ==# '' || !filereadable(cur)) ? getcwd() : fnamemodify(cur, ':p:h')
+  SetRoot(p)
 enddef
 
 # =============================================================
@@ -706,14 +816,20 @@ export def Toggle(root: string = '')
 
   var rootArg = root
   if rootArg ==# ''
-    var cur = expand('%:p')
-    Log('Toggle: resolved current buffer path="' .. cur .. '"')
-    if cur ==# '' || !filereadable(cur)
-      rootArg = getcwd()
-      Log('Toggle: no file => use getcwd="' .. rootArg .. '"')
+    # 锁定：优先使用已锁定的根路径
+    if s_root_locked && s_root !=# '' && IsDir(s_root)
+      rootArg = s_root
+      Log('Toggle: use locked root "' .. rootArg .. '"')
     else
-      rootArg = fnamemodify(cur, ':p:h')
-      Log('Toggle: use current file dir="' .. rootArg .. '"')
+      var cur = expand('%:p')
+      Log('Toggle: resolved current buffer path="' .. cur .. '"')
+      if cur ==# '' || !filereadable(cur)
+        rootArg = getcwd()
+        Log('Toggle: no file => use getcwd="' .. rootArg .. '"')
+      else
+        rootArg = fnamemodify(cur, ':p:h')
+        Log('Toggle: use current file dir="' .. rootArg .. '"')
+      endif
     endif
   endif
   Log('Toggle rootArg: ' .. rootArg)
@@ -797,6 +913,7 @@ export def DebugStatus()
   echo '  win_valid: ' .. (WinValid() ? 'yes' : 'no')
   echo '  buf_valid: ' .. (BufValid() ? 'yes' : 'no')
   echo '  root: ' .. s_root
+  echo '  root_locked: ' .. (s_root_locked ? 'yes' : 'no')
   echo '  backend_running: ' .. (s_brunning ? 'yes' : 'no')
   echo '  pending: ' .. string(items(s_pending))
   echo '  loading: ' .. string(keys(s_loading))
