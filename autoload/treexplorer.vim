@@ -3,7 +3,7 @@ vim9script
 # =============================================================
 # 配置
 # =============================================================
-g:simpletree_width = get(g:, 'simpletree_width', 40)
+g:simpletree_width = get(g:, 'simpletree_width', 30)
 g:simpletree_hide_dotfiles = get(g:, 'simpletree_hide_dotfiles', 1)
 g:simpletree_page = get(g:, 'simpletree_page', 200)
 # 打开文件后保持焦点在文件缓冲区
@@ -23,6 +23,8 @@ g:simpletree_show_file_icons = get(g:, 'simpletree_show_file_icons', 1)
 g:simpletree_folder_suffix = get(g:, 'simpletree_folder_suffix', 1)
 # 图标覆盖（如 {'dir': '', 'dir_open': '', 'file': '', 'loading': ''}）
 g:simpletree_icons = get(g:, 'simpletree_icons', {})
+# 一键折叠（Collapse All）的快捷键（默认 Z，缓冲区内生效）
+g:simpletree_collapse_all_key = get(g:, 'simpletree_collapse_all_key', 'Z')
 
 def NFEnabled(): bool
   return !!get(g:, 'simpletree_use_nerdfont', 0)
@@ -195,7 +197,6 @@ def CopyPath(src: string, dst: string): bool
       try
         call mkdir(dst, 'p')
       catch
-        # Log('CopyPath: mkdir exception ' .. v:exception, 'ErrorMsg')
         return false
       endtry
       try
@@ -206,7 +207,6 @@ def CopyPath(src: string, dst: string): bool
           endif
         endif
       catch
-        # Log('CopyPath: setfperm dir ex ' .. v:exception, 'WarningMsg')
       endtry
     endif
     try
@@ -219,7 +219,6 @@ def CopyPath(src: string, dst: string): bool
         endif
       endfor
     catch
-      # Log('CopyPath: readdir exception ' .. v:exception, 'ErrorMsg')
       return false
     endtry
     return true
@@ -227,12 +226,10 @@ def CopyPath(src: string, dst: string): bool
     try
       call mkdir(fnamemodify(dst, ':h'), 'p')
     catch
-      # Log('CopyPath: mkdir parent exception ' .. v:exception, 'ErrorMsg')
       return false
     endtry
     try
       if writefile(readfile(src, 'b'), dst, 'b') != 0
-        # Log('CopyPath: writefile failed dst=' .. dst, 'ErrorMsg')
         return false
       endif
       if exists('*getfperm') && exists('*setfperm')
@@ -243,7 +240,6 @@ def CopyPath(src: string, dst: string): bool
       endif
       return true
     catch
-      # Log('CopyPath: file copy exception ' .. v:exception, 'ErrorMsg')
       return false
     endtry
   endif
@@ -251,7 +247,6 @@ enddef
 
 # 递归删除
 def DeletePathRecursive(p: string): bool
-  # Log('DeletePathRecursive "' .. p .. '"')
   if !PathExists(p)
     return true
   endif
@@ -259,7 +254,6 @@ def DeletePathRecursive(p: string): bool
     var rc = delete(p, 'rf')
     return rc == 0
   catch
-    # Log('DeletePathRecursive: delete rf ex ' .. v:exception, 'WarningMsg')
   endtry
   if isdirectory(p)
     try
@@ -272,20 +266,17 @@ def DeletePathRecursive(p: string): bool
         endif
       endfor
     catch
-      # Log('DeletePathRecursive: readdir exception ' .. v:exception, 'ErrorMsg')
       return false
     endtry
     try
       return delete(p, 'd') == 0
     catch
-      # Log('DeletePathRecursive: delete dir ex ' .. v:exception, 'ErrorMsg')
       return false
     endtry
   else
     try
       return delete(p) == 0
     catch
-      # Log('DeletePathRecursive: delete file ex ' .. v:exception, 'ErrorMsg')
       return false
     endtry
   endif
@@ -293,11 +284,9 @@ enddef
 
 # 移动（剪切）：先尝试 rename；失败则 Copy + Delete
 def MovePath(src: string, dst: string): bool
-  # Log('MovePath "' .. src .. '" -> "' .. dst .. '"')
   try
     call mkdir(fnamemodify(dst, ':h'), 'p')
   catch
-    # Log('MovePath: mkdir parent ex ' .. v:exception, 'ErrorMsg')
     return false
   endtry
   try
@@ -305,9 +294,7 @@ def MovePath(src: string, dst: string): bool
     if rc == 0
       return true
     endif
-    # Log('MovePath: rename failed rc=' .. rc .. ', fallback to copy+delete', 'WarningMsg')
   catch
-    # Log('MovePath: rename exception ' .. v:exception .. ', fallback to copy+delete', 'WarningMsg')
   endtry
   if !CopyPath(src, dst)
     return false
@@ -352,7 +339,6 @@ enddef
 
 # 只刷新一个目录并在展开时重新扫描
 def InvalidateAndRescan(dir_path: string)
-  # Log('InvalidateAndRescan dir="' .. dir_path .. '"')
   CancelPending(dir_path)
   if has_key(s_cache, dir_path)
     call remove(s_cache, dir_path)
@@ -375,26 +361,21 @@ enddef
 
 def BufValid(): bool
   var ok = s_bufnr > 0 && bufexists(s_bufnr)
-  # Log('BufValid? bufnr=' .. s_bufnr .. ' => ' .. (ok ? 'true' : 'false'))
   return ok
 enddef
 
 def WinValid(): bool
   var ok = (s_winid != 0 && win_id2win(s_winid) > 0)
-  # Log('WinValid? winid=' .. s_winid .. ' => ' .. (ok ? 'true' : 'false'))
   return ok
 enddef
 
 def OtherWindowId(): number
-  # Log('OtherWindowId enter')
   var wins = getwininfo()
   for w in wins
     if w.winid != s_winid
-      # Log('OtherWindowId found: ' .. w.winid)
       return w.winid
     endif
   endfor
-  # Log('OtherWindowId: none')
   return 0
 enddef
 
@@ -414,9 +395,6 @@ enddef
 def GetNodeState(path: string): dict<any>
   if !has_key(s_state, path)
     s_state[path] = {expanded: false}
-    # Log('GetNodeState init: path="' .. path .. '" expanded=false')
-  else
-    # Log('GetNodeState hit: path="' .. path .. '" expanded=' .. (s_state[path].expanded ? 'true' : 'false'))
   endif
   return s_state[path]
 enddef
@@ -426,130 +404,97 @@ enddef
 # =============================================================
 def BNextId(): number
   s_bnext_id += 1
-  # Log('BNextId => ' .. s_bnext_id)
   return s_bnext_id
 enddef
 
 def BFindBackend(): string
-  # Log('BFindBackend enter')
   var override = get(g:, 'simpletree_daemon_path', '')
   if type(override) == v:t_string && override !=# '' && executable(override)
-    # Log('BFindBackend override executable: ' .. override, 'MoreMsg')
     return override
   endif
-  # Log('BFindBackend searching &runtimepath', 'MoreMsg')
   for dir in split(&runtimepath, ',')
     var p = dir .. '/lib/simpletree-daemon'
     if executable(p)
-      # Log('BFindBackend found: ' .. p, 'MoreMsg')
       return p
     endif
   endfor
-  # Log('BFindBackend not found', 'WarningMsg')
   return ''
 enddef
 
 def BIsRunning(): bool
-  # Log('BIsRunning => ' .. (s_brunning ? 'true' : 'false'))
   return s_brunning
 enddef
 
 def BEnsureBackend(cmd: string = ''): bool
-  # Log('BEnsureBackend enter cmd="' .. cmd .. '"')
   if BIsRunning()
-    # Log('BEnsureBackend already running', 'MoreMsg')
     return true
   endif
   var cmdExe = cmd ==# '' ? BFindBackend() : cmd
-  # Log('BEnsureBackend resolved cmdExe="' .. cmdExe .. '"')
   if cmdExe ==# '' || !executable(cmdExe)
     echohl ErrorMsg
     echom '[SimpleTree] backend not found. Set g:simpletree_daemon_path or put simpletree-daemon into runtimepath/lib/.'
     echohl None
-    # Log('BEnsureBackend failed: backend not executable', 'ErrorMsg')
     return false
   endif
 
   s_bbuf = ''
-  # Log('BEnsureBackend starting job: ' .. cmdExe, 'Title')
   try
     s_bjob = job_start([cmdExe], {
       in_io: 'pipe',
       out_mode: 'nl',
       out_cb: (ch, line) => {
         if line ==# ''
-          # Log('out_cb: skip empty line')
           return
         endif
         var ev: any
         try
           ev = json_decode(line)
-          # Log('out_cb: json decoded ok: ' .. line)
         catch
-          # Log('out_cb: json_decode failed, line="' .. line .. '"', 'WarningMsg')
           return
         endtry
         if type(ev) != v:t_dict || !has_key(ev, 'type')
-          # Log('out_cb: unexpected event shape', 'WarningMsg')
           return
         endif
         if ev.type ==# 'list_chunk'
           var id = ev.id
-          # Log('out_cb: list_chunk id=' .. id .. ' entries=' .. len(get(ev, 'entries', [])) .. ' done=' .. (get(ev, 'done', v:false) ? 'true' : 'false'), 'MoreMsg')
           if has_key(s_bcbs, id)
             if has_key(ev, 'entries')
               try
                 s_bcbs[id].OnChunk(ev.entries)
-                # Log('out_cb: OnChunk dispatched id=' .. id)
               catch
-                # Log('out_cb: OnChunk handler exception id=' .. id .. ' ex=' .. v:exception, 'ErrorMsg')
               endtry
             endif
             if get(ev, 'done', v:false)
               try
                 s_bcbs[id].OnDone()
-                # Log('out_cb: OnDone dispatched id=' .. id)
               catch
-                # Log('out_cb: OnDone handler exception id=' .. id .. ' ex=' .. v:exception, 'ErrorMsg')
               endtry
               call remove(s_bcbs, id)
-              # Log('out_cb: callbacks removed id=' .. id)
             endif
-          else
-            # Log('out_cb: id not found in s_bcbs: ' .. id, 'WarningMsg')
           endif
         elseif ev.type ==# 'error'
           var id = get(ev, 'id', 0)
           var msg2 = get(ev, 'message', '')
-          # Log('out_cb: error event id=' .. id .. ' message="' .. msg2 .. '"', 'ErrorMsg')
           if id != 0 && has_key(s_bcbs, id)
             try
               s_bcbs[id].OnError(msg2)
-              # Log('out_cb: OnError dispatched id=' .. id)
             catch
-              # Log('out_cb: OnError handler exception id=' .. id .. ' ex=' .. v:exception, 'ErrorMsg')
             endtry
             call remove(s_bcbs, id)
-            # Log('out_cb: callbacks removed after error id=' .. id)
-          else
-            # Log('backend error (no id): ' .. msg2, 'ErrorMsg')
           endif
-        else
-          # Log('out_cb: unknown ev.type="' .. ev.type .. '"', 'WarningMsg')
         endif
       },
       err_mode: 'nl',
       err_cb: (ch, line) => {
-        # Log('[stderr] ' .. line, 'WarningMsg')
+        # 可选：stderr 日志
       },
       exit_cb: (ch, code) => {
-        # Log('backend exited with code ' .. code, code == 0 ? 'MoreMsg' : 'ErrorMsg')
         s_brunning = false
         s_bjob = v:null
         s_bbuf = ''
         s_bcbs = {}
       },
-      stoponexit: 'term',
+      stoponexit: 'term'
     })
   catch
     s_bjob = v:null
@@ -557,74 +502,58 @@ def BEnsureBackend(cmd: string = ''): bool
     echohl ErrorMsg
     echom '[SimpleTree] job_start failed: ' .. v:exception
     echohl None
-    # Log('BEnsureBackend job_start exception: ' .. v:exception, 'ErrorMsg')
     return false
   endtry
 
   s_brunning = (s_bjob != v:null)
-  # Log('BEnsureBackend success: running=' .. (s_brunning ? 'true' : 'false'))
   return s_brunning
 enddef
 
 def BStop(): void
-  # Log('BStop enter', 'Title')
   if s_bjob != v:null
     try
       call('job_stop', [s_bjob])
-      # Log('BStop job_stop ok')
     catch
-      # Log('BStop job_stop exception: ' .. v:exception, 'ErrorMsg')
     endtry
   endif
   s_brunning = false
   s_bjob = v:null
   s_bbuf = ''
   s_bcbs = {}
-  # Log('BStop done')
 enddef
 
 def BSend(req: dict<any>): void
   if !BIsRunning()
-    # Log('BSend skipped: backend not running', 'WarningMsg')
     return
   endif
   try
     var json = json_encode(req) .. "\n"
-    # Log('BSend: ' .. json)
     ch_sendraw(s_bjob, json)
   catch
-    # Log('BSend exception: ' .. v:exception, 'ErrorMsg')
   endtry
 enddef
 
 def BList(path: string, show_hidden: bool, max: number, OnChunk: func, OnDone: func, OnError: func): number
-  # Log('BList enter path="' .. path .. '" show_hidden=' .. (show_hidden ? 'true' : 'false') .. ' max=' .. max, 'Title')
   if !BEnsureBackend()
     try
       OnError('backend not available')
-      # Log('BList immediate OnError: backend not available', 'ErrorMsg')
     catch
-      # Log('BList OnError exception: ' .. v:exception, 'ErrorMsg')
     endtry
     return 0
   endif
   var id = BNextId()
   s_bcbs[id] = {OnChunk: OnChunk, OnDone: OnDone, OnError: OnError}
-  # Log('BList sending request id=' .. id)
   BSend({type: 'list', id: id, path: path, show_hidden: show_hidden, max: max})
   return id
 enddef
 
 def BCancel(id: number): void
-  # Log('BCancel enter id=' .. id)
   if id <= 0 || !BIsRunning()
-    # Log('BCancel skipped: invalid id or backend not running')
     return
   endif
   BSend({type: 'cancel', id: id})
   if has_key(s_bcbs, id)
     call remove(s_bcbs, id)
-    # Log('BCancel: callbacks removed id=' .. id)
   endif
 enddef
 
@@ -632,33 +561,24 @@ enddef
 # 前端 <-> 后端
 # =============================================================
 def CancelPending(path: string)
-  # Log('CancelPending enter path="' .. path .. '"')
   if has_key(s_pending, path)
     try
       var pid = s_pending[path]
-      # Log('CancelPending: cancel id=' .. pid)
       BCancel(pid)
     catch
-      # Log('CancelPending exception: ' .. v:exception, 'ErrorMsg')
     endtry
     call remove(s_pending, path)
-    # Log('CancelPending: removed from s_pending path="' .. path .. '"')
-  else
-    # Log('CancelPending: no pending for path')
   endif
 enddef
 
 def ScanDirAsync(path: string)
-  # Log('ScanDirAsync enter path="' .. path .. '" hide_dotfiles=' .. (s_hide_dotfiles ? 'true' : 'false'))
   if has_key(s_cache, path) || get(s_loading, path, v:false)
-    # Log('ScanDirAsync skip: cache_exists=' .. (has_key(s_cache, path) ? 'true' : 'false') .. ' loading=' .. (get(s_loading, path, v:false) ? 'true' : 'false'))
     return
   endif
 
   CancelPending(path)
 
   s_loading[path] = true
-  # Log('ScanDirAsync set loading=true path="' .. path .. '"')
   var acc: list<dict<any>> = []
   var p = path
   var req_id: number = 0
@@ -668,41 +588,31 @@ def ScanDirAsync(path: string)
     !s_hide_dotfiles,
     g:simpletree_page,
     (entries) => {
-      # Log('ScanDirAsync.OnChunk path="' .. p .. '" entries_len=' .. len(entries))
       acc += entries
       s_cache[p] = acc
-      # Log('ScanDirAsync.OnChunk cache_len=' .. len(s_cache[p]))
       Render()
     },
     () => {
-      # Log('ScanDirAsync.OnDone path="' .. p .. '" final_len=' .. len(acc), 'MoreMsg')
       s_loading[p] = false
       s_cache[p] = acc
       if has_key(s_pending, p) && s_pending[p] == req_id
         call remove(s_pending, p)
-        # Log('ScanDirAsync.OnDone removed pending path="' .. p .. '"')
       endif
       Render()
     },
     (_msg) => {
-      # Log('ScanDirAsync.OnError path="' .. p .. '" msg="' .. _msg .. '"', 'ErrorMsg')
       s_loading[p] = false
       if has_key(s_pending, p) && s_pending[p] == req_id
         call remove(s_pending, p)
-        # Log('ScanDirAsync.OnError removed pending path="' .. p .. '"')
       endif
-      # Log('list error for ' .. p, 'ErrorMsg')
       Render()
     }
   )
 
-  # Log('ScanDirAsync BList returned id=' .. req_id)
   if req_id > 0
     s_pending[path] = req_id
-    # Log('ScanDirAsync set pending id=' .. req_id .. ' path="' .. path .. '"')
   else
     s_loading[path] = false
-    # Log('ScanDirAsync backend failed => set loading=false path="' .. path .. '"', 'WarningMsg')
   endif
 enddef
 
@@ -710,18 +620,14 @@ enddef
 # 渲染
 # =============================================================
 def EnsureWindowAndBuffer()
-  # Log('EnsureWindowAndBuffer enter', 'Title')
   if WinValid()
     try
-      # Log('EnsureWindowAndBuffer: resize to ' .. g:simpletree_width)
       call win_execute(s_winid, 'vertical resize ' .. g:simpletree_width)
     catch
-      # Log('EnsureWindowAndBuffer: resize exception ' .. v:exception, 'ErrorMsg')
     endtry
     return
   endif
 
-  # Log('EnsureWindowAndBuffer: create vsplit (tree on the left)')
   execute 'topleft vertical vsplit'
   s_winid = win_getid()
 
@@ -731,7 +637,6 @@ def EnsureWindowAndBuffer()
   call win_execute(s_winid, 'file SimpleTree')
 
   call win_execute(s_winid, 'vertical resize ' .. g:simpletree_width)
-  # Log('EnsureWindowAndBuffer: created winid=' .. s_winid .. ' bufnr=' .. s_bufnr)
 
   var opts = [
     'setlocal buftype=nofile',
@@ -750,7 +655,6 @@ def EnsureWindowAndBuffer()
   ]
   for cmd in opts
     call win_execute(s_winid, cmd)
-    # Log('EnsureWindowAndBuffer: ' .. cmd)
   endfor
 
   call win_execute(s_winid, 'nnoremap <silent> <buffer> <CR> :call treexplorer#OnEnter()<CR>')
@@ -773,45 +677,38 @@ def EnsureWindowAndBuffer()
   call win_execute(s_winid, 'nnoremap <silent> <buffer> A :call treexplorer#OnNewFolder()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> r :call treexplorer#OnRename()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> D :call treexplorer#OnDelete()<CR>')
+  # 一键折叠（Collapse All）
+  var ca_key = get(g:, 'simpletree_collapse_all_key', 'Z')
+  call win_execute(s_winid, 'nnoremap <nowait> <silent> <buffer> ' .. ca_key .. ' :call treexplorer#OnCollapseAll()<CR>')
   # Help
   call win_execute(s_winid, 'nnoremap <silent> <buffer> ? :call treexplorer#ShowHelp()<CR>')
-  # Log('EnsureWindowAndBuffer: mappings set')
 
   call win_execute(s_winid, 'augroup SimpleTreeBuf')
   call win_execute(s_winid, 'autocmd!')
   call win_execute(s_winid, 'autocmd BufWipeout <buffer> ++once call treexplorer#OnBufWipe()')
   call win_execute(s_winid, 'augroup END')
-  # Log('EnsureWindowAndBuffer: autocmds set')
 enddef
 
 def BuildLines(path: string, depth: number, lines: list<string>, idx: list<dict<any>>)
-  # Log('BuildLines enter path="' .. path .. '" depth=' .. depth)
   var want = GetNodeState(path).expanded
   if !want
-    # Log('BuildLines: not expanded, return path="' .. path .. '"')
     return
   endif
 
   var hasCache = has_key(s_cache, path)
   var isLoading = get(s_loading, path, v:false)
-  # Log('BuildLines: hasCache=' .. (hasCache ? 'true' : 'false') .. ' isLoading=' .. (isLoading ? 'true' : 'false'))
 
   if !hasCache
     if !isLoading
-      # Log('BuildLines: no cache and not loading => trigger ScanDirAsync(path)', 'WarningMsg')
       ScanDirAsync(path)
     endif
-    # Loading 占位符使用图标
     lines->add(repeat('  ', depth) .. s_icons.loading .. ' Loading...')
     idx->add({path: '', is_dir: false, name: '', depth: depth, loading: true})
-    # Log('BuildLines: appended Loading placeholder path="' .. path .. '" depth=' .. depth)
     return
   endif
 
   var entries = s_cache[path]
-  # Log('BuildLines: entries_len=' .. len(entries) .. ' path="' .. path .. '"')
   for e in entries
-    # Nerd Font 图标优化 + 回退兼容
     var icon = ''
     if e.is_dir
       icon = GetNodeState(e.path).expanded ? s_icons.dir_open : s_icons.dir
@@ -823,24 +720,20 @@ def BuildLines(path: string, depth: number, lines: list<string>, idx: list<dict<
 
     lines->add(text)
     idx->add({path: e.path, is_dir: e.is_dir, name: e.name, depth: depth})
-    # Log('BuildLines: add line "' .. text .. '"')
 
     if e.is_dir && GetNodeState(e.path).expanded
-      # Log('BuildLines: recurse into dir path="' .. e.path .. '" depth=' .. (depth + 1))
       BuildLines(e.path, depth + 1, lines, idx)
     endif
   endfor
 enddef
 
 def Render()
-  # Log('Render enter', 'Title')
   if s_root ==# ''
-    # Log('Render: s_root empty, return', 'WarningMsg')
     return
   endif
   EnsureWindowAndBuffer()
 
-  # 每次渲染前根据配置重建图标（允许运行时切换 Nerd Font）
+  # 允许运行时切换 Nerd Font
   call SetupIcons()
 
   var lines: list<string> = []
@@ -848,30 +741,24 @@ def Render()
 
   var stroot = GetNodeState(s_root)
   stroot.expanded = true
-  # Log('Render: root expanded=true s_root="' .. s_root .. '"')
 
   BuildLines(s_root, 0, lines, idx)
 
   if len(lines) == 0 && get(s_loading, s_root, v:false)
     lines = [s_icons.loading .. ' Loading...']
     idx = [{path: '', is_dir: false, name: '', depth: 0, loading: true}]
-    # Log('Render: only root loading placeholder')
   endif
 
   if !BufValid()
-    # Log('Render: buffer invalid, return', 'ErrorMsg')
     return
   endif
 
   try
     call setbufvar(s_bufnr, '&modifiable', 1)
-    # Log('Render: set modifiable=1')
   catch
-    # Log('Render: set modifiable=1 exception ' .. v:exception, 'ErrorMsg')
   endtry
 
   var out = len(lines) == 0 ? [''] : lines
-  # Log('Render: setbufline count=' .. len(out))
   call setbufline(s_bufnr, 1, out)
 
   var bi = getbufinfo(s_bufnr)
@@ -880,50 +767,39 @@ def Render()
     if lc > len(out)
       try
         call deletebufline(s_bufnr, len(out) + 1, lc)
-        # Log('Render: deletebufline from ' .. (len(out) + 1) .. ' to ' .. lc)
       catch
-        # Log('Render: deletebufline exception ' .. v:exception, 'ErrorMsg')
       endtry
     endif
   endif
 
   try
     call setbufvar(s_bufnr, '&modifiable', 0)
-    # Log('Render: set modifiable=0')
   catch
-    # Log('Render: set modifiable=0 exception ' .. v:exception, 'ErrorMsg')
   endtry
 
   var maxline = max([1, len(out)])
   try
     call win_execute(s_winid, 'if line(".") > ' .. maxline .. ' | normal! G | endif')
-    # Log('Render: cursor clamp maxline=' .. maxline)
   catch
-    # Log('Render: cursor clamp exception ' .. v:exception, 'ErrorMsg')
   endtry
 
   s_line_index = idx
-  # Log('Render: index_len=' .. len(idx) .. ' loading_keys=' .. string(keys(s_loading)) .. ' cache_keys=' .. string(keys(s_cache)))
 enddef
 
 # =============================================================
 # 根路径切换与锁定
 # =============================================================
 def SetRoot(new_root: string, lock: bool = false)
-  # Log('SetRoot enter new_root="' .. new_root .. '" lock=' .. (lock ? 'true' : 'false') ..
-  #     ' from_root="' .. s_root .. '" locked=' .. (s_root_locked ? 'true' : 'false'), 'Title')
   var nr = CanonDir(new_root)
   if !IsDir(nr)
     echohl ErrorMsg
     echom '[SimpleTree] invalid root: ' .. nr
     echohl None
-    Log('SetRoot: invalid root "' .. nr .. '"', 'ErrorMsg')
     return
   endif
   s_root = nr
   if lock
     s_root_locked = true
-    Log('SetRoot: root locked')
   endif
 
   EnsureWindowAndBuffer()
@@ -931,19 +807,16 @@ def SetRoot(new_root: string, lock: bool = false)
     echohl ErrorMsg
     echom '[SimpleTree] backend not available'
     echohl None
-    Log('SetRoot: backend not available', 'ErrorMsg')
     return
   endif
 
   var st = GetNodeState(s_root)
   st.expanded = true
-  # Log('SetRoot: root expanded set true')
 
   for [p, id] in items(s_pending)
     try
       BCancel(id)
     catch
-      # Log('SetRoot: BCancel exception id=' .. id .. ' ex=' .. v:exception, 'ErrorMsg')
     endtry
   endfor
   s_pending = {}
@@ -957,14 +830,11 @@ enddef
 export def OnToggleRootLock()
   s_root_locked = !s_root_locked
   echo '[SimpleTree] root lock: ' .. (s_root_locked ? 'ON' : 'OFF')
-  # Log('OnToggleRootLock => ' .. (s_root_locked ? 'ON' : 'OFF'), 'MoreMsg')
 enddef
 
 export def OnRootHere()
-  # Log('OnRootHere', 'Title')
   var node = CursorNode()
   if empty(node) || get(node, 'loading', v:false)
-    # Log('OnRootHere: empty or loading node, return', 'WarningMsg')
     return
   endif
   var p = node.is_dir ? node.path : fnamemodify(node.path, ':h')
@@ -972,25 +842,18 @@ export def OnRootHere()
 enddef
 
 export def OnRootUp()
-  # Log('OnRootUp', 'Title')
-  # DebugContext('OnRootUp')
   if s_root_locked
     echo '[SimpleTree] root is locked. Press L to unlock.'
-    # Log('OnRootUp: root locked, abort', 'WarningMsg')
     return
   endif
   if s_root ==# ''
-    Log('OnRootUp: s_root empty', 'WarningMsg')
     return
   endif
 
   var cur = CanonDir(s_root)
   var up = ParentDir(cur)
-  # Log('OnRootUp: current="' .. cur .. '" parent="' .. up .. '"')
 
   if RStripSlash(up) ==# RStripSlash(cur)
-    # 已经在最顶层：Unix "/" 或 Windows "C:/"
-    Log('OnRootUp: already top-most, noop', 'WarningMsg')
     return
   endif
 
@@ -998,31 +861,24 @@ export def OnRootUp()
 enddef
 
 export def OnRootPrompt()
-  # Log('OnRootPrompt', 'Title')
   var start = s_root !=# '' ? s_root : getcwd()
   var inp = input('SimpleTree new root: ', start, 'dir')
   if inp ==# ''
-    # Log('OnRootPrompt: empty input', 'WarningMsg')
     return
   endif
   SetRoot(inp)
 enddef
 
 export def OnRootCwd()
-  # Log('OnRootCwd', 'Title')
   SetRoot(getcwd())
 enddef
 
 export def OnRootCurrent()
-  # Log('OnRootCurrent', 'Title')
-  # DebugContext('OnRootCurrent')
   if s_root_locked
     echo '[SimpleTree] root is locked. Press L to unlock.'
-    # Log('OnRootCurrent: root locked, abort', 'WarningMsg')
     return
   endif
 
-  # 优先尝试从“非树窗口”的文件获取路径
   var ap = ''
   var other = OtherWindowId()
   if other != 0
@@ -1031,29 +887,20 @@ export def OnRootCurrent()
       var obuf = wi[0].bufnr
       var oname = bufname(obuf)
       var cand = fnamemodify(oname, ':p')
-      # Log('OnRootCurrent: other win cand="' .. cand .. '" readable=' .. (filereadable(cand) ? 'true' : 'false'))
       if cand !=# '' && filereadable(cand)
         ap = cand
       endif
-    else
-      # Log('OnRootCurrent: getwininfo(other) empty', 'WarningMsg')
     endif
-  else
-    # Log('OnRootCurrent: no other window, fallback to current buffer', 'WarningMsg')
   endif
 
-  # 其次尝试本窗口（如果当前并非树缓冲，也能用）
   if ap ==# ''
     var cur = expand('%:p')
-    # Log('OnRootCurrent: fallback current buf path="' .. cur .. '" readable=' .. (filereadable(cur) ? 'true' : 'false'))
     if cur !=# '' && filereadable(cur)
       ap = fnamemodify(cur, ':p')
     endif
   endif
 
-  # 最后兜底使用 cwd
   var p = (ap ==# '') ? getcwd() : fnamemodify(ap, ':h')
-  # Log('OnRootCurrent: resolved dir="' .. p .. '"')
   SetRoot(p)
 enddef
 
@@ -1072,8 +919,6 @@ def DebugContext(tag: string): void
       var ap = fnamemodify(oname, ':p')
       Log(printf('CTX[%s] other: bufnr=%d name="%s" abs="%s" readable=%s',
             tag, obuf, oname, ap, (filereadable(ap) ? 'true' : 'false')), 'MoreMsg')
-    else
-      Log('CTX[' .. tag .. '] other wininfo empty', 'WarningMsg')
     endif
   endif
 enddef
@@ -1084,23 +929,18 @@ enddef
 def CursorNode(): dict<any>
   var lnum = line('.')
   if lnum <= 0 || lnum > len(s_line_index)
-    # Log('CursorNode: lnum=' .. lnum .. ' out of range', 'WarningMsg')
     return {}
   endif
   var node = s_line_index[lnum - 1]
-  # Log('CursorNode: lnum=' .. lnum .. ' node=' .. string(node))
   return node
 enddef
 
 # 不再在找不到目标时跳到顶部，保持当前位置
 def FocusPath(path: string): void
-  # Log('FocusPath enter path="' .. path .. '"')
   if !WinValid()
-    # Log('FocusPath: window invalid', 'WarningMsg')
     return
   endif
   if path ==# ''
-    # Log('FocusPath: empty path', 'WarningMsg')
     return
   endif
   var target: number = 0
@@ -1113,19 +953,13 @@ def FocusPath(path: string): void
   if target > 0
     try
       call win_execute(s_winid, 'normal! ' .. target .. 'G')
-      # Log('FocusPath: moved cursor to line ' .. target)
     catch
-      # Log('FocusPath: win_execute exception ' .. v:exception, 'ErrorMsg')
     endtry
-  else
-    # Log('FocusPath: path not found, keep cursor unmoved')
   endif
 enddef
 
 def FocusFirstChild(dir_path: string): void
-  # Log('FocusFirstChild enter dir_path="' .. dir_path .. '"')
   if !WinValid()
-    # Log('FocusFirstChild: window invalid', 'WarningMsg')
     return
   endif
   var idx_dir = -1
@@ -1138,7 +972,6 @@ def FocusFirstChild(dir_path: string): void
     endif
   endfor
   if idx_dir < 0
-    # Log('FocusFirstChild: dir not found in index', 'WarningMsg')
     return
   endif
   var next_idx = idx_dir + 1
@@ -1147,36 +980,26 @@ def FocusFirstChild(dir_path: string): void
     if get(next, 'depth', -1) == dir_depth + 1
       try
         call win_execute(s_winid, 'normal! ' .. (next_idx + 1) .. 'G')
-        # Log('FocusFirstChild: moved to first child line ' .. (next_idx + 1))
       catch
-        # Log('FocusFirstChild: win_execute exception ' .. v:exception, 'ErrorMsg')
       endtry
-    else
-      # Log('FocusFirstChild: next line is not a child (depth mismatch)')
     endif
-  else
-    # Log('FocusFirstChild: no next line')
   endif
 enddef
 
 # 折叠最近的已展开祖先
 def CollapseNearestExpandedAncestor(path: string): void
-  # Log('CollapseNearestExpandedAncestor enter path="' .. path .. '"')
   var p = fnamemodify(path, ':h')
   while p !=# ''
     if p ==# s_root
-      # Log('CollapseNearestExpandedAncestor: parent is root, keep cursor unmoved')
       return
     endif
     if GetNodeState(p).expanded
-      # Log('CollapseNearestExpandedAncestor: collapse target "' .. p .. '"')
       ToggleDir(p)
       FocusPath(p)
       return
     endif
     var nextp = fnamemodify(p, ':h')
     if nextp ==# p
-      # Log('CollapseNearestExpandedAncestor: reached path top, break to avoid loop')
       break
     endif
     p = nextp
@@ -1184,141 +1007,150 @@ def CollapseNearestExpandedAncestor(path: string): void
   var parent = fnamemodify(path, ':h')
   if parent !=# '' && parent !=# s_root
     FocusPath(parent)
-    # Log('CollapseNearestExpandedAncestor: focus parent "' .. parent .. '"')
-  else
-    # Log('CollapseNearestExpandedAncestor: parent is root or empty, keep cursor unmoved')
   endif
 enddef
 
 def ToggleDir(path: string)
-  # Log('ToggleDir enter path="' .. path .. '"')
   var st = GetNodeState(path)
   st.expanded = !st.expanded
-  # Log('ToggleDir: expanded=' .. (st.expanded ? 'true' : 'false') .. ' path="' .. path .. '"')
   if st.expanded && !has_key(s_cache, path) && !get(s_loading, path, v:false)
-    # Log('ToggleDir: expanded without cache/loading, trigger ScanDirAsync', 'MoreMsg')
     ScanDirAsync(path)
   endif
   Render()
 enddef
 
 def OpenFile(p: string)
-  # Log('OpenFile enter p="' .. p .. '"')
   if p ==# ''
-    # Log('OpenFile: empty path, return', 'WarningMsg')
     return
   endif
   var keep = !!g:simpletree_keep_focus
-  # Log('OpenFile: keep_focus=' .. (keep ? 'true' : 'false'))
 
   var other = OtherWindowId()
   if other != 0
-    # Log('OpenFile: goto other winid=' .. other)
     call win_gotoid(other)
   else
-    # Log('OpenFile: create vsplit')
     execute 'vsplit'
   endif
-  # Log('OpenFile: edit ' .. fnameescape(p))
   execute 'edit ' .. fnameescape(p)
 
   if keep
-    # Log('OpenFile: go back to tree winid=' .. s_winid)
     call win_gotoid(s_winid)
   endif
 enddef
 
 export def OnEnter()
-  # Log('OnEnter', 'Title')
   var node = CursorNode()
   if empty(node) || get(node, 'loading', v:false)
-    # Log('OnEnter: empty or loading node, return', 'WarningMsg')
     return
   endif
   if node.is_dir
-    # Log('OnEnter: toggle dir path="' .. node.path .. '"')
     ToggleDir(node.path)
   else
-    # Log('OnEnter: open file path="' .. node.path .. '"')
     OpenFile(node.path)
   endif
 enddef
 
 # l：目录上展开并定位第一个子项；文件上打开文件
 export def OnExpand()
-  # Log('OnExpand', 'Title')
   var node = CursorNode()
   if empty(node) || get(node, 'loading', v:false)
-    # Log('OnExpand: empty or loading node, return', 'WarningMsg')
     return
   endif
   if node.is_dir
     if !GetNodeState(node.path).expanded
-      # Log('OnExpand: expand dir path="' .. node.path .. '"')
       ToggleDir(node.path)
-    else
-      # Log('OnExpand: dir already expanded path="' .. node.path .. '"')
     endif
     FocusFirstChild(node.path)
   else
-    # Log('OnExpand: node is file => open path="' .. node.path .. '"')
     OpenFile(node.path)
   endif
 enddef
 
 # h：目录已展开时折叠当前；目录已折叠或文件时折叠最近的已展开父目录
 export def OnCollapse()
-  # Log('OnCollapse', 'Title')
   var node = CursorNode()
   if empty(node) || get(node, 'loading', v:false)
-    # Log('OnCollapse: empty or loading node, return', 'WarningMsg')
     return
   endif
   if node.is_dir
     if GetNodeState(node.path).expanded
-      # Log('OnCollapse: collapse current dir path="' .. node.path .. '"')
       ToggleDir(node.path)
     else
       var parent = fnamemodify(node.path, ':h')
       if parent ==# s_root
-        # Log('OnCollapse: top-level collapsed dir, keep cursor unmoved')
         return
       endif
-      # Log('OnCollapse: dir is collapsed, collapse parent chain from "' .. node.path .. '"')
       CollapseNearestExpandedAncestor(node.path)
     endif
   else
-    # Log('OnCollapse: node is file => collapse parent chain')
     CollapseNearestExpandedAncestor(node.path)
   endif
 enddef
 
+# 新增：一键折叠根下所有目录
+export def OnCollapseAll()
+  if s_root ==# ''
+    echo '[SimpleTree] root not set'
+    return
+  endif
+  var count = 0
+  # 关闭所有已展开（不含 root）
+  for [p, st] in items(s_state)
+    if p !=# s_root && get(st, 'expanded', v:false)
+      s_state[p].expanded = false
+      count += 1
+    endif
+  endfor
+  # 取消所有非 root 的挂起请求与加载标记（避免无谓的后台任务）
+  for [p, id] in items(s_pending)
+    if p !=# s_root
+      try
+        BCancel(id)
+      catch
+      endtry
+    endif
+  endfor
+  for p in keys(s_pending)
+    if p !=# s_root
+      try
+        call remove(s_pending, p)
+      catch
+      endtry
+    endif
+  endfor
+  for p in keys(s_loading)
+    if p !=# s_root
+      try
+        call remove(s_loading, p)
+      catch
+      endtry
+    endif
+  endfor
+
+  Render()
+  echo '[SimpleTree] collapsed all under root (' .. count .. ' dirs)'
+enddef
+
 export def OnRefresh()
-  # Log('OnRefresh', 'Title')
   Refresh()
 enddef
 
 export def OnToggleHidden()
-  # Log('OnToggleHidden before s_hide_dotfiles=' .. (s_hide_dotfiles ? 'true' : 'false'), 'Title')
   s_hide_dotfiles = !s_hide_dotfiles
-  # Log('OnToggleHidden after s_hide_dotfiles=' .. (s_hide_dotfiles ? 'true' : 'false'))
   Refresh()
 enddef
 
 export def OnClose()
-  # Log('OnClose', 'Title')
   Close()
 enddef
 
 export def OnBufWipe()
-  # Log('OnBufWipe', 'Title')
   s_winid = 0
   s_bufnr = -1
 enddef
 
 # ===== 文件操作：复制/剪切/粘贴/新建/重命名/删除 =====
 export def OnCopy()
-  # Log('OnCopy', 'Title')
   var node = CursorNode()
   if empty(node) || get(node, 'loading', v:false)
     echo '[SimpleTree] nothing to copy'
@@ -1326,11 +1158,9 @@ export def OnCopy()
   endif
   s_clipboard = {mode: 'copy', items: [node.path]}
   echo '[SimpleTree] copy: ' .. node.path
-  # Log('OnCopy set clipboard copy ' .. string(s_clipboard))
 enddef
 
 export def OnCut()
-  # Log('OnCut', 'Title')
   var node = CursorNode()
   if empty(node) || get(node, 'loading', v:false)
     echo '[SimpleTree] nothing to cut'
@@ -1338,14 +1168,11 @@ export def OnCut()
   endif
   s_clipboard = {mode: 'cut', items: [node.path]}
   echo '[SimpleTree] cut: ' .. node.path
-  # Log('OnCut set clipboard cut ' .. string(s_clipboard))
 enddef
 
 export def OnPaste()
-  # Log('OnPaste', 'Title')
   if type(s_clipboard) != v:t_dict || get(s_clipboard, 'mode', '') ==# '' || len(get(s_clipboard, 'items', [])) == 0
     echo '[SimpleTree] clipboard empty'
-    # Log('OnPaste: clipboard empty', 'WarningMsg')
     return
   endif
   var node = CursorNode()
@@ -1412,7 +1239,6 @@ export def OnPaste()
 enddef
 
 export def OnNewFile()
-  # Log('OnNewFile', 'Title')
   var node = CursorNode()
   if empty(node)
     echo '[SimpleTree] no target selected'
@@ -1425,7 +1251,6 @@ export def OnNewFile()
   endif
   var name = input('New file name: ')
   if name ==# ''
-    # Log('OnNewFile: empty name', 'WarningMsg')
     return
   endif
   if name =~ '[\/]'
@@ -1434,7 +1259,6 @@ export def OnNewFile()
   endif
   var dst = AskUniqueName(destDir, name)
   if dst ==# ''
-    # Log('OnNewFile: canceled or no unique name')
     return
   endif
   try
@@ -1452,7 +1276,6 @@ export def OnNewFile()
 enddef
 
 export def OnNewFolder()
-  # Log('OnNewFolder', 'Title')
   var node = CursorNode()
   if empty(node)
     echo '[SimpleTree] no target selected'
@@ -1465,7 +1288,6 @@ export def OnNewFolder()
   endif
   var name = input('New folder name: ')
   if name ==# ''
-    # Log('OnNewFolder: empty name', 'WarningMsg')
     return
   endif
   if name =~ '[\/]'
@@ -1474,7 +1296,6 @@ export def OnNewFolder()
   endif
   var dst = AskUniqueName(destDir, name)
   if dst ==# ''
-    # Log('OnNewFolder: canceled or no unique name')
     return
   endif
   try
@@ -1489,7 +1310,6 @@ export def OnNewFolder()
 enddef
 
 export def OnRename()
-  # Log('OnRename', 'Title')
   var node = CursorNode()
   if empty(node) || get(node, 'loading', v:false)
     echo '[SimpleTree] nothing to rename'
@@ -1500,7 +1320,6 @@ export def OnRename()
   var base = fnamemodify(src, ':t')
   var newname = input('Rename to: ', base)
   if newname ==# ''
-    # Log('OnRename: empty new name', 'WarningMsg')
     return
   endif
   if newname =~ '[\/]'
@@ -1509,7 +1328,6 @@ export def OnRename()
   endif
   var dst = PathJoin(parent, newname)
   if dst ==# src
-    # Log('OnRename: same name, skip')
     return
   endif
 
@@ -1535,7 +1353,6 @@ export def OnRename()
 enddef
 
 export def OnDelete()
-  # Log('OnDelete', 'Title')
   var node = CursorNode()
   if empty(node) || get(node, 'loading', v:false)
     echo '[SimpleTree] nothing to delete'
@@ -1571,6 +1388,7 @@ enddef
 
 # ====== 帮助面板（?）======
 def BuildHelpLines(): list<string>
+  var ca_key = get(g:, 'simpletree_collapse_all_key', 'Z')
   return [
     'SimpleTree 快捷键说明',
     '----------------------------------------',
@@ -1593,6 +1411,7 @@ def BuildHelpLines(): list<string>
     'A     在目标目录中新建文件夹',
     'r     重命名当前节点',
     'D     删除当前节点（目录为递归删除）',
+    ca_key .. '     一键折叠根下所有目录',
     '?     显示/关闭本帮助面板',
     '----------------------------------------',
     '提示：粘贴/重命名时若存在同名目标：可选择覆盖或重命名；剪切成功后自动清空剪贴板。',
@@ -1605,7 +1424,6 @@ enddef
 
 # 关闭帮助：同时支持浮窗和分屏
 def CloseHelp()
-  # 优先关闭浮窗
   if s_help_popupid != 0 && exists('*popup_close')
     try
       call popup_close(s_help_popupid)
@@ -1616,7 +1434,6 @@ def CloseHelp()
     return
   endif
 
-  # 回退：关闭分屏窗口
   if s_help_winid != 0 && win_id2win(s_help_winid) > 0
     try
       call win_execute(s_help_winid, 'close')
@@ -1629,7 +1446,6 @@ enddef
 
 # 浮窗优先的帮助显示（不使用 popup_getbuf，修复 E117）
 export def ShowHelp()
-  # 已经显示则关闭（浮窗优先）
   if s_help_popupid != 0 && exists('*popup_close')
     CloseHelp()
     return
@@ -1637,17 +1453,14 @@ export def ShowHelp()
 
   var lines = BuildHelpLines()
 
-  # 如果支持 popup_create，用居中浮窗显示
   if exists('*popup_create')
-    # 计算宽高（注意逗号后留空格避免 E1069）
     var width = 0
     for l in lines
       width = max([width, strdisplaywidth(l)])
     endfor
     var height = min([max([10, len(lines) + 2]), 30])
-    width += 6   # 预留左右边距和边框
+    width += 6
 
-    # 创建浮窗（不使用 popup_getbuf）
     var popid = popup_create(lines, {
       title: NFEnabled() ? '󰙎 SimpleTree Help' : 'SimpleTree Help',
       pos: 'center',
@@ -1658,7 +1471,6 @@ export def ShowHelp()
       borderchars: ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
       zindex: 200,
       mapping: 0,
-      # 过滤器：按 q 或 Esc 关闭
       filter: (id, key) => {
         if key ==# 'q' || key ==# "\<Esc>"
           try
@@ -1674,9 +1486,8 @@ export def ShowHelp()
     })
 
     s_help_popupid = popid
-    s_help_bufnr = -1    # 不再依赖 popup_getbuf
+    s_help_bufnr = -1
 
-    # 可选：设置高亮（某些版本有 popup_setoptions；没有则跳过）
     if exists('*popup_setoptions')
       try
         call popup_setoptions(popid, {
@@ -1687,14 +1498,12 @@ export def ShowHelp()
       endtry
     endif
 
-    # 返回到树窗口（如果存在）
     if WinValid()
       call win_gotoid(s_winid)
     endif
     return
   endif
 
-  # 不支持 popup 的回退：分屏显示
   var height = min([max([10, len(lines) + 2]), 30])
   execute 'botright split'
   execute printf('resize %d', height)
@@ -1756,7 +1565,6 @@ def RevealTimerCb(_id: number)
 enddef
 
 def RevealPath(path: string)
-  # Log('RevealPath enter path="' .. path .. '"', 'Title')
   if path ==# '' || s_root ==# ''
     return
   endif
@@ -1764,8 +1572,6 @@ def RevealPath(path: string)
   var ap = AbsPath(path)
   s_reveal_target = ap
 
-  # 如果目标是点文件且当前设置为“隐藏点文件”，则自动切换为显示
-  # 并刷新后再次执行 Reveal，确保能看到并定位到该文件
   var base = fnamemodify(ap, ':t')
   if filereadable(ap) && base =~ '^\.'
     if s_hide_dotfiles
@@ -1773,7 +1579,6 @@ def RevealPath(path: string)
       g:simpletree_hide_dotfiles = 0
       echo '[SimpleTree] dotfiles hidden => OFF (auto). Showing hidden to reveal target.'
       Refresh()
-      # 再次调用 RevealPath，以新的显示策略展开并定位到目标
       RevealPath(ap)
       return
     endif
@@ -1829,113 +1634,85 @@ enddef
 # 导出 API（供命令调用）
 # =============================================================
 export def Toggle(root: string = '')
-  # Log('Toggle enter rootArg="' .. root .. '"', 'Title')
   if WinValid()
-    # Log('Toggle: window valid => Close()', 'MoreMsg')
     Close()
     return
   endif
 
-  # 先保存当前文件的绝对路径（在创建树窗口之前），避免 expand('%:p') 指向树缓冲区
   var curf0 = expand('%:p')
   var curf_abs = ''
   if curf0 !=# '' && filereadable(curf0)
     curf_abs = fnamemodify(curf0, ':p')
   endif
-  # Log('Toggle: curf_abs "' .. curf_abs .. '"')
 
   var rootArg = root
   if rootArg ==# ''
     if s_root_locked && s_root !=# '' && IsDir(s_root)
       rootArg = s_root
-      # Log('Toggle: use locked root "' .. rootArg .. '"')
     else
-      # 优先用当前文件所在目录作为根；没有文件时回落到 cwd
       if curf_abs ==# ''
         rootArg = getcwd()
-        # Log('Toggle: no file => use getcwd="' .. rootArg .. '"')
       else
         rootArg = fnamemodify(curf_abs, ':h')
-        # Log('Toggle: use current file dir="' .. rootArg .. '"')
       endif
     endif
   endif
-  # Log('Toggle rootArg: ' .. rootArg)
 
   s_root = AbsPath(rootArg)
   if !IsDir(s_root)
     echohl ErrorMsg
     echom '[SimpleTree] invalid root: ' .. s_root
     echohl None
-    # Log('Toggle: invalid root "' .. s_root .. '"', 'ErrorMsg')
     return
   endif
-  # Log('Toggle s_root: ' .. s_root)
 
   EnsureWindowAndBuffer()
   if !BEnsureBackend()
     echohl ErrorMsg
     echom '[SimpleTree] backend not available'
     echohl None
-    # Log('Toggle: backend not available', 'ErrorMsg')
     return
   endif
 
   var st = GetNodeState(s_root)
   st.expanded = true
-  # Log('Toggle: root expanded set true')
 
   ScanDirAsync(s_root)
   Render()
 
-  # 使用之前保存的当前文件路径进行 Reveal（避免树缓冲导致的 expand('%:p') 失效）
   if curf_abs !=# '' && filereadable(curf_abs)
     RevealPath(curf_abs)
   endif
 enddef
 
 export def Refresh()
-  # Log('Refresh enter', 'Title')
   for [p, id] in items(s_pending)
-    # Log('Refresh: cancel pending path="' .. p .. '" id=' .. id)
     try
       BCancel(id)
     catch
-      # Log('Refresh: BCancel exception id=' .. id .. ' ex=' .. v:exception, 'ErrorMsg')
     endtry
   endfor
   s_pending = {}
   s_loading = {}
   s_cache = {}
-  # Log('Refresh: cleared pending/loading/cache')
   if s_root !=# ''
-    # Log('Refresh: rescan root="' .. s_root .. '"')
     ScanDirAsync(s_root)
-  else
-    # Log('Refresh: s_root empty, skip rescan', 'WarningMsg')
   endif
   Render()
 enddef
 
 export def Close()
-  # Log('Close enter', 'Title')
   if WinValid()
     try
       call win_execute(s_winid, 'close')
-      # Log('Close: closed window id=' .. s_winid)
     catch
-      # Log('Close: close exception ' .. v:exception, 'ErrorMsg')
     endtry
-  else
-    # Log('Close: window not valid')
   endif
   s_winid = 0
   s_bufnr = -1
-  # Log('Close: reset win/buf')
 enddef
 
 export def Stop()
-  # Log('Stop enter', 'Title')
   BStop()
 enddef
 
@@ -1951,3 +1728,8 @@ export def DebugStatus()
   echo '  cache_keys: ' .. string(keys(s_cache))
   Log('DebugStatus logged', 'MoreMsg')
 enddef
+
+# =============================================================
+# 用户命令
+# =============================================================
+command! -nargs=? SimpleTree call treexplorer#Toggle(<q-args>)
