@@ -617,6 +617,55 @@ def ScanDirAsync(path: string)
 enddef
 
 # =============================================================
+# 语法高亮（SimpleTree / SimpleTree Help）
+# =============================================================
+
+def SetupSyntaxTree(): void
+  if !WinValid()
+    return
+  endif
+  # 在树窗口内设置语法高亮
+  # 说明：
+  # - SimpleTreeIcon：行首图标（Nerd Font 或 ASCII）
+  # - SimpleTreeDirSlash：目录行的末尾斜杠（当 g:simpletree_folder_suffix=1 时）
+  # - SimpleTreeHidden：隐藏文件（以 . 开头）
+  # - SimpleTreeLoading：加载提示行中的 "Loading..."
+  try
+    call win_execute(s_winid, 'silent! syntax clear SimpleTreeIcon SimpleTreeDirSlash SimpleTreeHidden SimpleTreeLoading')
+    call win_execute(s_winid, 'syntax match SimpleTreeIcon ''^\s*\zs\S\+\ze\s''')
+    call win_execute(s_winid, 'syntax match SimpleTreeDirSlash ''\/$''')
+    call win_execute(s_winid, 'syntax match SimpleTreeHidden ''^\s*.\{-}\s\zs\.\S\+''')
+    call win_execute(s_winid, 'syntax match SimpleTreeLoading ''Loading\.\.\.''')
+
+    # 默认高亮链接（用户可自行覆盖）
+    call win_execute(s_winid, 'highlight default link SimpleTreeIcon Special')
+    call win_execute(s_winid, 'highlight default link SimpleTreeDirSlash Directory')
+    call win_execute(s_winid, 'highlight default link SimpleTreeHidden Comment')
+    call win_execute(s_winid, 'highlight default link SimpleTreeLoading WarningMsg')
+  catch
+  endtry
+enddef
+
+def SetupSyntaxHelp(): void
+  if s_help_winid == 0 || win_id2win(s_help_winid) <= 0
+    return
+  endif
+  # 仅对分屏帮助缓冲区设置（浮窗不做细粒度语法，以免依赖 popup_getbuf）
+  try
+    call win_execute(s_help_winid, 'silent! syntax clear SimpleTreeHelpTitle SimpleTreeHelpSep SimpleTreeHelpKey')
+    call win_execute(s_help_winid, 'syntax match SimpleTreeHelpTitle ''^SimpleTree.*$''')
+    call win_execute(s_help_winid, 'syntax match SimpleTreeHelpSep ''^-\{2,}$''')
+    # 匹配行首的快捷键（以至少两个空格与说明分隔）
+    call win_execute(s_help_winid, 'syntax match SimpleTreeHelpKey ''^\zs\S\+\ze\s\{2,}''')
+
+    call win_execute(s_help_winid, 'highlight default link SimpleTreeHelpTitle Title')
+    call win_execute(s_help_winid, 'highlight default link SimpleTreeHelpSep Comment')
+    call win_execute(s_help_winid, 'highlight default link SimpleTreeHelpKey Identifier')
+  catch
+  endtry
+enddef
+
+# =============================================================
 # 渲染
 # =============================================================
 def EnsureWindowAndBuffer()
@@ -655,6 +704,7 @@ def EnsureWindowAndBuffer()
   for cmd in opts
     call win_execute(s_winid, cmd)
   endfor
+  call SetupSyntaxTree()
 
   call win_execute(s_winid, 'nnoremap <silent> <buffer> <CR> :call treexplorer#OnEnter()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> l :call treexplorer#OnExpand()<CR>')
@@ -1527,6 +1577,7 @@ export def ShowHelp()
   for cmd in opts
     call win_execute(s_help_winid, cmd)
   endfor
+  call SetupSyntaxHelp()
 
   call setbufline(s_help_bufnr, 1, lines)
   var bi = getbufinfo(s_help_bufnr)
