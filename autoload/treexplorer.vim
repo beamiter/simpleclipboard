@@ -804,7 +804,9 @@ def EnsureWindowAndBuffer()
   call win_execute(s_winid, 'nnoremap <silent> <buffer> x :call treexplorer#OnCut()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> p :call treexplorer#OnPaste()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> a :call treexplorer#OnNewFile()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> n :call treexplorer#OnNewFile()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> A :call treexplorer#OnNewFolder()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> N :call treexplorer#OnNewFolder()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> r :call treexplorer#OnRename()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> D :call treexplorer#OnDelete()<CR>')
   # 一键折叠（Collapse All）
@@ -1542,7 +1544,9 @@ def BuildHelpLines(): list<string>
     'x     剪切当前节点（文件/目录）',
     'p     粘贴到当前选中目录（或文件的父目录）',
     'a     在目标目录中新建文件',
+    'n     在目标目录中新建文件',
     'A     在目标目录中新建文件夹',
+    'N     在目标目录中新建文件夹',
     'r     重命名当前节点',
     'D     删除当前节点（目录为递归删除）',
     ca_key .. '     一键折叠根下所有目录',
