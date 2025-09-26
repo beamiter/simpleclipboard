@@ -1605,8 +1605,24 @@ def RevealPath(path: string)
   if path ==# '' || s_root ==# ''
     return
   endif
+
   var ap = AbsPath(path)
   s_reveal_target = ap
+
+  # 如果目标是点文件且当前设置为“隐藏点文件”，则自动切换为显示
+  # 并刷新后再次执行 Reveal，确保能看到并定位到该文件
+  var base = fnamemodify(ap, ':t')
+  if filereadable(ap) && base =~ '^\.'
+    if s_hide_dotfiles
+      s_hide_dotfiles = false
+      g:simpletree_hide_dotfiles = 0
+      echo '[SimpleTree] dotfiles hidden => OFF (auto). Showing hidden to reveal target.'
+      Refresh()
+      # 再次调用 RevealPath，以新的显示策略展开并定位到目标
+      RevealPath(ap)
+      return
+    endif
+  endif
 
   var cur_dir = filereadable(ap) ? fnamemodify(ap, ':h') : ap
   var r = s_root
@@ -1665,19 +1681,26 @@ export def Toggle(root: string = '')
     return
   endif
 
+  # 先保存当前文件的绝对路径（在创建树窗口之前），避免 expand('%:p') 指向树缓冲区
+  var curf0 = expand('%:p')
+  var curf_abs = ''
+  if curf0 !=# '' && filereadable(curf0)
+    curf_abs = fnamemodify(curf0, ':p')
+  endif
+  # Log('Toggle: curf_abs "' .. curf_abs .. '"')
+
   var rootArg = root
   if rootArg ==# ''
     if s_root_locked && s_root !=# '' && IsDir(s_root)
       rootArg = s_root
       # Log('Toggle: use locked root "' .. rootArg .. '"')
     else
-      var cur = expand('%:p')
-      # Log('Toggle: resolved current buffer path="' .. cur .. '"')
-      if cur ==# '' || !filereadable(cur)
+      # 优先用当前文件所在目录作为根；没有文件时回落到 cwd
+      if curf_abs ==# ''
         rootArg = getcwd()
         # Log('Toggle: no file => use getcwd="' .. rootArg .. '"')
       else
-        rootArg = fnamemodify(cur, ':p:h')
+        rootArg = fnamemodify(curf_abs, ':h')
         # Log('Toggle: use current file dir="' .. rootArg .. '"')
       endif
     endif
@@ -1710,10 +1733,9 @@ export def Toggle(root: string = '')
   ScanDirAsync(s_root)
   Render()
 
-  # 打开后展开并定位到当前文件
-  var curf = expand('%:p')
-  if curf !=# '' && filereadable(curf)
-    RevealPath(fnamemodify(curf, ':p'))
+  # 使用之前保存的当前文件路径进行 Reveal（避免树缓冲导致的 expand('%:p') 失效）
+  if curf_abs !=# '' && filereadable(curf_abs)
+    RevealPath(curf_abs)
   endif
 enddef
 
