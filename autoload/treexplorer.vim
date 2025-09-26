@@ -33,6 +33,7 @@ var s_clipboard: dict<any> = {mode: '', items: []}  # {mode: 'copy'|'cut', items
 # 帮助面板状态
 var s_help_winid: number = 0
 var s_help_bufnr: number = -1
+var s_help_popupid: number = 0      # 新增：浮窗 ID
 
 # Reveal 定位
 var s_reveal_target: string = ''
@@ -1522,8 +1523,21 @@ def HelpWinValid(): bool
   return s_help_winid != 0 && win_id2win(s_help_winid) > 0
 enddef
 
+# 关闭帮助：同时支持浮窗和分屏
 def CloseHelp()
-  if HelpWinValid()
+  # 优先关闭浮窗
+  if s_help_popupid != 0 && exists('*popup_close')
+    try
+      call popup_close(s_help_popupid)
+    catch
+    endtry
+    s_help_popupid = 0
+    s_help_bufnr = -1
+    return
+  endif
+
+  # 回退：关闭分屏窗口
+  if s_help_winid != 0 && win_id2win(s_help_winid) > 0
     try
       call win_execute(s_help_winid, 'close')
     catch
@@ -1533,13 +1547,74 @@ def CloseHelp()
   s_help_bufnr = -1
 enddef
 
+# 浮窗优先的帮助显示（不使用 popup_getbuf，修复 E117）
 export def ShowHelp()
-  # Log('ShowHelp', 'Title')
-  if HelpWinValid()
+  # 已经显示则关闭（浮窗优先）
+  if s_help_popupid != 0 && exists('*popup_close')
     CloseHelp()
     return
   endif
+
   var lines = BuildHelpLines()
+
+  # 如果支持 popup_create，用居中浮窗显示
+  if exists('*popup_create')
+    # 计算宽高（注意逗号后留空格避免 E1069）
+    var width = 0
+    for l in lines
+      width = max([width, strdisplaywidth(l)])
+    endfor
+    var height = min([max([10, len(lines) + 2]), 30])
+    width += 6   # 预留左右边距和边框
+
+    # 创建浮窗（不使用 popup_getbuf）
+    var popid = popup_create(lines, {
+      title: 'SimpleTree Help',
+      pos: 'center',
+      minwidth: width,
+      minheight: height,
+      padding: [0, 2, 0, 2],
+      border: [1, 1, 1, 1],
+      borderchars: ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
+      zindex: 200,
+      mapping: 0,
+      # 过滤器：按 q 或 Esc 关闭
+      filter: (id, key) => {
+        if key ==# 'q' || key ==# "\<Esc>"
+          try
+            popup_close(id)
+          catch
+          endtry
+          s_help_popupid = 0
+          s_help_bufnr = -1
+          return 1
+        endif
+        return 0
+      }
+    })
+
+    s_help_popupid = popid
+    s_help_bufnr = -1    # 不再依赖 popup_getbuf
+
+    # 可选：设置高亮（某些版本有 popup_setoptions；没有则跳过）
+    if exists('*popup_setoptions')
+      try
+        call popup_setoptions(popid, {
+          highlight: 'Normal',
+          borderhighlight: ['FloatBorder']
+        })
+      catch
+      endtry
+    endif
+
+    # 返回到树窗口（如果存在）
+    if WinValid()
+      call win_gotoid(s_winid)
+    endif
+    return
+  endif
+
+  # 不支持 popup 的回退：分屏显示
   var height = min([max([10, len(lines) + 2]), 30])
   execute 'botright split'
   execute printf('resize %d', height)
