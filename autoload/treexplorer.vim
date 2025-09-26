@@ -3,7 +3,7 @@ vim9script
 # =============================================================
 # 配置
 # =============================================================
-g:simpletree_width = get(g:, 'simpletree_width', 30)
+g:simpletree_width = get(g:, 'simpletree_width', 45)
 g:simpletree_hide_dotfiles = get(g:, 'simpletree_hide_dotfiles', 1)
 g:simpletree_page = get(g:, 'simpletree_page', 200)
 # 打开文件后保持焦点在文件缓冲区
@@ -624,27 +624,24 @@ def SetupSyntaxTree(): void
     return
   endif
   try
-    # 清理旧的/新增的组
+    # 清理语法组
     call win_execute(s_winid, 'silent! syntax clear SimpleTreeIcon SimpleTreeIconDir SimpleTreeIconHidden SimpleTreeDirName SimpleTreeDirSlash SimpleTreeHidden SimpleTreeLoading SimpleTreeIconLang SimpleTreeIconScript SimpleTreeIconWeb SimpleTreeIconData SimpleTreeIconDoc SimpleTreeIconImage SimpleTreeIconArchive SimpleTreeIconFileDefault')
 
-    # 基础匹配：斜杠后缀、隐藏文件名、Loading
-    call win_execute(s_winid, 'syntax match SimpleTreeDirSlash "/$"')
+    # 基础匹配
     call win_execute(s_winid, 'syntax match SimpleTreeHidden "^\s*.\{-}\s\zs\.\S\+"')
     call win_execute(s_winid, 'syntax match SimpleTreeLoading "Loading\.\.\."')
 
-    # 目录图标匹配（动态使用当前图标）
-    var dir_pat = '\%(' .. s_icons.dir .. '\|' .. s_icons.dir_open .. '\)'
-    var cmd_dir = 'syntax match SimpleTreeIconDir "^\s*\zs' .. dir_pat .. '\ze\s"'
+    # 目录：图标 -> 名称 -> 斜杠（nextgroup + contained）
+    var dir_pat = '\%(' .. escape(s_icons.dir, '\') .. '\|' .. escape(s_icons.dir_open, '\') .. '\)'
+    var cmd_dir = 'syntax match SimpleTreeIconDir "^\s*\zs' .. dir_pat .. '\ze\s" nextgroup=SimpleTreeDirName,SimpleTreeDirSlash skipwhite'
     call win_execute(s_winid, cmd_dir)
-
-    # 目录名高亮（仅在启用斜杠后缀时）
-    if !!get(g:, 'simpletree_folder_suffix', 1)
-      call win_execute(s_winid, 'syntax match SimpleTreeDirName "^\s*\S\+\s\zs.\+\ze/$"')
-    endif
+    # 目录名：图标后面的非斜杠字符段（允许空格，直到斜杠或行尾）
+    call win_execute(s_winid, 'syntax match SimpleTreeDirName "[^/]\+" contained nextgroup=SimpleTreeDirSlash')
+    # 斜杠（如果启用了后缀）
+    call win_execute(s_winid, 'syntax match SimpleTreeDirSlash "/$" contained')
 
     # 文件 icon 分色（仅当启用 Nerd Font 且显示文件图标）
     if NFEnabled() && !!get(g:, 'simpletree_show_file_icons', 1)
-      # 扩展名 -> 图标 映射（与 FileIcon 保持一致）
       var m = {
         'vim': '', 'lua': '', 'py': '', 'rb': '', 'go': '', 'rs': '',
         'js': '', 'ts': '', 'jsx': '', 'tsx': '',
@@ -659,8 +656,6 @@ def SetupSyntaxTree(): void
         'pdf': '',
         'zip': '', 'tar': '', 'gz': '', '7z': ''
       }
-
-      # 分类列表
       var cats_lang = ['vim', 'lua', 'py', 'rb', 'go', 'rs', 'js', 'ts', 'jsx', 'tsx', 'c', 'h', 'cpp', 'hpp', 'java', 'kt']
       var cats_script = ['sh', 'bash', 'zsh']
       var cats_web = ['html', 'css', 'scss']
@@ -669,7 +664,6 @@ def SetupSyntaxTree(): void
       var cats_img = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp']
       var cats_arc = ['zip', 'tar', 'gz', '7z']
 
-      # 遍历字典项（使用 while，避免 for/endfor 解析问题）
       var kv = items(m)
       var i = 0
       while i < len(kv)
@@ -691,8 +685,7 @@ def SetupSyntaxTree(): void
         elseif index(cats_arc, ext) >= 0
           grp = 'SimpleTreeIconArchive'
         endif
-        # 为该图标建立匹配命令
-        var pat = '^\s*\zs' .. ico .. '\ze\s'
+        var pat = '^\s*\zs' .. escape(ico, '\') .. '\ze\s'
         var cmd = 'syntax match ' .. grp .. ' "' .. pat .. '"'
         call win_execute(s_winid, cmd)
         i = i + 1
@@ -702,20 +695,21 @@ def SetupSyntaxTree(): void
       call win_execute(s_winid, 'syntax match SimpleTreeIconFileDefault "^\s*\zs\S\+\ze\s"')
     endif
 
-    # 隐藏文件 icon 灰色（优先生效，放在分色匹配之后）
+    # 隐藏文件/目录的图标置灰（优先生效，放在分色匹配之后）
     call win_execute(s_winid, 'syntax match SimpleTreeIconHidden "^\s*\zs\S\+\ze\s\."')
-
-    # 默认高亮链接/颜色（可被用户覆盖）
-    call win_execute(s_winid, 'highlight default link SimpleTreeDirSlash Directory')
-    call win_execute(s_winid, 'highlight default link SimpleTreeDirName Directory')
-    call win_execute(s_winid, 'highlight default link SimpleTreeIconDir Directory')
-    call win_execute(s_winid, 'highlight default link SimpleTreeHidden Comment')
-    call win_execute(s_winid, 'highlight default link SimpleTreeLoading WarningMsg')
-
-    # 隐藏文件 icon 固定灰色（用户可覆盖）
     call win_execute(s_winid, 'highlight default SimpleTreeIconHidden ctermfg=245 guifg=#6a6a6a')
 
-    # 各类别颜色（用户可覆盖）
+    # 自定义目录颜色组（避免受配色主题 Directory 影响）
+    var dir_cterm = get(g:, 'simpletree_dir_ctermfg', 75)
+    var dir_gui   = get(g:, 'simpletree_dir_guifg', '#61afef')
+    call win_execute(s_winid, 'highlight default SimpleTreeDirColor ctermfg=' .. dir_cterm .. ' guifg=' .. dir_gui)
+    call win_execute(s_winid, 'highlight default link SimpleTreeDirName SimpleTreeDirColor')
+    call win_execute(s_winid, 'highlight default link SimpleTreeIconDir SimpleTreeDirColor')
+    call win_execute(s_winid, 'highlight default link SimpleTreeDirSlash SimpleTreeDirColor')
+
+    # 其他高亮链接（可覆盖）
+    call win_execute(s_winid, 'highlight default link SimpleTreeHidden Comment')
+    call win_execute(s_winid, 'highlight default link SimpleTreeLoading WarningMsg')
     call win_execute(s_winid, 'highlight default link SimpleTreeIconLang Type')
     call win_execute(s_winid, 'highlight default link SimpleTreeIconScript Statement')
     call win_execute(s_winid, 'highlight default link SimpleTreeIconWeb PreProc')
