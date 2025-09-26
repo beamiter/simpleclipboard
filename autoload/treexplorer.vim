@@ -1741,6 +1741,13 @@ def RevealPath(path: string)
   endif
   Render()
 
+  # 改动点：如果目标行已在当前渲染中出现，立刻定位并结束（不给用户可见跳动）
+  if FocusIfPresent(ap)
+    s_reveal_target = ''
+    return
+  endif
+
+  # 否则再用定时器重复尝试定位
   if exists('*timer_start')
     try
       if s_reveal_timer != 0
@@ -1757,7 +1764,6 @@ def RevealPath(path: string)
     FocusPath(ap)
   endif
 enddef
-
 # =============================================================
 # 导出 API（供命令调用）
 # =============================================================
@@ -1805,11 +1811,13 @@ export def Toggle(root: string = '')
   var st = GetNodeState(s_root)
   st.expanded = true
 
-  ScanDirAsync(s_root)
-  Render()
-
+  # 改动点：如果有当前文件，优先进行 Reveal，避免初始 Render 的闪烁
   if curf_abs !=# '' && filereadable(curf_abs)
     RevealPath(curf_abs)
+  else
+    # 无当前文件时再正常扫描并渲染
+    ScanDirAsync(s_root)
+    Render()
   endif
 enddef
 
