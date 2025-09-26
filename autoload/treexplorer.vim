@@ -650,7 +650,6 @@ def EnsureWindowAndBuffer()
     'setlocal signcolumn=no',
     'setlocal cursorline',
     'setlocal winfixwidth',
-    'setlocal winfixbuf',
     'setlocal filetype=simpletree'
   ]
   for cmd in opts
