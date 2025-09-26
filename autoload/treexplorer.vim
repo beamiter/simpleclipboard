@@ -619,29 +619,111 @@ enddef
 # =============================================================
 # 语法高亮（SimpleTree / SimpleTree Help）
 # =============================================================
-
 def SetupSyntaxTree(): void
   if !WinValid()
     return
   endif
-  # 在树窗口内设置语法高亮
-  # 说明：
-  # - SimpleTreeIcon：行首图标（Nerd Font 或 ASCII）
-  # - SimpleTreeDirSlash：目录行的末尾斜杠（当 g:simpletree_folder_suffix=1 时）
-  # - SimpleTreeHidden：隐藏文件（以 . 开头）
-  # - SimpleTreeLoading：加载提示行中的 "Loading..."
   try
-    call win_execute(s_winid, 'silent! syntax clear SimpleTreeIcon SimpleTreeDirSlash SimpleTreeHidden SimpleTreeLoading')
-    call win_execute(s_winid, 'syntax match SimpleTreeIcon ''^\s*\zs\S\+\ze\s''')
-    call win_execute(s_winid, 'syntax match SimpleTreeDirSlash ''\/$''')
-    call win_execute(s_winid, 'syntax match SimpleTreeHidden ''^\s*.\{-}\s\zs\.\S\+''')
-    call win_execute(s_winid, 'syntax match SimpleTreeLoading ''Loading\.\.\.''')
+    # 清理旧的/新增的组
+    call win_execute(s_winid, 'silent! syntax clear SimpleTreeIcon SimpleTreeIconDir SimpleTreeIconHidden SimpleTreeDirName SimpleTreeDirSlash SimpleTreeHidden SimpleTreeLoading SimpleTreeIconLang SimpleTreeIconScript SimpleTreeIconWeb SimpleTreeIconData SimpleTreeIconDoc SimpleTreeIconImage SimpleTreeIconArchive SimpleTreeIconFileDefault')
 
-    # 默认高亮链接（用户可自行覆盖）
-    call win_execute(s_winid, 'highlight default link SimpleTreeIcon Special')
+    # 基础匹配：斜杠后缀、隐藏文件名、Loading
+    call win_execute(s_winid, 'syntax match SimpleTreeDirSlash "/$"')
+    call win_execute(s_winid, 'syntax match SimpleTreeHidden "^\s*.\{-}\s\zs\.\S\+"')
+    call win_execute(s_winid, 'syntax match SimpleTreeLoading "Loading\.\.\."')
+
+    # 目录图标匹配（动态使用当前图标）
+    var dir_pat = '\%(' .. s_icons.dir .. '\|' .. s_icons.dir_open .. '\)'
+    var cmd_dir = 'syntax match SimpleTreeIconDir "^\s*\zs' .. dir_pat .. '\ze\s"'
+    call win_execute(s_winid, cmd_dir)
+
+    # 目录名高亮（仅在启用斜杠后缀时）
+    if !!get(g:, 'simpletree_folder_suffix', 1)
+      call win_execute(s_winid, 'syntax match SimpleTreeDirName "^\s*\S\+\s\zs.\+\ze/$"')
+    endif
+
+    # 文件 icon 分色（仅当启用 Nerd Font 且显示文件图标）
+    if NFEnabled() && !!get(g:, 'simpletree_show_file_icons', 1)
+      # 扩展名 -> 图标 映射（与 FileIcon 保持一致）
+      var m = {
+        'vim': '', 'lua': '', 'py': '', 'rb': '', 'go': '', 'rs': '',
+        'js': '', 'ts': '', 'jsx': '', 'tsx': '',
+        'c': '', 'h': '', 'cpp': '', 'hpp': '',
+        'java': '', 'kt': '',
+        'sh': '', 'bash': '', 'zsh': '',
+        'md': '', 'txt': '',
+        'json': '', 'toml': '', 'yml': '', 'yaml': '', 'ini': '',
+        'lock': '',
+        'html': '', 'css': '', 'scss': '',
+        'png': '', 'jpg': '', 'jpeg': '', 'gif': '', 'svg': '', 'webp': '',
+        'pdf': '',
+        'zip': '', 'tar': '', 'gz': '', '7z': ''
+      }
+
+      # 分类列表
+      var cats_lang = ['vim', 'lua', 'py', 'rb', 'go', 'rs', 'js', 'ts', 'jsx', 'tsx', 'c', 'h', 'cpp', 'hpp', 'java', 'kt']
+      var cats_script = ['sh', 'bash', 'zsh']
+      var cats_web = ['html', 'css', 'scss']
+      var cats_data = ['json', 'toml', 'yml', 'yaml', 'ini', 'lock']
+      var cats_doc = ['md', 'txt', 'pdf']
+      var cats_img = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp']
+      var cats_arc = ['zip', 'tar', 'gz', '7z']
+
+      # 遍历字典项（使用 while，避免 for/endfor 解析问题）
+      var kv = items(m)
+      var i = 0
+      while i < len(kv)
+        var ext = kv[i][0]
+        var ico = kv[i][1]
+        var grp = 'SimpleTreeIconFileDefault'
+        if index(cats_lang, ext) >= 0
+          grp = 'SimpleTreeIconLang'
+        elseif index(cats_script, ext) >= 0
+          grp = 'SimpleTreeIconScript'
+        elseif index(cats_web, ext) >= 0
+          grp = 'SimpleTreeIconWeb'
+        elseif index(cats_data, ext) >= 0
+          grp = 'SimpleTreeIconData'
+        elseif index(cats_doc, ext) >= 0
+          grp = 'SimpleTreeIconDoc'
+        elseif index(cats_img, ext) >= 0
+          grp = 'SimpleTreeIconImage'
+        elseif index(cats_arc, ext) >= 0
+          grp = 'SimpleTreeIconArchive'
+        endif
+        # 为该图标建立匹配命令
+        var pat = '^\s*\zs' .. ico .. '\ze\s'
+        var cmd = 'syntax match ' .. grp .. ' "' .. pat .. '"'
+        call win_execute(s_winid, cmd)
+        i = i + 1
+      endwhile
+    else
+      # 退化：通用文件 icon 高亮
+      call win_execute(s_winid, 'syntax match SimpleTreeIconFileDefault "^\s*\zs\S\+\ze\s"')
+    endif
+
+    # 隐藏文件 icon 灰色（优先生效，放在分色匹配之后）
+    call win_execute(s_winid, 'syntax match SimpleTreeIconHidden "^\s*\zs\S\+\ze\s\."')
+
+    # 默认高亮链接/颜色（可被用户覆盖）
     call win_execute(s_winid, 'highlight default link SimpleTreeDirSlash Directory')
+    call win_execute(s_winid, 'highlight default link SimpleTreeDirName Directory')
+    call win_execute(s_winid, 'highlight default link SimpleTreeIconDir Directory')
     call win_execute(s_winid, 'highlight default link SimpleTreeHidden Comment')
     call win_execute(s_winid, 'highlight default link SimpleTreeLoading WarningMsg')
+
+    # 隐藏文件 icon 固定灰色（用户可覆盖）
+    call win_execute(s_winid, 'highlight default SimpleTreeIconHidden ctermfg=245 guifg=#6a6a6a')
+
+    # 各类别颜色（用户可覆盖）
+    call win_execute(s_winid, 'highlight default link SimpleTreeIconLang Type')
+    call win_execute(s_winid, 'highlight default link SimpleTreeIconScript Statement')
+    call win_execute(s_winid, 'highlight default link SimpleTreeIconWeb PreProc')
+    call win_execute(s_winid, 'highlight default link SimpleTreeIconData Constant')
+    call win_execute(s_winid, 'highlight default link SimpleTreeIconDoc Identifier')
+    call win_execute(s_winid, 'highlight default link SimpleTreeIconImage Special')
+    call win_execute(s_winid, 'highlight default link SimpleTreeIconArchive WarningMsg')
+    call win_execute(s_winid, 'highlight default link SimpleTreeIconFileDefault Special')
   catch
   endtry
 enddef
@@ -712,7 +794,7 @@ def EnsureWindowAndBuffer()
   call win_execute(s_winid, 'nnoremap <silent> <buffer> R :call treexplorer#OnRefresh()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> H :call treexplorer#OnToggleHidden()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> q :call treexplorer#OnClose()<CR>')
-  call win_execute(s_winid, 'nnoremap <silent> <buffer> s :call treexplorer#OnRootHere()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> e :call treexplorer#OnRootHere()<CR>')
   call win_execute(s_winid, 'nnoremap <nowait> <silent> <buffer> U :call treexplorer#OnRootUp()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> C :call treexplorer#OnRootPrompt()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> . :call treexplorer#OnRootCwd()<CR>')
@@ -784,6 +866,8 @@ def Render()
 
   # 允许运行时切换 Nerd Font
   call SetupIcons()
+  # 根据当前图标/配置重新设置语法匹配和高亮
+  call SetupSyntaxTree()
 
   var lines: list<string> = []
   var idx: list<dict<any>> = []
@@ -1447,7 +1531,7 @@ def BuildHelpLines(): list<string>
     'R     刷新树（仅重扫缓存）',
     'H     显示/隐藏点文件',
     'q     关闭树窗口',
-    's     将当前节点设为根（目录；文件取父目录）',
+    'e     将当前节点设为根（目录；文件取父目录）',
     'U     根上移一层',
     'C     输入路径作为根',
     '.     使用当前工作目录作为根',
