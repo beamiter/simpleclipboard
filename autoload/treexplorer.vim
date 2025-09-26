@@ -3,7 +3,7 @@ vim9script
 # =============================================================
 # 配置
 # =============================================================
-g:simpletree_width = get(g:, 'simpletree_width', 30)
+g:simpletree_width = get(g:, 'simpletree_width', 40)
 g:simpletree_hide_dotfiles = get(g:, 'simpletree_hide_dotfiles', 1)
 g:simpletree_page = get(g:, 'simpletree_page', 200)
 # 打开文件后保持焦点在文件缓冲区
