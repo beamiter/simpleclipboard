@@ -13,6 +13,75 @@ g:simpletree_daemon_path = get(g:, 'simpletree_daemon_path', '')
 g:simpletree_root_locked = get(g:, 'simpletree_root_locked', 1)
 
 # =============================================================
+# Nerd Font UI 配置与工具
+# =============================================================
+# 启用 Nerd Font 图标（若终端/GUI无 Nerd Font，可设为 0）
+g:simpletree_use_nerdfont = get(g:, 'simpletree_use_nerdfont', 1)
+# 是否为文件显示类型图标
+g:simpletree_show_file_icons = get(g:, 'simpletree_show_file_icons', 1)
+# 目录是否显示斜杠后缀
+g:simpletree_folder_suffix = get(g:, 'simpletree_folder_suffix', 1)
+# 图标覆盖（如 {'dir': '', 'dir_open': '', 'file': '', 'loading': ''}）
+g:simpletree_icons = get(g:, 'simpletree_icons', {})
+
+def NFEnabled(): bool
+  return !!get(g:, 'simpletree_use_nerdfont', 0)
+enddef
+
+# 图标集合（会根据 NF 状态初始化，并允许 g:simpletree_icons 覆盖）
+var s_icons: dict<string> = {}
+
+def SetupIcons()
+  if NFEnabled()
+    s_icons = {
+      dir: '',        # 关闭的目录
+      dir_open: '',   # 打开的目录
+      file: '',       # 通用文件
+      loading: ''     # 加载中
+    }
+  else
+    s_icons = {
+      dir: '▸',
+      dir_open: '▾',
+      file: '  ',
+      loading: '⏳'
+    }
+  endif
+  # 允许用户覆盖图标
+  for [k, v] in items(get(g:, 'simpletree_icons', {}))
+    s_icons[k] = v
+  endfor
+enddef
+
+# 文件类型图标（常用扩展；未命中时用通用文件图标）
+def FileIcon(name: string): string
+  if !NFEnabled()
+    return s_icons.file
+  endif
+  var ext = tolower(fnamemodify(name, ':e'))
+  if ext ==# ''
+    return '󰈙'   # 通用文件（无扩展）
+  endif
+  var m = {
+    'vim': '', 'lua': '', 'py': '', 'rb': '', 'go': '', 'rs': '',
+    'js': '', 'ts': '', 'jsx': '', 'tsx': '',
+    'c': '', 'h': '', 'cpp': '', 'hpp': '',
+    'java': '', 'kt': '',
+    'sh': '', 'bash': '', 'zsh': '',
+    'md': '', 'txt': '',
+    'json': '', 'toml': '', 'yml': '', 'yaml': '', 'ini': '',
+    'lock': '',
+    'html': '', 'css': '', 'scss': '',
+    'png': '', 'jpg': '', 'jpeg': '', 'gif': '', 'svg': '', 'webp': '',
+    'pdf': '',
+    'zip': '', 'tar': '', 'gz': '', '7z': ''
+  }
+  return get(m, ext, s_icons.file)
+enddef
+
+call SetupIcons()
+
+# =============================================================
 # 前端状态
 # =============================================================
 var s_bufnr: number = -1
@@ -732,7 +801,8 @@ def BuildLines(path: string, depth: number, lines: list<string>, idx: list<dict<
       # Log('BuildLines: no cache and not loading => trigger ScanDirAsync(path)', 'WarningMsg')
       ScanDirAsync(path)
     endif
-    lines->add(repeat('  ', depth) .. '⏳ Loading...')
+    # Loading 占位符使用图标
+    lines->add(repeat('  ', depth) .. s_icons.loading .. ' Loading...')
     idx->add({path: '', is_dir: false, name: '', depth: depth, loading: true})
     # Log('BuildLines: appended Loading placeholder path="' .. path .. '" depth=' .. depth)
     return
@@ -741,9 +811,16 @@ def BuildLines(path: string, depth: number, lines: list<string>, idx: list<dict<
   var entries = s_cache[path]
   # Log('BuildLines: entries_len=' .. len(entries) .. ' path="' .. path .. '"')
   for e in entries
-    var icon = e.is_dir ? (GetNodeState(e.path).expanded ? '▾ ' : '▸ ') : '  '
-    var suffix = e.is_dir ? '/' : ''
-    var text = repeat('  ', depth) .. icon .. e.name .. suffix
+    # Nerd Font 图标优化 + 回退兼容
+    var icon = ''
+    if e.is_dir
+      icon = GetNodeState(e.path).expanded ? s_icons.dir_open : s_icons.dir
+    else
+      icon = !!get(g:, 'simpletree_show_file_icons', 1) ? FileIcon(e.name) : s_icons.file
+    endif
+    var suffix = (e.is_dir && !!get(g:, 'simpletree_folder_suffix', 1)) ? '/' : ''
+    var text = repeat('  ', depth) .. icon .. ' ' .. e.name .. suffix
+
     lines->add(text)
     idx->add({path: e.path, is_dir: e.is_dir, name: e.name, depth: depth})
     # Log('BuildLines: add line "' .. text .. '"')
@@ -763,6 +840,9 @@ def Render()
   endif
   EnsureWindowAndBuffer()
 
+  # 每次渲染前根据配置重建图标（允许运行时切换 Nerd Font）
+  call SetupIcons()
+
   var lines: list<string> = []
   var idx: list<dict<any>> = []
 
@@ -773,7 +853,7 @@ def Render()
   BuildLines(s_root, 0, lines, idx)
 
   if len(lines) == 0 && get(s_loading, s_root, v:false)
-    lines = ['⏳ Loading...']
+    lines = [s_icons.loading .. ' Loading...']
     idx = [{path: '', is_dir: false, name: '', depth: 0, loading: true}]
     # Log('Render: only root loading placeholder')
   endif
@@ -1569,7 +1649,7 @@ export def ShowHelp()
 
     # 创建浮窗（不使用 popup_getbuf）
     var popid = popup_create(lines, {
-      title: 'SimpleTree Help',
+      title: NFEnabled() ? '󰙎 SimpleTree Help' : 'SimpleTree Help',
       pos: 'center',
       minwidth: width,
       minheight: height,
@@ -1871,8 +1951,3 @@ export def DebugStatus()
   echo '  cache_keys: ' .. string(keys(s_cache))
   Log('DebugStatus logged', 'MoreMsg')
 enddef
-
-# =============================================================
-# 用户命令
-# =============================================================
-command! -nargs=? SimpleTree call treexplorer#Toggle(<q-args>)
