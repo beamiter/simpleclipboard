@@ -7,7 +7,7 @@ g:simpletree_width = get(g:, 'simpletree_width', 45)
 g:simpletree_hide_dotfiles = get(g:, 'simpletree_hide_dotfiles', 1)
 g:simpletree_page = get(g:, 'simpletree_page', 200)
 # 打开文件后保持焦点在文件缓冲区
-g:simpletree_keep_focus = get(g:, 'simpletree_keep_focus', 0)
+g:simpletree_keep_focus = get(g:, 'simpletree_keep_focus', 1)
 g:simpletree_debug = get(g:, 'simpletree_debug', 0)
 g:simpletree_daemon_path = get(g:, 'simpletree_daemon_path', '')
 g:simpletree_root_locked = get(g:, 'simpletree_root_locked', 1)
@@ -372,7 +372,12 @@ enddef
 def OtherWindowId(): number
   var wins = getwininfo()
   for w in wins
-    if w.winid != s_winid
+    if w.winid == s_winid
+      continue
+    endif
+    # 只选择普通缓冲区窗口（buftype 为空）
+    var bt = getbufvar(w.bufnr, '&buftype')
+    if type(bt) == v:t_string && bt ==# ''
       return w.winid
     endif
   endfor
@@ -1150,7 +1155,8 @@ def OpenFile(p: string)
   if p ==# ''
     return
   endif
-  var keep = !!g:simpletree_keep_focus
+  # keep_in_file = 1 表示打开后保持在文件窗口
+  var keep_in_file = !!get(g:, 'simpletree_keep_focus', 1)
 
   var other = OtherWindowId()
   if other != 0
@@ -1160,7 +1166,8 @@ def OpenFile(p: string)
   endif
   execute 'edit ' .. fnameescape(p)
 
-  if keep
+  # 只有在不需要保持在文件窗口时，才回到树窗口
+  if !keep_in_file && WinValid()
     call win_gotoid(s_winid)
   endif
 enddef
