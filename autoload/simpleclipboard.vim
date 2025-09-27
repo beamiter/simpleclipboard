@@ -419,9 +419,75 @@ def CopyViaOsc52(text: string): bool
   endtry
 enddef
 
+# =============================================================
+# 环境检测：SSH/容器（Docker/Podman/K8s）
+# =============================================================
+
+# 是否在 SSH 会话中
+def IsSSH(): bool
+  return exists('$SSH_CONNECTION') || exists('$SSH_CLIENT') || exists('$SSH_TTY')
+enddef
+
+# 是否在容器内（Docker/Podman/K8s/LXC 等）
+def InContainer(): bool
+  # 简单文件标记
+  if filereadable('/.dockerenv') || filereadable('/run/.containerenv')
+    return true
+  endif
+
+  # cgroup 关键词检测
+  try
+    var lines = readfile('/proc/1/cgroup')
+    for l in lines
+      if l =~# '\<docker\>\|\<containerd\>\|\<kubepods\>\|\<libpod\>\|\<podman\>\|\<lxc\>'
+        return true
+      endif
+    endfor
+  catch
+    # 某些系统可能没有该文件或不可读，忽略
+  endtry
+
+  # 环境变量线索（不完全但常见）
+  if exists('$container') || exists('$DOCKER_CONTAINER') || exists('$KUBERNETES_SERVICE_HOST')
+    return true
+  endif
+
+  return false
+enddef
+
+# 是否默认优先 OSC52（支持用户覆盖）
+def PreferOsc52(): bool
+  # 用户覆盖：1 强制开启；0 强制关闭；未设置则自动检测
+  var override = get(g:, 'simpleclipboard_prefer_osc52', -1)
+  if override == 1
+    Log('PreferOsc52: forced by g:simpleclipboard_prefer_osc52=1', 'Comment')
+    return true
+  elseif override == 0
+    Log('PreferOsc52: disabled by g:simpleclipboard_prefer_osc52=0', 'Comment')
+    return false
+  endif
+
+  # 自动策略：SSH 或容器内则优先 OSC52
+  if IsSSH() || InContainer()
+    Log('PreferOsc52: auto-on (SSH or container detected).', 'MoreMsg')
+    return true
+  endif
+
+  Log('PreferOsc52: auto-off (local host).', 'Comment')
+  return false
+enddef
+
+# =============================================================
+# 修改复制策略入口：优先 OSC52（在 SSH/容器环境）
+# =============================================================
+
 export def CopyToSystemClipboard(text: string): bool
-  # 优先使用守护进程，其次外部命令，最后 OSC52
-  # return CopyViaCmds(text)
+  if PreferOsc52()
+    # SSH/容器中优先走 OSC52，避免复制到远端系统剪贴板
+    return CopyViaOsc52(text)
+  endif
+
+  # 本地环境：守护进程 → 外部命令 → OSC52
   return CopyViaRust(text) || CopyViaCmds(text) || CopyViaOsc52(text)
 enddef
 
