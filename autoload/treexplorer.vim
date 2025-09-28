@@ -758,10 +758,10 @@ def EnsureWindowAndBuffer()
     return
   endif
 
-  execute 'topleft vertical vsplit'
+  noautocmd execute 'topleft vertical vsplit'
   s_winid = win_getid()
 
-  call win_execute(s_winid, 'silent enew')
+  noautocmd call win_execute(s_winid, 'silent enew')
   s_bufnr = winbufnr(s_winid)
 
   call win_execute(s_winid, 'file SimpleTree')
