@@ -10,7 +10,7 @@ use std::env; // <--- 新增，用于读取环境变量
 
 // 获取监听地址，优先从环境变量读取，否则使用默认值
 fn listen_address() -> String {
-    env::var("SIMPLECLIPBOARD_ADDR").unwrap_or_else(|_| "127.0.0.1:12345".to_string())
+    env::var("SIMPLECLIPBOARD_ADDR").unwrap_or_else(|_| "0.0.0.0:12345".to_string())
 }
 
 fn pid_path() -> PathBuf {
