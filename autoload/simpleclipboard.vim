@@ -154,6 +154,138 @@ def GetDaemonAddress(): string
 enddef
 
 # =============================================================
+# 守护进程管理 (Daemon Management)
+# =============================================================
+
+# 缓存守护进程可执行文件路径
+var daemon_exe_path: string = ''
+
+# 获取 PID 文件路径
+def PidFilePath(): string
+  return RuntimeDir() .. '/simpleclipboard.pid'
+enddef
+
+# 在 runtimepath 中查找守护进程可执行文件
+def FindDaemonExe(): void
+  if daemon_exe_path !=# '' | return | endif
+
+  var override = get(g:, 'simpleclipboard_daemon_path', '')
+  if type(override) == v:t_string && override !=# ''
+    if filereadable(override)
+      daemon_exe_path = override
+      Log('Found daemon via g:simpleclipboard_daemon_path: ' .. daemon_exe_path, 'MoreMsg')
+      return
+    else
+      Log('g:simpleclipboard_daemon_path set but file not found: ' .. override, 'WarningMsg')
+    endif
+  endif
+
+  var path = FindInRuntimepath('lib/simpleclipboard-daemon')
+  if path !=# ''
+    daemon_exe_path = path
+    Log('Found daemon in runtimepath: ' .. path, 'MoreMsg')
+  endif
+enddef
+
+# 检查守护进程是否正在运行
+def IsDaemonRunning(): bool
+  var pidfile = PidFilePath()
+  if !filereadable(pidfile)
+    return false
+  endif
+
+  try
+    # 读取 PID 文件内容并去除空白字符
+    var pid = trim(readfile(pidfile)[0])
+    if pid == '' || pid !~ '^\d\+$'
+      return false
+    endif
+
+    # 在 Unix-like 系统上，用 ps 命令检查进程是否存在
+    if has('unix')
+      system('ps -p ' .. pid .. ' > /dev/null 2>&1')
+      # v:shell_error == 0 表示进程存在
+      return v:shell_error == 0
+    endif
+  catch
+    # 读取文件失败等异常
+    return false
+  endtry
+
+  return false
+enddef
+
+# [导出函数] 启动守护进程
+export def StartDaemon(): void
+  if IsDaemonRunning()
+    Log('Daemon is already running.', 'MoreMsg')
+    return
+  endif
+
+  FindDaemonExe()
+  if daemon_exe_path ==# ''
+    Log('Daemon executable not found. Cannot start.', 'ErrorMsg')
+    echohl WarningMsg | echom '[SimpleClipboard] Daemon executable not found.' | echohl None
+    return
+  endif
+
+  if !executable(daemon_exe_path)
+    Log('Daemon file found but is not executable: ' .. daemon_exe_path, 'ErrorMsg')
+    echohl ErrorMsg | echom '[SimpleClipboard] Daemon is not executable: ' .. daemon_exe_path | echohl None
+    return
+  endif
+
+  Log('Starting daemon: ' .. daemon_exe_path, 'Question')
+  try
+    # 从配置中获取端口，并作为环境变量传递给守护进程
+    # 这对应了 daemon.rs 中的 env::var("SIMPLECLIPBOARD_ADDR")
+    var port = get(g:, 'simpleclipboard_port', 12345)
+    var job_env = {'SIMPLECLIPBOARD_ADDR': '0.0.0.0:' .. port}
+
+    # 使用 job_start 在后台启动守护进程
+    job_start([daemon_exe_path], { 'env': job_env })
+
+    # 等待一小段时间，然后再次检查
+    sleep 150m
+    if IsDaemonRunning()
+      Log('Daemon started successfully.', 'ModeMsg')
+    else
+      Log('Failed to confirm daemon startup. Check permissions or run daemon manually for logs.', 'ErrorMsg')
+    endif
+  catch
+    Log('Error starting daemon process: ' .. v:exception, 'ErrorMsg')
+    echohl ErrorMsg | echom '[SimpleClipboard] Failed to start daemon job.' | echohl None
+  endtry
+enddef
+
+# [导出函数] 停止守护进程
+export def StopDaemon(): void
+  var pidfile = PidFilePath()
+  if !filereadable(pidfile)
+    Log('Daemon not running (no PID file found).', 'MoreMsg')
+    return
+  endif
+
+  try
+    var pid = trim(readfile(pidfile)[0])
+    if pid == '' || pid !~ '^\d\+$'
+      Log('Invalid PID file content. Cannot stop daemon.', 'WarningMsg')
+      return
+    endif
+
+    if has('unix')
+      Log('Stopping daemon with PID: ' .. pid, 'Question')
+      system('kill ' .. pid)
+      Log('Sent TERM signal to daemon.', 'ModeMsg')
+    else
+      Log('Auto-stopping daemon is not supported on this OS.', 'Comment')
+    endif
+  catch
+    Log('Error stopping daemon: ' .. v:exception, 'ErrorMsg')
+  endtry
+enddef
+
+# =============================================================
 # 复制逻辑 (TCP Daemon -> Fallbacks)
 # =============================================================
 
