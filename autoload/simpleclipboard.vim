@@ -205,10 +205,13 @@ def CopyViaDaemonTCP(text: string): bool
 
   # 【关键修正】将 address 和 text 用 NUL 字符拼接
   # address + "\x00" + text
-  var payload = address .. "\x00" .. text
+  var payload = address .. "\x01" .. text
+  # Log('address: ' .. address)
+  # Log('text: ' .. text)
+  # Log('payload: ' .. payload)
+  # echom map(deepscopy(payload), 'printf("%#x", char2nr(v:val))')
 
   try
-    # 【关键修正】现在只传递一个打包好的 payload 参数
     if libcallnr(client_lib, 'rust_set_clipboard_tcp', payload) == 1
       Log('Success: Sent text to daemon via TCP.', 'ModeMsg')
       return true
