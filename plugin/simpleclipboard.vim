@@ -7,7 +7,7 @@ g:loaded_simpleclipboard = 1
 
 # ---------------- 配置项（可在 vimrc 中覆盖） ----------------
 # 是否启用守护进程相关逻辑
-g:simpleclipboard_daemon_enabled = get(g:, 'simpleclipboard_daemon_enabled', 1)
+g:simpleclipboard_daemon_enabled = get(g:, 'simpleclipboard_daemon_enabled', 0)
 # 自动在 Vim 启动时启动守护进程（推荐开启）
 g:simpleclipboard_daemon_autostart = get(g:, 'simpleclipboard_daemon_autostart', 1)
 # 自动在 Vim 退出时停止守护进程（默认关闭，避免误杀其他 Vim 使用中的守护进程）
