@@ -46,7 +46,7 @@ def FindInRuntimepath(rel: string): string
 enddef
 
 def LibName(): string
-  if has('mac')
+  if has('macunix')
     return 'libsimpleclipboard.dylib'
   endif
   return 'libsimpleclipboard.so'
@@ -103,6 +103,17 @@ def IsPortListening(port: number, host: string = ''): bool
   system($"ss -lnt | grep -q '{pattern}'")
   return v:shell_error == 0
 enddef
+def IsTcpOpen(addr: string): bool
+  try
+    var ch = ch_open(addr, {'timeout': 300})
+    if ch_status(ch) ==# 'open'
+      ch_close(ch)
+      return true
+    endif
+  catch
+  endtry
+  return false
+enddef
 
 def FindDaemonExe(): void
   if daemon_exe_path !=# '' | return | endif
@@ -118,42 +129,40 @@ enddef
 
 def StartRelay(): void
   var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
-  if IsPortListening(relay_port)
+  if IsTcpOpen($"127.0.0.1:{relay_port}")
     Log('Persistent relay service is already running.', 'MoreMsg')
     return
   endif
-
   if get(g:, 'simpleclipboard_relay_method', 'daemon') !=# 'daemon'
     Log($"Relay method is not 'daemon', skipping.", 'Comment')
     return
   endif
-
   FindDaemonExe()
   if daemon_exe_path ==# ''
     Log("Daemon executable for relay not found.", 'ErrorMsg')
     return
   endif
-
   if !executable(daemon_exe_path)
     Log("Daemon executable for relay found but is not executable: " .. daemon_exe_path, 'ErrorMsg')
     return
   endif
-
   Log('Starting persistent relay service with daemon...', 'Question')
   var env_var = $'SIMPLECLIPBOARD_ADDR=0.0.0.0:{relay_port}'
-  var command = $"{env_var} nohup {daemon_exe_path} >/dev/null 2>&1 &"
-  var argv = ['sh', '-c', command]
-
+  # 优先尝试 job_start 脱离 Vim 生命周期（nohup 作为兜底）
   try
-    job_start(argv, {stoponexit: 'none'})
-    Log($"Executed command to start persistent relay: {command}", 'MoreMsg')
+    job_start([daemon_exe_path], { 'env': {'SIMPLECLIPBOARD_ADDR': '0.0.0.0:' .. relay_port}, out_io: 'null', err_io: 'null', stoponexit: 'none' })
   catch
-    Log($"Failed to start persistent relay job. Error: {v:exception}", 'ErrorMsg')
-    return
+    var command = $"{env_var} nohup {daemon_exe_path} >/dev/null 2>&1 &"
+    try
+      job_start(['sh', '-c', command], {stoponexit: 'none'})
+    catch
+      Log($"Failed to start persistent relay job. Error: {v:exception}", 'ErrorMsg')
+      return
+    endtry
   endtry
 
   sleep 250m
-  if IsPortListening(relay_port)
+  if IsTcpOpen($"127.0.0.1:{relay_port}")
     Log('Persistent relay service started successfully.', 'ModeMsg')
   else
     Log('Failed to confirm persistent relay service startup.', 'ErrorMsg')
@@ -228,7 +237,7 @@ export def SetupRelayIfNeeded(): void
   elseif IsSSH()
     Log('In SSH session, checking for tunnel then relay...', 'MoreMsg')
     var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
-    if IsPortListening(final_port, '127.0.0.1')
+    if IsTcpOpen($"127.0.0.1:{final_port}")
       StartRelay()
       var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
       if CanConnect($"127.0.0.1:{relay_port}")
@@ -296,6 +305,7 @@ def IsDaemonRunning(): bool
   return false
 enddef
 
+# autoload/simpleclipboard.vim 中 StartDaemon 片段
 export def StartDaemon(): void
   if IsSSH() || InContainer()
     Log("Vim is in a remote/container environment, local daemon management is skipped.", 'Comment')
@@ -316,7 +326,8 @@ export def StartDaemon(): void
   Log('Starting local daemon: ' .. daemon_exe_path, 'Question')
   try
     var port = g:simpleclipboard_port
-    var job_env = {'SIMPLECLIPBOARD_ADDR': '0.0.0.0:' .. port}
+    var bind_addr = get(g:, 'simpleclipboard_bind_addr', '127.0.0.1')
+    var job_env = {'SIMPLECLIPBOARD_ADDR': bind_addr .. ':' .. port}
     job_start([daemon_exe_path], { 'env': job_env, out_io: 'null', err_io: 'null', stoponexit: 'none' })
     sleep 150m
     if IsDaemonRunning()
@@ -451,16 +462,10 @@ def CopyViaOsc52(text: string): bool
 
   Log('Attempting copy via OSC52 terminal sequence...', 'Question')
 
-  if !executable('base64')
-    Log('Skipped OSC52: `base64` command not executable.', 'Comment')
-    return false
-  endif
-
   var limit = get(g:, 'simpleclipboard_osc52_limit', 75000)
-  var payload = text
-  if strchars(payload) > limit
+  var payload = strchars(text) > limit ? strcharpart(text, 0, limit) : text
+  if strchars(text) > limit
     Log('Text truncated to ' .. limit .. ' characters for OSC52.', 'Comment')
-    payload = strcharpart(payload, 0, limit)
   endif
 
   var b64 = trim(system('base64 -w0', payload))
@@ -491,7 +496,6 @@ def CopyViaOsc52(text: string): bool
     return false
   endtry
 enddef
-
 # =============================================================
 # 公共 API
 # =============================================================
@@ -529,6 +533,27 @@ export def CopyRangeToClipboard(l1: number, l2: number)
   else
     echohl WarningMsg
     echom 'SimpleClipboard: All copy methods failed.'
+    echohl None
+  endif
+enddef
+
+export def CopyYankedToClipboardEvent(ev: any = v:null, _timer_id: any = 0)
+  var txt = ''
+  if type(ev) == v:t_dict && has_key(ev, 'regcontents')
+    var lines = ev.regcontents
+    txt = join(lines, "\n")
+  else
+    # 兜底：回退到寄存器读取
+    txt = getreg('"')
+  endif
+
+  if txt ==# ''
+    return
+  endif
+
+  if !CopyToSystemClipboard(txt)
+    echohl WarningMsg
+    echom 'SimpleClipboard: All copy methods failed. Check logs for details.'
     echohl None
   endif
 enddef

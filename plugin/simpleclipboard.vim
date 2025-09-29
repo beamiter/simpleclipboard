@@ -16,6 +16,7 @@ g:simpleclipboard_no_default_mappings = get(g:, 'simpleclipboard_no_default_mapp
 g:simpleclipboard_debug = get(g:, 'simpleclipboard_debug', 0)
 g:simpleclipboard_debug_to_file = get(g:, 'simpleclipboard_debug_to_file', 0)
 g:simpleclipboard_disable_osc52 = get(g:, 'simpleclipboard_disable_osc52', 0)
+g:simpleclipboard_bind_addr = get(g:, 'simpleclipboard_bind_addr', '127.0.0.1')
 
 # --- 端口规划 ---
 # 本地主守护进程监听的端口
@@ -36,15 +37,20 @@ command! SimpleCopyYank simpleclipboard#CopyYankedToClipboard()
 command! -range=% SimpleCopyRange simpleclipboard#CopyRangeToClipboard(<line1>, <line2>)
 nnoremap <silent> <Plug>(SimpleCopyYank) <Cmd>SimpleCopyYank<CR>
 if !g:simpleclipboard_no_default_mappings
-  nmap <leader>y <Plug>(SimpleCopyYank)
-  xnoremap <leader>y :<C-U>'<,'>SimpleCopyRange<CR>
+  nnoremap <silent> <leader>y <Plug>(SimpleCopyYank)
+  xnoremap <silent> <leader>y :<C-U>'<,'>SimpleCopyRange<CR>
 endif
 
 # ---------------- 自动命令 ----------------
 if g:simpleclipboard_auto_copy
   augroup SimpleClipboardYank
     autocmd!
-    autocmd TextYankPost * if g:simpleclipboard_auto_copy | if exists('*timer_start') | call timer_start(0, 'simpleclipboard#CopyYankedToClipboard') | else | call simpleclipboard#CopyYankedToClipboard() | endif | endif
+    if exists('*timer_start')
+      autocmd TextYankPost * call timer_start(0, function('simpleclipboard#CopyYankedToClipboardEvent', [v:event]))
+    else
+      " 无 timer_start 时直接调用，传 1 个参数也匹配上面的函数签名
+      autocmd TextYankPost * call simpleclipboard#CopyYankedToClipboardEvent(v:event)
+    endif
   augroup END
 endif
 
