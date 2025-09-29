@@ -327,7 +327,7 @@ export def StartDaemon(): void
   Log('Starting local daemon: ' .. daemon_exe_path, 'Question')
   try
     var port = g:simpleclipboard_port
-    var bind_addr = get(g:, 'simpleclipboard_bind_addr', '127.0.0.1')
+    var bind_addr = get(g:, 'simpleclipboard_bind_addr', '0.0.0.0')
     var job_env = {'SIMPLECLIPBOARD_ADDR': bind_addr .. ':' .. port}
     job_start([daemon_exe_path], { 'env': job_env, out_io: 'null', err_io: 'null', stoponexit: 'none' })
     sleep 150m

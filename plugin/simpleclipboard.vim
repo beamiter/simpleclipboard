@@ -17,7 +17,7 @@ g:simpleclipboard_no_default_mappings = get(g:, 'simpleclipboard_no_default_mapp
 g:simpleclipboard_debug = get(g:, 'simpleclipboard_debug', 0)
 g:simpleclipboard_debug_to_file = get(g:, 'simpleclipboard_debug_to_file', 0)
 g:simpleclipboard_disable_osc52 = get(g:, 'simpleclipboard_disable_osc52', 0)
-g:simpleclipboard_bind_addr = get(g:, 'simpleclipboard_bind_addr', '127.0.0.1')
+g:simpleclipboard_bind_addr = get(g:, 'simpleclipboard_bind_addr', '0.0.0.0')
 
 # --- 端口规划 ---
 # 本地主守护进程监听的端口

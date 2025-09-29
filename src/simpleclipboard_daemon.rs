@@ -21,11 +21,11 @@ enum Msg {
 
 fn listen_address() -> String {
     // 更安全的默认：仅本机
-    env::var("SIMPLECLIPBOARD_ADDR").unwrap_or_else(|_| "127.0.0.1:12344".to_string())
+    env::var("SIMPLECLIPBOARD_ADDR").unwrap_or_else(|_| "0.0.0.0:12344".to_string())
 }
 
 fn final_addr() -> String {
-    env::var("SIMPLECLIPBOARD_FINAL_ADDR").unwrap_or_else(|_| "127.0.0.1:12345".to_string())
+    env::var("SIMPLECLIPBOARD_FINAL_ADDR").unwrap_or_else(|_| "0.0.0.0:12345".to_string())
 }
 
 fn expected_token() -> Option<String> {
