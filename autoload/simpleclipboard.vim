@@ -348,19 +348,39 @@ export def StopDaemon(): void
   endif
 
   var pidfile = RuntimeDir() .. '/simpleclipboard.pid'
-  if !filereadable(pidfile) return endif
+  if !filereadable(pidfile)
+    return
+  endif
 
   try
     var pid = trim(readfile(pidfile)[0])
     if pid != '' && pid =~ '^\d\+$'
+      # 尝试发送 TERM
       system('kill ' .. pid)
-      Log('Sent TERM signal to local daemon.', 'ModeMsg')
+      if v:shell_error == 0
+        Log('Sent TERM signal to local daemon.', 'ModeMsg')
+      else
+        Log('Failed to send TERM to local daemon (pid ' .. pid .. ').', 'WarningMsg')
+      endif
+
+      # 稍等片刻再清理 pidfile（容错）
+      sleep 100m
+      try
+        delete(pidfile)
+      catch
+        # ignore deletion errors
+      endtry
+    else
+      Log('PID file content invalid; removing pid file.', 'WarningMsg')
+      try
+        delete(pidfile)
+      catch
+      endtry
     endif
   catch
     Log('Error stopping daemon: ' .. v:exception, 'ErrorMsg')
   endtry
 enddef
-
 # =============================================================
 # 复制逻辑 (TCP Daemon -> Fallbacks)
 # =============================================================
