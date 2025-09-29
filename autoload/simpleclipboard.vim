@@ -7,7 +7,8 @@ vim9script
 # 取运行时目录（优先 XDG_RUNTIME_DIR，回退 /tmp）
 def RuntimeDir(): string
   var dir = getenv('XDG_RUNTIME_DIR')
-  if dir ==# ''
+  # 【修正 1】: 使用 empty() 来安全地处理 getenv() 可能返回的 v:null
+  if empty(dir)
     dir = '/tmp'
   endif
   return dir
@@ -86,12 +87,10 @@ enddef
 # 环境检测：SSH/容器（Docker/Podman/K8s）
 # =============================================================
 
-# 是否在 SSH 会话中 (此函数现在仅用于回退逻辑，不再是中继判断的关键)
 def IsSSH(): bool
   return exists('$SSH_CONNECTION') || exists('$SSH_CLIENT') || exists('$SSH_TTY')
 enddef
 
-# 是否在容器内（Docker/Podman/K8s/LXC 等）
 def InContainer(): bool
   if filereadable('/.dockerenv') || filereadable('/run/.containerenv')
     return true
@@ -125,6 +124,12 @@ g:simpleclipboard_relay_setup_done = false
 
 # 检查指定端口是否正在监听
 def IsPortListening(port: number, host: string = ''): bool
+  # 【修正 2】: 增加对 'ss' 命令的依赖检查
+  if !executable('ss')
+    Log("Command 'ss' not found. Cannot check for listening ports. Please install 'iproute2' package.", 'WarningMsg')
+    return false
+  endif
+
   var pattern = host == '' ? $':{port}' : $"{host}:{port}"
   system($"ss -lnt | grep -q '{pattern}'")
   return v:shell_error == 0
@@ -173,9 +178,6 @@ export def SetupRelayIfNeeded(): void
   endif
   g:simpleclipboard_relay_setup_done = true
 
-  # 【核心修正】: 不再检查 IsSSH()。
-  # 只要存在通往最终守护进程的隧道，就认为需要设置中继。
-  # 这个判断对 Docker 环境同样有效。
   Log('Checking for relay necessity by looking for a tunnel...', 'MoreMsg')
 
   var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
@@ -343,7 +345,6 @@ enddef
 # =============================================================
 # 复制逻辑 (TCP Daemon -> Fallbacks)
 # =============================================================
-
 var running_copy_jobs: list<job> = []
 
 def JobExitCallback(job: job, status: number)
