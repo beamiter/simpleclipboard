@@ -160,31 +160,94 @@ def StartRelay(): void
   endif
 enddef
 
+# 轻量级的连接测试函数（依赖 rust 客户端库）
+def CanConnect_light(address: string): bool
+  TryLoadLib()
+  if client_lib ==# ''
+    return false
+  endif
+
+  var payload = address .. "\x01" .. ""
+  try
+    return libcallnr(client_lib, 'rust_set_clipboard_tcp', payload) == 1
+  catch
+    Log($"CanConnect_light: libcallnr failed with exception: {v:exception}", 'WarningMsg')
+    return false
+  endtry
+enddef
+
+# 安全的 TCP 连通性测试：不依赖外部命令，不修改剪贴板
+def CanConnect(address: string): bool
+  try
+    # ch_open 支持 "host:port" 字符串；设置较短超时（毫秒）
+    var ch = ch_open(address, {'timeout': 500})
+    if ch_status(ch) ==# 'open'
+      ch_close(ch)
+      return true
+    endif
+  catch
+    Log($"CanConnect(ch_open) exception: {v:exception}", 'WarningMsg')
+  endtry
+  return false
+enddef
+
 export def SetupRelayIfNeeded(): void
   if g:simpleclipboard_relay_setup_done != 0 || get(g:, 'simpleclipboard_auto_relay', 1) == 0
     return
   endif
-  g:simpleclipboard_relay_setup_done = 1
 
-  if !IsSSH()
-    return
+  var changed = false
+
+  if InContainer()
+    Log('In container, probing host for reachable relay via socket...', 'Question')
+    var ip_cmd = "ip route | awk '/default/ { print $3 }'"
+    var container_host_ip = trim(system(ip_cmd))
+    if empty(container_host_ip)
+      Log('Could not determine container host IP for probing. Aborting.', 'WarningMsg')
+    else
+      var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
+      var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
+      var relay_addr = $"{container_host_ip}:{relay_port}"
+      var final_addr = $"{container_host_ip}:{final_port}"
+
+      if CanConnect(relay_addr)
+        Log('Container: relay is reachable. Using relay port.', 'ModeMsg')
+        g:simpleclipboard_port = relay_port
+        changed = true
+      elseif CanConnect(final_addr)
+        Log('Container: final port is reachable. Using final port.', 'ModeMsg')
+        g:simpleclipboard_port = final_port
+        changed = true
+      else
+        Log('Container: relay and final both unreachable. Defaulting to relay port.', 'Comment')
+        g:simpleclipboard_port = relay_port
+        changed = true
+      endif
+    endif
+
+  elseif IsSSH()
+    Log('In SSH session, checking for tunnel then relay...', 'MoreMsg')
+    var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
+    if IsPortListening(final_port, '127.0.0.1')
+      StartRelay()
+      var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
+      if CanConnect($"127.0.0.1:{relay_port}")
+        Log('Relay reachable. Switching to relay port.', 'ModeMsg')
+        g:simpleclipboard_port = relay_port
+        changed = true
+      else
+        Log('Relay not reachable; using default port.', 'WarningMsg')
+      endif
+    else
+      Log('SSH tunnel not found. Using default port.', 'MoreMsg')
+    endif
+
+  else
+    Log('Local environment detected; no relay needed.', 'MoreMsg')
   endif
 
-  Log('In SSH session, checking for relay necessity...', 'MoreMsg')
-
-  var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
-  if IsPortListening(final_port, '127.0.0.1')
-    Log('SSH tunnel to final daemon found. Setting up relay...', 'Question')
-    StartRelay()
-    var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
-    if IsPortListening(relay_port)
-      Log($"Relay is active. Re-routing this session's traffic to port {relay_port}.", 'ModeMsg')
-      g:simpleclipboard_port = relay_port
-    else
-      Log("Failed to find active relay service after start attempt.", 'WarningMsg')
-    endif
-  else
-    Log("SSH tunnel not found. No relay will be set up.", 'MoreMsg')
+  if changed
+    g:simpleclipboard_relay_setup_done = 1
   endif
 enddef
 

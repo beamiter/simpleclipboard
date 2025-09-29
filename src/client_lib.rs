@@ -12,7 +12,7 @@ pub unsafe extern "C" fn rust_set_clipboard_tcp(payload: *const c_char) -> i32 {
         match CStr::from_ptr(payload).to_str() {
             Ok(s) => s,
             Err(_) => {
-                eprintln!("[Rust Error] Payload is not valid UTF-8");
+                // eprintln!("[Rust Error] Payload is not valid UTF-8");
                 return 0;
             }
         }
@@ -25,18 +25,18 @@ pub unsafe extern "C" fn rust_set_clipboard_tcp(payload: *const c_char) -> i32 {
                 match bincode::encode_into_std_write(text_str.to_string(), &mut stream, config) {
                     Ok(_) => 1,
                     Err(e) => {
-                        eprintln!("[Rust Error] Bincode encode failed: {}", e);
+                        // eprintln!("[Rust Error] Bincode encode failed: {}", e);
                         0
                     }
                 }
             }
             Err(e) => {
-                eprintln!("[Rust Error] TCP connect failed: {}", e);
+                // eprintln!("[Rust Error] TCP connect failed: {}", e);
                 0
             }
         }
     } else {
-        eprintln!("[Rust Error] Separator not found in payload.");
+        // eprintln!("[Rust Error] Separator not found in payload.");
         0
     }
 }

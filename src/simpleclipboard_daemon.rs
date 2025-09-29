@@ -35,16 +35,16 @@ fn set_clipboard_text(text: String) {
     }
     if let Some(cb) = lock.as_mut() {
         if let Err(e) = cb.set_text(text.clone()) {
-            eprintln!("[Daemon] set_text failed: {:?}, retrying...", e);
+            // eprintln!("[Daemon] set_text failed: {:?}, retrying...", e);
             *lock = Clipboard::new().ok();
             if let Some(cb2) = lock.as_mut() {
                 if let Err(e2) = cb2.set_text(text) {
-                    eprintln!("[Daemon] set_text still failed: {:?}", e2);
+                    // eprintln!("[Daemon] set_text still failed: {:?}", e2);
                 }
             }
         }
     } else {
-        eprintln!("[Daemon] Clipboard is not available.");
+        // eprintln!("[Daemon] Clipboard is not available.");
     }
 }
 
@@ -88,7 +88,7 @@ fn handle_client(mut stream: TcpStream) {
             }
         }
         Err(e) => {
-            eprintln!("[Daemon] Error deserializing data: {}", e);
+            // eprintln!("[Daemon] Error deserializing data: {}", e);
         }
     }
 }
@@ -121,7 +121,7 @@ fn main() -> std::io::Result<()> {
                 std::thread::spawn(|| handle_client(stream));
             }
             Err(e) => {
-                eprintln!("[Daemon] Connection failed: {}", e);
+                // eprintln!("[Daemon] Connection failed: {}", e);
             }
         }
     }
