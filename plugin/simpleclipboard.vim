@@ -48,7 +48,7 @@ if g:simpleclipboard_auto_copy
     if exists('*timer_start')
       autocmd TextYankPost * call timer_start(0, function('simpleclipboard#CopyYankedToClipboardEvent', [v:event]))
     else
-      " 无 timer_start 时直接调用，传 1 个参数也匹配上面的函数签名
+      # 无 timer_start 时直接调用，传 1 个参数也匹配上面的函数签名
       autocmd TextYankPost * call simpleclipboard#CopyYankedToClipboardEvent(v:event)
     endif
   augroup END
