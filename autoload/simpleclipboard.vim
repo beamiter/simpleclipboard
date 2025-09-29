@@ -4,7 +4,6 @@ vim9script
 # 日志与工具函数
 # =============================================================
 
-# 取运行时目录（优先 XDG_RUNTIME_DIR，回退 /tmp）
 def RuntimeDir(): string
   var dir = getenv('XDG_RUNTIME_DIR')
   if empty(dir)
@@ -36,7 +35,6 @@ def Log(msg: string, hl: string = 'None')
   echohl None
 enddef
 
-# 在 runtimepath 中查找某文件
 def FindInRuntimepath(rel: string): string
   for dir in split(&runtimepath, ',')
     var path = dir .. '/' .. rel
@@ -47,7 +45,6 @@ def FindInRuntimepath(rel: string): string
   return ''
 enddef
 
-# 选择动态库文件名（Linux/macOS）
 def LibName(): string
   if has('mac')
     return 'libsimpleclipboard.dylib'
@@ -55,24 +52,19 @@ def LibName(): string
   return 'libsimpleclipboard.so'
 enddef
 
-# 加载动态库
 var client_lib: string = ''
 def TryLoadLib(): void
   if client_lib !=# ''
     return
   endif
-
   var override = get(g:, 'simpleclipboard_libpath', '')
   if type(override) == v:t_string && override !=# ''
     if filereadable(override)
       client_lib = override
       Log('Found lib via g:simpleclipboard_libpath: ' .. client_lib, 'MoreMsg')
       return
-    else
-      Log('g:simpleclipboard_libpath set but file not found: ' .. override, 'WarningMsg')
     endif
   endif
-
   var libname = LibName()
   var path = FindInRuntimepath('lib/' .. libname)
   if path !=# ''
@@ -96,7 +88,6 @@ def InContainer(): bool
   try
     return readfile('/proc/1/cgroup')->join("\n") =~# '\<docker\>\|\<containerd\>\|\<kubepods\>\|\<libpod\>\|\<podman\>\|\<lxc\>'
   catch
-    # Ignore errors if file is not readable
   endtry
   return exists('$container') || exists('$DOCKER_CONTAINER') || exists('$KUBERNETES_SERVICE_HOST')
 enddef
@@ -104,109 +95,14 @@ enddef
 # =============================================================
 # 网络配置、中继与守护进程管理
 # =============================================================
-g:simpleclipboard_port = get(g:, 'simpleclipboard_port', 12345)
-g:simpleclipboard_local_host = get(g:, 'simpleclipboard_local_host', '127.0.0.1')
-g:simpleclipboard_relay_setup_done = false
 
-# 轻量级的连接测试函数
-def CanConnect(address: string): bool
-  TryLoadLib()
-  if client_lib ==# ''
-    return false
-  endif
-
-  var payload = address .. "\x01" .. ""
-  try
-    return libcallnr(client_lib, 'rust_set_clipboard_tcp', payload) == 1
-  catch
-    Log($"CanConnect: libcallnr failed with exception: {v:exception}", 'WarningMsg')
-    return false
-  endtry
-enddef
-
-# 主动探测环境并设置中继
-export def SetupRelayIfNeeded(): void
-  if g:simpleclipboard_relay_setup_done
-    return
-  endif
-  g:simpleclipboard_relay_setup_done = true
-
-  if InContainer()
-    Log('In container, starting active probe to determine environment...', 'Question')
-    
-    var ip_cmd = "ip route | awk '/default/ { print $3 }'"
-    var container_host_ip = trim(system(ip_cmd))
-    if empty(container_host_ip)
-      Log('Could not determine container host IP for probing. Aborting.', 'WarningMsg')
-      return
-    endif
-    Log('Probe: Found container host IP: ' .. container_host_ip, 'MoreMsg')
-
-    var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
-    var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
-
-    var remote_docker_addr = $"{container_host_ip}:{relay_port}"
-    var local_docker_addr = $"{container_host_ip}:{final_port}"
-
-    Log('Probe: Testing connection to relay port ' .. remote_docker_addr, 'Identifier')
-    if CanConnect(remote_docker_addr)
-      Log('Probe successful: Connected to relay port. Assuming remote Docker environment.', 'ModeMsg')
-      g:simpleclipboard_port = relay_port
-      return
-    endif
-
-    Log('Probe: Testing connection to final port ' .. local_docker_addr, 'Identifier')
-    if CanConnect(local_docker_addr)
-      Log('Probe successful: Connected to final port. Assuming local Docker environment.', 'ModeMsg')
-      g:simpleclipboard_port = final_port
-      return
-    endif
-
-    Log('Probe failed: Cannot connect to either relay or final port. TCP copy will likely fail.', 'WarningMsg')
-
-  elseif IsSSH()
-    Log('In SSH session (not in container), checking for relay...', 'MoreMsg')
-    var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
-    if CanConnect($"127.0.0.1:{relay_port}")
-      Log('Relay found on localhost. Re-routing to relay port.', 'ModeMsg')
-      g:simpleclipboard_port = relay_port
-    else
-      Log('No relay found on localhost. Using default port for SSH tunnel.', 'MoreMsg')
-    endif
-  
-  else
-    Log('Assuming local environment, no relay setup needed.', 'MoreMsg')
-  endif
-enddef
-
-# 获取守护进程的目标地址
-def GetDaemonAddress(): string
-  var host = g:simpleclipboard_local_host
-  var port = g:simpleclipboard_port
-
-  if InContainer()
-    Log('In container, trying to find host IP...', 'MoreMsg')
-    var ip_cmd = "ip route | awk '/default/ { print $3 }'"
-    var container_host_ip = trim(system(ip_cmd))
-    if !empty(container_host_ip)
-      host = container_host_ip
-      Log('Found container host IP: ' .. host, 'MoreMsg')
-    else
-      Log('Could not determine container host IP. Falling back to 127.0.0.1.', 'WarningMsg')
-      host = '127.0.0.1'
-    endif
-  elseif IsSSH()
-    host = '127.0.0.1'
-    Log('In SSH session, targeting 127.0.0.1 (relies on port forwarding or relay).', 'MoreMsg')
-  endif
-
-  return host .. ':' .. port
-enddef
-
-# =============================================================
-# 主守护进程管理 (主要用于本地环境)
-# =============================================================
 var daemon_exe_path: string = ''
+
+def IsPortListening(port: number, host: string = ''): bool
+  var pattern = host == '' ? $':{port}' : $"{host}:{port}"
+  system($"ss -lnt | grep -q '{pattern}'")
+  return v:shell_error == 0
+enddef
 
 def FindDaemonExe(): void
   if daemon_exe_path !=# '' | return | endif
@@ -219,6 +115,102 @@ def FindDaemonExe(): void
   endif
   daemon_exe_path = FindInRuntimepath('lib/simpleclipboard-daemon')
 enddef
+
+def StartRelay(): void
+  var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
+  if IsPortListening(relay_port)
+    Log('Persistent relay service is already running.', 'MoreMsg')
+    return
+  endif
+
+  if get(g:, 'simpleclipboard_relay_method', 'daemon') !=# 'daemon'
+    Log($"Relay method is not 'daemon', skipping.", 'Comment')
+    return
+  endif
+
+  FindDaemonExe()
+  if daemon_exe_path ==# ''
+    Log("Daemon executable for relay not found.", 'ErrorMsg')
+    return
+  endif
+
+  if !executable(daemon_exe_path)
+    Log("Daemon executable for relay found but is not executable: " .. daemon_exe_path, 'ErrorMsg')
+    return
+  endif
+
+  Log('Starting persistent relay service with daemon...', 'Question')
+  var env_var = $'SIMPLECLIPBOARD_ADDR=0.0.0.0:{relay_port}'
+  var command = $"{env_var} nohup {daemon_exe_path} >/dev/null 2>&1 &"
+  var argv = ['sh', '-c', command]
+
+  try
+    job_start(argv, {stoponexit: 'none'})
+    Log($"Executed command to start persistent relay: {command}", 'MoreMsg')
+  catch
+    Log($"Failed to start persistent relay job. Error: {v:exception}", 'ErrorMsg')
+    return
+  endtry
+
+  sleep 250m
+  if IsPortListening(relay_port)
+    Log('Persistent relay service started successfully.', 'ModeMsg')
+  else
+    Log('Failed to confirm persistent relay service startup.', 'ErrorMsg')
+  endif
+enddef
+
+export def SetupRelayIfNeeded(): void
+  if g:simpleclipboard_relay_setup_done != 0 || get(g:, 'simpleclipboard_auto_relay', 1) == 0
+    return
+  endif
+  g:simpleclipboard_relay_setup_done = 1
+
+  if !IsSSH()
+    return
+  endif
+
+  Log('In SSH session, checking for relay necessity...', 'MoreMsg')
+
+  var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
+  if IsPortListening(final_port, '127.0.0.1')
+    Log('SSH tunnel to final daemon found. Setting up relay...', 'Question')
+    StartRelay()
+    var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
+    if IsPortListening(relay_port)
+      Log($"Relay is active. Re-routing this session's traffic to port {relay_port}.", 'ModeMsg')
+      g:simpleclipboard_port = relay_port
+    else
+      Log("Failed to find active relay service after start attempt.", 'WarningMsg')
+    endif
+  else
+    Log("SSH tunnel not found. No relay will be set up.", 'MoreMsg')
+  endif
+enddef
+
+def GetDaemonAddress(): string
+  var host = get(g:, 'simpleclipboard_local_host', '127.0.0.1')
+  var port = g:simpleclipboard_port
+
+  if InContainer()
+    var ip_cmd = "ip route | awk '/default/ { print $3 }'"
+    var container_host_ip = trim(system(ip_cmd))
+    if !empty(container_host_ip)
+      host = container_host_ip
+    else
+      Log('Could not determine container host IP. Falling back to 127.0.0.1.', 'WarningMsg')
+      host = '127.0.0.1'
+    endif
+  elseif IsSSH()
+    host = '127.0.0.1'
+  endif
+
+  return host .. ':' .. port
+enddef
+
+# =============================================================
+# 本地主守护进程管理
+# =============================================================
 
 def IsDaemonRunning(): bool
   var pidfile = RuntimeDir() .. '/simpleclipboard.pid'
@@ -243,69 +235,51 @@ enddef
 
 export def StartDaemon(): void
   if IsSSH() || InContainer()
-    Log("Vim is in a remote or containerized environment, daemon management is handled externally. Skipping auto-start.", 'Comment')
+    Log("Vim is in a remote/container environment, local daemon management is skipped.", 'Comment')
     return
   endif
 
   if IsDaemonRunning()
-    Log('Main daemon is already running.', 'MoreMsg')
+    Log('Local daemon is already running.', 'MoreMsg')
     return
   endif
 
   FindDaemonExe()
   if daemon_exe_path ==# ''
-    Log('Daemon executable not found. Cannot start.', 'ErrorMsg')
-    echohl WarningMsg | echom '[SimpleClipboard] Daemon executable not found.' | echohl None
+    Log('Local daemon executable not found. Cannot start.', 'ErrorMsg')
     return
   endif
 
-  if !executable(daemon_exe_path)
-    Log('Daemon file found but is not executable: ' .. daemon_exe_path, 'ErrorMsg')
-    echohl ErrorMsg | echom '[SimpleClipboard] Daemon is not executable: ' .. daemon_exe_path | echohl None
-    return
-  endif
-
-  Log('Starting main daemon: ' .. daemon_exe_path, 'Question')
+  Log('Starting local daemon: ' .. daemon_exe_path, 'Question')
   try
     var port = g:simpleclipboard_port
     var job_env = {'SIMPLECLIPBOARD_ADDR': '0.0.0.0:' .. port}
-    job_start([daemon_exe_path], { 'env': job_env, out_io: 'null', err_io: 'null', stoponexit: 'none', })
+    job_start([daemon_exe_path], { 'env': job_env, out_io: 'null', err_io: 'null', stoponexit: 'none' })
     sleep 150m
     if IsDaemonRunning()
-      Log('Main daemon started successfully.', 'ModeMsg')
+      Log('Local daemon started successfully.', 'ModeMsg')
     else
-      Log('Failed to confirm main daemon startup.', 'ErrorMsg')
+      Log('Failed to confirm local daemon startup.', 'ErrorMsg')
     endif
   catch
     Log('Error starting daemon process: ' .. v:exception, 'ErrorMsg')
-    echohl ErrorMsg | echom '[SimpleClipboard] Failed to start daemon job.' | echohl None
   endtry
 enddef
 
 export def StopDaemon(): void
   if IsSSH() || InContainer()
-    Log("Vim is in a remote or containerized environment, daemon management is handled externally. Skipping auto-stop.", 'Comment')
+    Log("Vim is in a remote/container environment, local daemon management is skipped.", 'Comment')
     return
   endif
 
   var pidfile = RuntimeDir() .. '/simpleclipboard.pid'
-  if !filereadable(pidfile)
-    Log('Daemon not running (no PID file found).', 'MoreMsg')
-    return
-  endif
+  if !filereadable(pidfile) return endif
 
   try
     var pid = trim(readfile(pidfile)[0])
-    if pid == '' || pid !~ '^\d\+$'
-      Log('Invalid PID file content. Cannot stop daemon.', 'WarningMsg')
-      return
-    endif
-    if has('unix')
-      Log('Stopping daemon with PID: ' .. pid, 'Question')
+    if pid != '' && pid =~ '^\d\+$'
       system('kill ' .. pid)
-      Log('Sent TERM signal to daemon.', 'ModeMsg')
-    else
-      Log('Auto-stopping daemon is not supported on this OS.', 'Comment')
+      Log('Sent TERM signal to local daemon.', 'ModeMsg')
     endif
   catch
     Log('Error stopping daemon: ' .. v:exception, 'ErrorMsg')
@@ -315,6 +289,7 @@ enddef
 # =============================================================
 # 复制逻辑 (TCP Daemon -> Fallbacks)
 # =============================================================
+
 var running_copy_jobs: list<job> = []
 
 def JobExitCallback(job: job, status: number)
@@ -322,7 +297,6 @@ def JobExitCallback(job: job, status: number)
     var job_info = job_info(job)
     Log($"Copy command '{string(job_info.cmd)}' failed with exit code {status}.", 'WarningMsg')
   endif
-
   var idx = index(running_copy_jobs, job)
   if idx != -1
     remove(running_copy_jobs, idx)
@@ -331,12 +305,7 @@ enddef
 
 def StartCopyJob(argv: list<string>, text: string): bool
   try
-    var job = job_start(argv, {
-          \ out_io: 'null',
-          \ err_io: 'null',
-          \ in_io: 'pipe',
-          \ exit_cb: JobExitCallback,
-          \ })
+    var job = job_start(argv, { in_io: 'pipe', out_io: 'null', err_io: 'null', exit_cb: JobExitCallback })
     add(running_copy_jobs, job)
     ch_sendraw(job, text)
     ch_close_in(job)
@@ -350,15 +319,11 @@ enddef
 def CopyViaDaemonTCP(text: string): bool
   TryLoadLib()
   if client_lib ==# ''
-    Log('Skipped TCP: client library not found.', 'Comment')
     return false
   endif
-
   var address = GetDaemonAddress()
   Log('Targeting daemon at: ' .. address, 'Identifier')
-
   var payload = address .. "\x01" .. text
-
   try
     if libcallnr(client_lib, 'rust_set_clipboard_tcp', payload) == 1
       Log('Success: Sent text to daemon via TCP.', 'ModeMsg')
@@ -470,18 +435,14 @@ enddef
 
 export def CopyToSystemClipboard(text: string): bool
   SetupRelayIfNeeded()
-
   Log('Attempting copy via TCP daemon...', 'Question')
   if CopyViaDaemonTCP(text)
     return true
   endif
-
   Log('TCP daemon failed, falling back to other methods...', 'WarningMsg')
-
   if IsSSH() || InContainer()
     return CopyViaOsc52(text) || CopyViaCmds(text)
   endif
-
   return CopyViaCmds(text) || CopyViaOsc52(text)
 enddef
 

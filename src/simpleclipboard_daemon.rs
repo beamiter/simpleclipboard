@@ -8,12 +8,13 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-// === 新增常量：定义本地守护进程的固定地址（SSH 隧道的目标） ===
+// === 端口规划：中继的目标是 SSH 隧道在远程主机上监听的 12345 端口 ===
 const FINAL_DAEMON_ADDR: &str = "127.0.0.1:12345";
+const MAX_BYTES: usize = 160 * 1024 * 1024; // 160MB 限制
 
-// 获取监听地址，优先从环境变量读取，否则使用默认值
+// === 端口规划：主/本地守护进程默认监听 12344 端口 ===
 fn listen_address() -> String {
-    env::var("SIMPLECLIPBOARD_ADDR").unwrap_or_else(|_| "0.0.0.0:12345".to_string())
+    env::var("SIMPLECLIPBOARD_ADDR").unwrap_or_else(|_| "0.0.0.0:12344".to_string())
 }
 
 fn pid_path() -> PathBuf {
@@ -54,7 +55,6 @@ fn handle_client(mut stream: TcpStream) {
         stream.peer_addr().ok()
     );
 
-    const MAX_BYTES: usize = 160 * 1024 * 1024;
     let config = bincode::config::standard().with_limit::<MAX_BYTES>();
     let res: Result<String, _> = bincode::decode_from_std_read(&mut stream, config);
 
@@ -96,7 +96,6 @@ fn handle_client(mut stream: TcpStream) {
 fn main() -> std::io::Result<()> {
     let pid_file = pid_path();
     let pid = std::process::id();
-    // 注意：中继守护进程也会写PID文件，但我们的逻辑依赖端口检查，所以影响不大。
     fs::write(&pid_file, pid.to_string())?;
     println!(
         "[Daemon] Started with PID: {}. Wrote to {:?}",
