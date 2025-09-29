@@ -4,6 +4,7 @@ if exists('g:loaded_simpleclipboard')
   finish
 endif
 g:loaded_simpleclipboard = 1
+g:simpleclipboard_token = get(g:, 'simpleclipboard_token', '')
 
 # ---------------- 配置项（可在 vimrc 中覆盖） ----------------
 g:simpleclipboard_daemon_enabled = get(g:, 'simpleclipboard_daemon_enabled', 1)

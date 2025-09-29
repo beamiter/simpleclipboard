@@ -1,5 +1,7 @@
 // src/simpleclipboard_daemon.rs
+
 use arboard::Clipboard;
+use bincode::{Decode, Encode};
 use lazy_static::lazy_static;
 use std::env;
 use std::fs;
@@ -11,13 +13,33 @@ use std::time::Duration;
 
 const MAX_BYTES: usize = 160 * 1024 * 1024; // 160MB
 
+#[derive(Debug, Encode, Decode)]
+enum Msg {
+    Ping { token: Option<String> },
+    Set { text: String, token: Option<String> },
+}
+
 fn listen_address() -> String {
-    // 更安全的默认值：仅本机访问
+    // 更安全的默认：仅本机
     env::var("SIMPLECLIPBOARD_ADDR").unwrap_or_else(|_| "127.0.0.1:12344".to_string())
 }
 
 fn final_addr() -> String {
     env::var("SIMPLECLIPBOARD_FINAL_ADDR").unwrap_or_else(|_| "127.0.0.1:12345".to_string())
+}
+
+fn expected_token() -> Option<String> {
+    match env::var("SIMPLECLIPBOARD_TOKEN") {
+        Ok(s) if !s.is_empty() => Some(s),
+        _ => None,
+    }
+}
+
+fn token_ok(provided: &Option<String>) -> bool {
+    match expected_token() {
+        None => true, // 未设置 token 时放行
+        Some(exp) => provided.as_ref().map(|s| s == &exp).unwrap_or(false),
+    }
 }
 
 fn pid_path() -> PathBuf {
@@ -46,31 +68,69 @@ fn set_clipboard_text(text: String) {
     }
 }
 
-fn handle_client(mut stream: TcpStream) {
+fn handle_set(text: String) {
+    // relay 优先；转发“旧协议字符串”，保持与旧 final 的兼容
+    if let Ok(mut forward) = TcpStream::connect(final_addr()) {
+        let _ = forward.set_nodelay(true);
+        let _ = forward.set_write_timeout(Some(Duration::from_secs(2)));
+        let cfg = bincode::config::standard().with_limit::<MAX_BYTES>();
+        let _ = bincode::encode_into_std_write(text, &mut forward, cfg);
+        let _ = forward.flush();
+    } else {
+        set_clipboard_text(text);
+    }
+}
+
+fn try_decode_msg(stream: &TcpStream) -> Option<Msg> {
+    let cfg = bincode::config::standard().with_limit::<MAX_BYTES>();
+    bincode::decode_from_std_read(&mut &*stream, cfg).ok()
+}
+
+fn try_decode_legacy_string(stream: &TcpStream) -> Option<String> {
+    let cfg = bincode::config::standard().with_limit::<MAX_BYTES>();
+    bincode::decode_from_std_read(&mut &*stream, cfg).ok()
+}
+
+fn handle_client(stream: TcpStream) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
     let _ = stream.set_nodelay(true);
 
-    let config = bincode::config::standard().with_limit::<MAX_BYTES>();
-    let res: Result<String, _> = bincode::decode_from_std_read(&mut stream, config);
-
-    if let Ok(text) = res {
-        // relay 优先尝试
-        if let Ok(mut forward_stream) = TcpStream::connect(final_addr()) {
-            let _ = forward_stream.set_nodelay(true);
-            let _ = forward_stream.set_write_timeout(Some(Duration::from_secs(2)));
-            let bconfig = bincode::config::standard().with_limit::<MAX_BYTES>();
-            let _ = bincode::encode_into_std_write(text, &mut forward_stream, bconfig);
-            let _ = forward_stream.flush();
-        } else {
-            set_clipboard_text(text);
+    // 先尝试新协议 Msg
+    if let Some(msg) = try_decode_msg(&stream) {
+        match msg {
+            Msg::Ping { token } => {
+                if token_ok(&token) {
+                    // ping 无副作用，直接返回
+                    return;
+                } else {
+                    // token 不通过，忽略
+                    return;
+                }
+            }
+            Msg::Set { text, token } => {
+                if token_ok(&token) {
+                    handle_set(text);
+                } else {
+                    // token 不通过，忽略
+                }
+            }
         }
+        return;
+    }
+
+    // 回退旧协议：纯字符串即 Set
+    if let Some(text) = try_decode_legacy_string(&stream) {
+        handle_set(text);
+    } else {
+        // 解码失败，忽略
     }
 }
 
 fn main() -> std::io::Result<()> {
     let address = listen_address();
     let listener = TcpListener::bind(&address)?;
-    // 只有 bind 成功后才写 pid
+
+    // bind 成功后写 pid
     let pid_file = pid_path();
     let pid = std::process::id();
     fs::write(&pid_file, pid.to_string())?;
@@ -89,11 +149,10 @@ fn main() -> std::io::Result<()> {
             Ok(stream) => {
                 std::thread::spawn(|| handle_client(stream));
             }
-            Err(_) => { /* 可按需日志 */ }
+            Err(_) => { /* 可按需记录日志 */ }
         }
     }
 
-    // 退出时清理 pid（正常情况不会到达）
     let _ = fs::remove_file(pid_file);
     Ok(())
 }

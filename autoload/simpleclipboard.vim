@@ -170,17 +170,18 @@ def StartRelay(): void
 enddef
 
 # 轻量级的连接测试函数（依赖 rust 客户端库）
-def CanConnect_light(address: string): bool
+def CanConnect_secure(address: string): bool
   TryLoadLib()
   if client_lib ==# ''
     return false
   endif
-
-  var payload = address .. "\x01" .. ""
+  var token = get(g:, 'simpleclipboard_token', '')
+  # 新协议：action=ping，text 为空
+  var payload = address .. "\x01" .. "ping" .. "\x01" .. "" .. "\x01" .. token
   try
     return libcallnr(client_lib, 'rust_set_clipboard_tcp', payload) == 1
   catch
-    Log($"CanConnect_light: libcallnr failed with exception: {v:exception}", 'WarningMsg')
+    Log($"CanConnect_secure: libcallnr failed with exception: {v:exception}", 'WarningMsg')
     return false
   endtry
 enddef
@@ -397,10 +398,14 @@ def CopyViaDaemonTCP(text: string): bool
   endif
   var address = GetDaemonAddress()
   Log('Targeting daemon at: ' .. address, 'Identifier')
-  var payload = address .. "\x01" .. text
+
+  # 新协议：action=set + token（可为空）
+  var token = get(g:, 'simpleclipboard_token', '')
+  var payload = address .. "\x01" .. "set" .. "\x01" .. text .. "\x01" .. token
+
   try
     if libcallnr(client_lib, 'rust_set_clipboard_tcp', payload) == 1
-      Log('Success: Sent text to daemon via TCP.', 'ModeMsg')
+      Log('Success: Sent text to daemon via TCP (Msg::Set).', 'ModeMsg')
       return true
     endif
     Log('Failed: Could not send text to daemon via TCP.', 'ErrorMsg')
