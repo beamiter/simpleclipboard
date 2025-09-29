@@ -93,12 +93,10 @@ enddef
 
 # 是否在容器内（Docker/Podman/K8s/LXC 等）
 def InContainer(): bool
-  # 简单文件标记
   if filereadable('/.dockerenv') || filereadable('/run/.containerenv')
     return true
   endif
 
-  # cgroup 关键词检测
   try
     var lines = readfile('/proc/1/cgroup')
     for l in lines
@@ -109,7 +107,6 @@ def InContainer(): bool
   catch
   endtry
 
-  # 环境变量线索
   if exists('$container') || exists('$DOCKER_CONTAINER') || exists('$KUBERNETES_SERVICE_HOST')
     return true
   endif
@@ -118,10 +115,88 @@ def InContainer(): bool
 enddef
 
 # =============================================================
-# 网络配置与地址解析
+# 网络配置、中继与守护进程管理
 # =============================================================
 g:simpleclipboard_port = get(g:, 'simpleclipboard_port', 12345)
 g:simpleclipboard_local_host = get(g:, 'simpleclipboard_local_host', '127.0.0.1')
+
+var daemon_exe_path: string = ''
+# 【修正点】: 不能使用 'var' 声明全局变量。直接赋值即可。
+# 这是一个会话内的标志，用于确保 SetupRelayIfNeeded() 只运行一次。
+g:simpleclipboard_relay_setup_done = false
+
+# 检查指定端口是否正在监听
+def IsPortListening(port: number, host: string = ''): bool
+  var pattern = host == '' ? $':{port}' : $"{host}:{port}"
+  system($"ss -lnt | grep -q '{pattern}'")
+  return v:shell_error == 0
+enddef
+
+# 启动中继服务
+def StartRelay(): void
+  if IsPortListening(get(g:, 'simpleclipboard_relay_port', 12346))
+    Log('Relay service is already running.', 'MoreMsg')
+    return
+  endif
+
+  if get(g:, 'simpleclipboard_relay_method', 'daemon') !=# 'daemon'
+    Log($"Relay method is not 'daemon' (current: '{get(g:, 'simpleclipboard_relay_method', 'daemon')}'), skipping.", 'Comment')
+    return
+  endif
+  
+  FindDaemonExe()
+  if daemon_exe_path ==# ''
+    Log("Relay method is 'daemon', but daemon executable not found.", 'ErrorMsg')
+    return
+  endif
+
+  if !executable(daemon_exe_path)
+    Log("Daemon executable found but is not executable: " .. daemon_exe_path, 'ErrorMsg')
+    return
+  endif
+
+  Log('Starting relay service with daemon...', 'Question')
+  var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
+  var env = {'SIMPLECLIPBOARD_ADDR': $'0.0.0.0:{relay_port}'}
+  job_start([daemon_exe_path], {env: env, out_io: 'null', err_io: 'null', stoponexit: 'none'})
+
+  sleep 150m
+  if IsPortListening(relay_port)
+    Log('Relay service started successfully.', 'ModeMsg')
+  else
+    Log('Failed to confirm relay service startup.', 'ErrorMsg')
+  endif
+enddef
+
+# [导出] 自动设置中继（如果需要）
+export def SetupRelayIfNeeded(): void
+  if g:simpleclipboard_relay_setup_done || get(g:, 'simpleclipboard_auto_relay', 1) == 0
+    return
+  endif
+  g:simpleclipboard_relay_setup_done = true
+
+  if !IsSSH()
+    return
+  endif
+
+  Log('In SSH session, checking for relay necessity...', 'MoreMsg')
+
+  var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
+  if IsPortListening(final_port, '127.0.0.1')
+    Log('SSH tunnel to final daemon found. Setting up relay...', 'Question')
+    StartRelay()
+
+    var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
+    if IsPortListening(relay_port)
+      Log($"Relay is active. Re-routing this session's traffic to port {relay_port}.", 'ModeMsg')
+      g:simpleclipboard_port = relay_port
+    else
+      Log("Failed to start or find relay service. Will use default port and likely fail.", 'WarningMsg')
+    endif
+  else
+    Log("SSH tunnel not found. No relay will be set up.", 'MoreMsg')
+  endif
+enddef
 
 # 获取守护进程的目标地址
 def GetDaemonAddress(): string
@@ -147,18 +222,11 @@ def GetDaemonAddress(): string
     endif
   elseif IsSSH()
     host = '127.0.0.1'
-    Log('In SSH session, targeting 127.0.0.1 (relies on port forwarding).', 'MoreMsg')
+    Log('In SSH session, targeting 127.0.0.1 (relies on port forwarding or relay).', 'MoreMsg')
   endif
 
   return host .. ':' .. port
 enddef
-
-# =============================================================
-# 守护进程管理 (Daemon Management)
-# =============================================================
-
-# 缓存守护进程可执行文件路径
-var daemon_exe_path: string = ''
 
 # 获取 PID 文件路径
 def PidFilePath(): string
@@ -187,7 +255,7 @@ def FindDaemonExe(): void
   endif
 enddef
 
-# 检查守护进程是否正在运行
+# 检查守护进程是否正在运行 (基于主 PID 文件)
 def IsDaemonRunning(): bool
   var pidfile = PidFilePath()
   if !filereadable(pidfile)
@@ -195,30 +263,25 @@ def IsDaemonRunning(): bool
   endif
 
   try
-    # 读取 PID 文件内容并去除空白字符
     var pid = trim(readfile(pidfile)[0])
     if pid == '' || pid !~ '^\d\+$'
       return false
     endif
 
-    # 在 Unix-like 系统上，用 ps 命令检查进程是否存在
     if has('unix')
       system('ps -p ' .. pid .. ' > /dev/null 2>&1')
-      # v:shell_error == 0 表示进程存在
       return v:shell_error == 0
     endif
   catch
-    # 读取文件失败等异常
     return false
   endtry
-
   return false
 enddef
 
-# [导出函数] 启动守护进程
+# [导出函数] 启动主守护进程
 export def StartDaemon(): void
   if IsDaemonRunning()
-    Log('Daemon is already running.', 'MoreMsg')
+    Log('Main daemon is already running.', 'MoreMsg')
     return
   endif
 
@@ -235,22 +298,18 @@ export def StartDaemon(): void
     return
   endif
 
-  Log('Starting daemon: ' .. daemon_exe_path, 'Question')
+  Log('Starting main daemon: ' .. daemon_exe_path, 'Question')
   try
-    # 从配置中获取端口，并作为环境变量传递给守护进程
-    # 这对应了 daemon.rs 中的 env::var("SIMPLECLIPBOARD_ADDR")
-    var port = get(g:, 'simpleclipboard_port', 12345)
+    # 主守护进程监听在 g:simpleclipboard_port 上
+    var port = g:simpleclipboard_port
     var job_env = {'SIMPLECLIPBOARD_ADDR': '0.0.0.0:' .. port}
-
-    # 使用 job_start 在后台启动守护进程
     job_start([daemon_exe_path], { 'env': job_env, out_io: 'null', err_io: 'null', stoponexit: 'none', })
 
-    # 等待一小段时间，然后再次检查
     sleep 150m
     if IsDaemonRunning()
-      Log('Daemon started successfully.', 'ModeMsg')
+      Log('Main daemon started successfully.', 'ModeMsg')
     else
-      Log('Failed to confirm daemon startup. Check permissions or run daemon manually for logs.', 'ErrorMsg')
+      Log('Failed to confirm main daemon startup.', 'ErrorMsg')
     endif
   catch
     Log('Error starting daemon process: ' .. v:exception, 'ErrorMsg')
@@ -258,7 +317,7 @@ export def StartDaemon(): void
   endtry
 enddef
 
-# [导出函数] 停止守护进程
+# [导出函数] 停止主守护进程
 export def StopDaemon(): void
   var pidfile = PidFilePath()
   if !filereadable(pidfile)
@@ -289,10 +348,8 @@ enddef
 # 复制逻辑 (TCP Daemon -> Fallbacks)
 # =============================================================
 
-# 列表用于保存正在运行的复制任务，防止 job 对象被过早垃圾回收
 var running_copy_jobs: list<job> = []
 
-# 当复制任务的 job 结束时，Vim 会自动调用此回调函数
 def JobExitCallback(job: job, status: number)
   if status != 0
     var job_info = job_info(job)
@@ -305,7 +362,6 @@ def JobExitCallback(job: job, status: number)
   endif
 enddef
 
-# 通过异步 job 运行外部复制命令
 def StartCopyJob(argv: list<string>, text: string): bool
   try
     var job = job_start(argv, {
@@ -325,7 +381,6 @@ def StartCopyJob(argv: list<string>, text: string): bool
 enddef
 
 def CopyViaDaemonTCP(text: string): bool
-  Log('Attempting copy via TCP daemon...', 'Question')
   TryLoadLib()
   if client_lib ==# ''
     Log('Skipped TCP: client library not found.', 'Comment')
@@ -335,13 +390,7 @@ def CopyViaDaemonTCP(text: string): bool
   var address = GetDaemonAddress()
   Log('Targeting daemon at: ' .. address, 'Identifier')
 
-  # 【关键修正】将 address 和 text 用 NUL 字符拼接
-  # address + "\x00" + text
   var payload = address .. "\x01" .. text
-  # Log('address: ' .. address)
-  # Log('text: ' .. text)
-  # Log('payload: ' .. payload)
-  # echom map(deepscopy(payload), 'printf("%#x", char2nr(v:val))')
 
   try
     if libcallnr(client_lib, 'rust_set_clipboard_tcp', payload) == 1
@@ -413,7 +462,6 @@ def CopyViaOsc52(text: string): bool
     return false
   endif
 
-  # OSC52 对超长文本有限制，但远大于原生剪贴板命令
   var limit = get(g:, 'simpleclipboard_osc52_limit', 75000)
   var payload = text
   if strchars(payload) > limit
@@ -455,20 +503,21 @@ enddef
 # =============================================================
 
 export def CopyToSystemClipboard(text: string): bool
-  # 新的策略：永远优先尝试 TCP 守护进程
+  # 确保在复制前，中继设置已完成检查
+  SetupRelayIfNeeded()
+
+  Log('Attempting copy via TCP daemon...', 'Question')
   if CopyViaDaemonTCP(text)
     return true
   endif
 
   Log('TCP daemon failed, falling back to other methods...', 'WarningMsg')
 
-  # 在 SSH/容器中，回退到 OSC52
   if IsSSH() || InContainer()
-    return CopyViaOsc52(text) || CopyViaCmds(text) # Cmds 作为 OSC52 的备胎
+    return CopyViaOsc52(text) || CopyViaCmds(text)
   endif
 
-  # 在本地，回退到原生命令行工具
-  return CopyViaCmds(text) || CopyViaOsc52(text) # OSC52 作为 Cmds 的备胎
+  return CopyViaCmds(text) || CopyViaOsc52(text)
 enddef
 
 export def CopyYankedToClipboard(_timer_id: any = 0)

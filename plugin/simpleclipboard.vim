@@ -6,41 +6,30 @@ endif
 g:loaded_simpleclipboard = 1
 
 # ---------------- 配置项（可在 vimrc 中覆盖） ----------------
-# 是否启用守护进程相关逻辑
 g:simpleclipboard_daemon_enabled = get(g:, 'simpleclipboard_daemon_enabled', 1)
-# 自动在 Vim 启动时启动守护进程（推荐开启）
 g:simpleclipboard_daemon_autostart = get(g:, 'simpleclipboard_daemon_autostart', 1)
-# 自动在 Vim 退出时停止守护进程（默认关闭，避免误杀其他 Vim 使用中的守护进程）
 g:simpleclipboard_daemon_autostop = get(g:, 'simpleclipboard_daemon_autostop', 0)
-
-# 是否在 yank 后自动复制到系统剪贴板
 g:simpleclipboard_auto_copy = get(g:, 'simpleclipboard_auto_copy', 1)
-
-# 可选：手动指定 Rust 客户端库与守护进程路径（绝对路径）
-# 若不设置，将自动在 runtimepath 的 lib/ 目录下查找
 g:simpleclipboard_libpath = get(g:, 'simpleclipboard_libpath', '')
 g:simpleclipboard_daemon_path = get(g:, 'simpleclipboard_daemon_path', '')
-
-# 是否关闭默认映射（<leader>y）
 g:simpleclipboard_no_default_mappings = get(g:, 'simpleclipboard_no_default_mappings', 0)
-
-# 调试日志（1 开启，0 关闭）
 g:simpleclipboard_debug = get(g:, 'simpleclipboard_debug', 0)
-# 日志输出到文件，避免 echom 引起重绘闪屏
 g:simpleclipboard_debug_to_file = get(g:, 'simpleclipboard_debug_to_file', 0)
-# 禁用 OSC52 回退（有些终端/路径会造成闪屏）
 g:simpleclipboard_disable_osc52 = get(g:, 'simpleclipboard_disable_osc52', 0)
+
+# --- 新增：自动化中继配置 ---
+g:simpleclipboard_auto_relay = get(g:, 'simpleclipboard_auto_relay', 1)
+g:simpleclipboard_relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
+g:simpleclipboard_final_daemon_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
+# 修改点：将默认的中继方法改为 'daemon'
+g:simpleclipboard_relay_method = get(g:, 'simpleclipboard_relay_method', 'daemon')
 
 # ---------------- 命令与映射 ----------------
 command! SimpleCopyYank simpleclipboard#CopyYankedToClipboard()
 command! -range=% SimpleCopyRange simpleclipboard#CopyRangeToClipboard(<line1>, <line2>)
-
 nnoremap <silent> <Plug>(SimpleCopyYank) <Cmd>SimpleCopyYank<CR>
-
 if !g:simpleclipboard_no_default_mappings
-  # 普通模式：复制寄存器内容到系统剪贴板
   nmap <leader>y <Plug>(SimpleCopyYank)
-  # 可视模式：把选区复制到系统剪贴板（传递范围）
   xnoremap <leader>y :<C-U>'<,'>SimpleCopyRange<CR>
 endif
 
@@ -48,7 +37,6 @@ endif
 if g:simpleclipboard_auto_copy
   augroup SimpleClipboardYank
     autocmd!
-    # 修正点：lambda 在 :autocmd 一行里易被当字典解析，改用字符串回调
     autocmd TextYankPost * if g:simpleclipboard_auto_copy | if exists('*timer_start') | call timer_start(0, 'simpleclipboard#CopyYankedToClipboard') | else | call simpleclipboard#CopyYankedToClipboard() | endif | endif
   augroup END
 endif
@@ -57,7 +45,8 @@ if g:simpleclipboard_daemon_enabled
   augroup SimpleClipboardDaemon
     autocmd!
     if g:simpleclipboard_daemon_autostart
-      autocmd VimEnter * call simpleclipboard#StartDaemon()
+      # 在启动主守护进程前先设置好中继
+      autocmd VimEnter * call simpleclipboard#SetupRelayIfNeeded() | call simpleclipboard#StartDaemon()
     endif
     if g:simpleclipboard_daemon_autostop
       autocmd VimLeave * call simpleclipboard#StopDaemon()
