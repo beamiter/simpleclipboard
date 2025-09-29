@@ -976,7 +976,8 @@ export def OnRootHere()
 enddef
 
 export def OnRootUp()
-  if s_root_locked
+  var should_check_locked = false
+  if s_root_locked && should_check_locked
     echo '[SimpleTree] root is locked. Press L to unlock.'
     return
   endif
