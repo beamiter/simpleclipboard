@@ -86,7 +86,7 @@ enddef
 # 环境检测：SSH/容器（Docker/Podman/K8s）
 # =============================================================
 
-# 是否在 SSH 会话中
+# 是否在 SSH 会话中 (此函数现在仅用于回退逻辑，不再是中继判断的关键)
 def IsSSH(): bool
   return exists('$SSH_CONNECTION') || exists('$SSH_CLIENT') || exists('$SSH_TTY')
 enddef
@@ -121,8 +121,6 @@ g:simpleclipboard_port = get(g:, 'simpleclipboard_port', 12345)
 g:simpleclipboard_local_host = get(g:, 'simpleclipboard_local_host', '127.0.0.1')
 
 var daemon_exe_path: string = ''
-# 【修正点】: 不能使用 'var' 声明全局变量。直接赋值即可。
-# 这是一个会话内的标志，用于确保 SetupRelayIfNeeded() 只运行一次。
 g:simpleclipboard_relay_setup_done = false
 
 # 检查指定端口是否正在监听
@@ -175,11 +173,10 @@ export def SetupRelayIfNeeded(): void
   endif
   g:simpleclipboard_relay_setup_done = true
 
-  if !IsSSH()
-    return
-  endif
-
-  Log('In SSH session, checking for relay necessity...', 'MoreMsg')
+  # 【核心修正】: 不再检查 IsSSH()。
+  # 只要存在通往最终守护进程的隧道，就认为需要设置中继。
+  # 这个判断对 Docker 环境同样有效。
+  Log('Checking for relay necessity by looking for a tunnel...', 'MoreMsg')
 
   var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
   if IsPortListening(final_port, '127.0.0.1')
@@ -194,7 +191,7 @@ export def SetupRelayIfNeeded(): void
       Log("Failed to start or find relay service. Will use default port and likely fail.", 'WarningMsg')
     endif
   else
-    Log("SSH tunnel not found. No relay will be set up.", 'MoreMsg')
+    Log("SSH tunnel not found. Assuming local environment. No relay will be set up.", 'MoreMsg')
   endif
 enddef
 
@@ -300,7 +297,6 @@ export def StartDaemon(): void
 
   Log('Starting main daemon: ' .. daemon_exe_path, 'Question')
   try
-    # 主守护进程监听在 g:simpleclipboard_port 上
     var port = g:simpleclipboard_port
     var job_env = {'SIMPLECLIPBOARD_ADDR': '0.0.0.0:' .. port}
     job_start([daemon_exe_path], { 'env': job_env, out_io: 'null', err_io: 'null', stoponexit: 'none', })
@@ -503,7 +499,6 @@ enddef
 # =============================================================
 
 export def CopyToSystemClipboard(text: string): bool
-  # 确保在复制前，中继设置已完成检查
   SetupRelayIfNeeded()
 
   Log('Attempting copy via TCP daemon...', 'Question')
