@@ -243,7 +243,7 @@ export def StartDaemon(): void
     var job_env = {'SIMPLECLIPBOARD_ADDR': '0.0.0.0:' .. port}
 
     # 使用 job_start 在后台启动守护进程
-    job_start([daemon_exe_path], { 'env': job_env })
+    job_start([daemon_exe_path], { 'env': job_env, out_io: 'null', err_io: 'null', stoponexit: 'none', })
 
     # 等待一小段时间，然后再次检查
     sleep 150m
