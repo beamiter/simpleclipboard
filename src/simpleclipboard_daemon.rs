@@ -29,7 +29,9 @@ lazy_static! {
 
 fn set_clipboard_text(text: String) {
     let mut lock = CLIPBOARD.lock().unwrap();
-    if lock.is_none() { *lock = Clipboard::new().ok(); }
+    if lock.is_none() {
+        *lock = Clipboard::new().ok();
+    }
     if let Some(cb) = lock.as_mut() {
         if let Err(e) = cb.set_text(text.clone()) {
             eprintln!("[Daemon] set_text failed: {:?}, retrying...", e);
@@ -47,7 +49,10 @@ fn set_clipboard_text(text: String) {
 
 // === handle_client 函数被重写以支持中继逻辑 ===
 fn handle_client(mut stream: TcpStream) {
-    println!("[Daemon] Client connected from {:?}.", stream.peer_addr().ok());
+    println!(
+        "[Daemon] Client connected from {:?}.",
+        stream.peer_addr().ok()
+    );
 
     const MAX_BYTES: usize = 160 * 1024 * 1024;
     let config = bincode::config::standard().with_limit::<MAX_BYTES>();
@@ -61,9 +66,13 @@ fn handle_client(mut stream: TcpStream) {
             match TcpStream::connect(FINAL_DAEMON_ADDR) {
                 Ok(mut forward_stream) => {
                     // 如果连接成功，说明当前是“中继模式”
-                    println!("[Daemon] Acting as a relay, forwarding data to {}.", FINAL_DAEMON_ADDR);
-                    let bincode_config = bincode::config::standard();
-                    match bincode::encode_into_std_write(text, &mut forward_stream, bincode_config) {
+                    println!(
+                        "[Daemon] Acting as a relay, forwarding data to {}.",
+                        FINAL_DAEMON_ADDR
+                    );
+                    let bincode_config = bincode::config::standard().with_limit::<MAX_BYTES>();
+                    match bincode::encode_into_std_write(text, &mut forward_stream, bincode_config)
+                    {
                         Ok(_) => println!("[Daemon] Data forwarded successfully."),
                         Err(e) => eprintln!("[Daemon] Relay encode/send failed: {}", e),
                     }
@@ -71,7 +80,9 @@ fn handle_client(mut stream: TcpStream) {
                 Err(_) => {
                     // 如果连接失败，说明当前是“最终模式”（或者隧道没开）
                     // 回退到原始行为：直接设置本地剪贴板
-                    println!("[Daemon] Not in relay mode (or tunnel is down). Setting local clipboard.");
+                    println!(
+                        "[Daemon] Not in relay mode (or tunnel is down). Setting local clipboard."
+                    );
                     set_clipboard_text(text);
                 }
             }
@@ -87,7 +98,10 @@ fn main() -> std::io::Result<()> {
     let pid = std::process::id();
     // 注意：中继守护进程也会写PID文件，但我们的逻辑依赖端口检查，所以影响不大。
     fs::write(&pid_file, pid.to_string())?;
-    println!("[Daemon] Started with PID: {}. Wrote to {:?}", pid, pid_file);
+    println!(
+        "[Daemon] Started with PID: {}. Wrote to {:?}",
+        pid, pid_file
+    );
 
     let address = listen_address();
     let listener = TcpListener::bind(&address)?;
@@ -98,7 +112,8 @@ fn main() -> std::io::Result<()> {
         ctrlc::set_handler(move || {
             let _ = fs::remove_file(&pid_for_drop);
             std::process::exit(0);
-        }).ok();
+        })
+        .ok();
     }
 
     for stream in listener.incoming() {

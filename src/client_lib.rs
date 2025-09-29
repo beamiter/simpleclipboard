@@ -4,6 +4,8 @@ use libc::c_char;
 use std::ffi::CStr;
 use std::net::TcpStream;
 
+const MAX_BYTES: usize = 160 * 1024 * 1024;
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_set_clipboard_tcp(payload: *const c_char) -> i32 {
     let payload_cstr = unsafe {
@@ -23,7 +25,7 @@ pub unsafe extern "C" fn rust_set_clipboard_tcp(payload: *const c_char) -> i32 {
         // eprintln!("[Rust Parsed] Address: {}, Text: {}", address_str, text_str);
         match TcpStream::connect(address_str) {
             Ok(mut stream) => {
-                let config = bincode::config::standard();
+                let config = bincode::config::standard().with_limit::<MAX_BYTES>();
                 match bincode::encode_into_std_write(text_str.to_string(), &mut stream, config) {
                     Ok(_) => 1,
                     Err(e) => {
