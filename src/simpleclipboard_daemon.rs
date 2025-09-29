@@ -49,7 +49,7 @@ fn set_clipboard_text(text: String) {
 fn handle_client(mut stream: TcpStream) {
     println!("[Daemon] Client connected from {:?}.", stream.peer_addr().ok());
 
-    const MAX_BYTES: usize = 16 * 1024 * 1024;
+    const MAX_BYTES: usize = 160 * 1024 * 1024;
     let config = bincode::config::standard().with_limit::<MAX_BYTES>();
     let res: Result<String, _> = bincode::decode_from_std_read(&mut stream, config);
 
