@@ -206,26 +206,20 @@ export def SetupRelayIfNeeded(): void
       Log('Could not determine container host IP for probing. Aborting.', 'WarningMsg')
     else
       var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
-      var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
       var base_port = get(g:, 'simpleclipboard_port', 12344)
       var relay_addr = $"{container_host_ip}:{relay_port}"
-      var final_addr = $"{container_host_ip}:{final_port}"
       var base_addr = $"{container_host_ip}:{base_port}"
 
       if CanConnect(relay_addr)
         Log('Container: relay is reachable. Using relay port.', 'ModeMsg')
         g:simpleclipboard_port = relay_port
         changed = true
-      elseif CanConnect(final_addr)
-        Log('Container: final port is reachable. Using final port.', 'ModeMsg')
-        g:simpleclipboard_port = final_port
-        changed = true
       elseif CanConnect(base_addr)
-        Log('Container: final port is reachable. Using base port.', 'ModeMsg')
+        Log('Container: base port is reachable. Using base port.', 'ModeMsg')
         g:simpleclipboard_port = base_port
         changed = true
       else
-        Log('Container: relay and final both unreachable. Defaulting to relay port.', 'Comment')
+        Log('Container: relay and base both unreachable. Defaulting to relay port.', 'Comment')
         g:simpleclipboard_port = relay_port
         changed = true
       endif
