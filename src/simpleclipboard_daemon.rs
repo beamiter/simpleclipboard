@@ -69,14 +69,17 @@ fn set_clipboard_text(text: String) {
 }
 
 fn handle_set(text: String) {
+    println!("handle_set text:\n{}", text);
     // relay 优先；转发“旧协议字符串”，保持与旧 final 的兼容
     if let Ok(mut forward) = TcpStream::connect(final_addr()) {
+        println!("forward by relay");
         let _ = forward.set_nodelay(true);
         let _ = forward.set_write_timeout(Some(Duration::from_secs(2)));
         let cfg = bincode::config::standard().with_limit::<MAX_BYTES>();
         let _ = bincode::encode_into_std_write(text, &mut forward, cfg);
         let _ = forward.flush();
     } else {
+        println!("set Clipboard");
         set_clipboard_text(text);
     }
 }
@@ -97,6 +100,7 @@ fn handle_client(stream: TcpStream) {
 
     // 先尝试新协议 Msg
     if let Some(msg) = try_decode_msg(&stream) {
+        println!("handle_client msg: {:?}", msg);
         match msg {
             Msg::Ping { token } => {
                 if token_ok(&token) {
@@ -120,8 +124,10 @@ fn handle_client(stream: TcpStream) {
 
     // 回退旧协议：纯字符串即 Set
     if let Some(text) = try_decode_legacy_string(&stream) {
+        println!("handle_client legacy: {}", text);
         handle_set(text);
     } else {
+        println!("decode failed");
         // 解码失败，忽略
     }
 }
