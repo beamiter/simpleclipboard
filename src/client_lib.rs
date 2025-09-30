@@ -11,9 +11,10 @@ use bincode::{Decode, Encode};
 const MAX_BYTES: usize = 160 * 1024 * 1024; // 160MB
 
 #[derive(Debug, Encode, Decode)]
-enum Msg {
+pub enum Msg {
     Ping { token: Option<String> },
     Set { text: String, token: Option<String> },
+    Legacy { text: String },
 }
 
 fn connect_with_timeout(addr: &str) -> std::io::Result<TcpStream> {
@@ -61,8 +62,9 @@ pub extern "C" fn rust_set_clipboard_tcp(payload: *const c_char) -> i32 {
 
     if parts.len() == 2 {
         // 旧协议：发送纯字符串（保持向后兼容）
-        let text = parts[1];
-        match bincode::encode_into_std_write(text, &mut stream, config) {
+        let text = parts[1].to_string();
+        let msg = Msg::Legacy { text };
+        match bincode::encode_into_std_write(msg, &mut stream, config) {
             Ok(_) => {
                 let _ = stream.flush();
                 1

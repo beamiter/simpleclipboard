@@ -1,7 +1,6 @@
 // src/simpleclipboard_daemon.rs
 
 use arboard::Clipboard;
-use bincode::{Decode, Encode};
 use lazy_static::lazy_static;
 use std::env;
 use std::fs;
@@ -13,11 +12,8 @@ use std::time::Duration;
 
 const MAX_BYTES: usize = 160 * 1024 * 1024; // 160MB
 
-#[derive(Debug, Encode, Decode)]
-enum Msg {
-    Ping { token: Option<String> },
-    Set { text: String, token: Option<String> },
-}
+mod client_lib;
+use client_lib::Msg;
 
 fn listen_address() -> String {
     // 更安全的默认：仅本机
@@ -89,16 +85,10 @@ fn try_decode_msg(stream: &TcpStream) -> Option<Msg> {
     bincode::decode_from_std_read(&mut &*stream, cfg).ok()
 }
 
-fn try_decode_legacy_string(stream: &TcpStream) -> Option<String> {
-    let cfg = bincode::config::standard().with_limit::<MAX_BYTES>();
-    bincode::decode_from_std_read(&mut &*stream, cfg).ok()
-}
-
 fn handle_client(stream: TcpStream) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
     let _ = stream.set_nodelay(true);
 
-    // 先尝试新协议 Msg
     if let Some(msg) = try_decode_msg(&stream) {
         println!("handle_client msg: {:?}", msg);
         match msg {
@@ -118,18 +108,13 @@ fn handle_client(stream: TcpStream) {
                     // token 不通过，忽略
                 }
             }
+            Msg::Legacy { text } => {
+                handle_set(text);
+            }
         }
         return;
     }
-
-    // 回退旧协议：纯字符串即 Set
-    if let Some(text) = try_decode_legacy_string(&stream) {
-        println!("handle_client legacy: {}", text);
-        handle_set(text);
-    } else {
-        println!("decode failed");
-        // 解码失败，忽略
-    }
+    println!("decode failed");
 }
 
 fn main() -> std::io::Result<()> {
