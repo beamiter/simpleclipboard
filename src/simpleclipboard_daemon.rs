@@ -72,7 +72,8 @@ fn handle_set(text: String) {
         let _ = forward.set_nodelay(true);
         let _ = forward.set_write_timeout(Some(Duration::from_secs(2)));
         let cfg = bincode::config::standard().with_limit::<MAX_BYTES>();
-        let _ = bincode::encode_into_std_write(text, &mut forward, cfg);
+        let msg = Msg::Legacy { text };
+        let _ = bincode::encode_into_std_write(msg, &mut forward, cfg);
         let _ = forward.flush();
     } else {
         println!("set Clipboard");

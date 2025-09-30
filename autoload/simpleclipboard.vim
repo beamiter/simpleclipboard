@@ -308,7 +308,7 @@ enddef
 
 # autoload/simpleclipboard.vim 中 StartDaemon 片段
 export def StartDaemon(): void
-  if IsSSH() || InContainer()
+  if InContainer()
     Log("Vim is in a remote/container environment, local daemon management is skipped.", 'Comment')
     return
   endif
@@ -342,7 +342,7 @@ export def StartDaemon(): void
 enddef
 
 export def StopDaemon(): void
-  if IsSSH() || InContainer()
+  if InContainer()
     Log("Vim is in a remote/container environment, local daemon management is skipped.", 'Comment')
     return
   endif
