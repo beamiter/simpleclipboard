@@ -34,7 +34,7 @@ fn connect_with_timeout(addr: &str) -> std::io::Result<TcpStream> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_set_clipboard_tcp(payload: *const c_char) -> i32 {
-    // payload 字符串格式：
+    // payload 格式：
     // 旧协议： "address \x01 text"
     // 新协议：
     //   Set:  "address \x01 set  \x01 text  \x01 token?"
