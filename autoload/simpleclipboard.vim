@@ -209,28 +209,65 @@ export def SetupRelayIfNeeded(): void
   var changed = false
 
   if InContainer()
-    Log('In container, probing host for reachable relay via socket...', 'Question')
-    var ip_cmd = "ip route | awk '/default/ { print $3 }'"
-    var container_host_ip = trim(system(ip_cmd))
-    if empty(container_host_ip)
-      Log('Could not determine container host IP for probing. Aborting.', 'WarningMsg')
-    else
-      var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
-      var base_port = get(g:, 'simpleclipboard_port', 12344)
-      var relay_addr = $"{container_host_ip}:{relay_port}"
-      var base_addr = $"{container_host_ip}:{base_port}"
+    Log('In container, probing local then host for reachable relay/base...', 'Question')
 
-      if CanConnect(relay_addr)
-        Log('Container: relay is reachable. Using relay port.', 'ModeMsg')
-        g:simpleclipboard_port = relay_port
-        changed = true
-      elseif CanConnect(base_addr)
-        Log('Container: base port is reachable. Using base port.', 'ModeMsg')
-        g:simpleclipboard_port = base_port
-        changed = true
+    var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
+    var base_port = get(g:, 'simpleclipboard_port', 12344)
+
+    # 1) 先探容器本地 127.0.0.1
+    if IsTcpOpen($"127.0.0.1:{relay_port}")
+      Log('Container: local relay reachable. Use local relay.', 'ModeMsg')
+      g:simpleclipboard_port = relay_port
+      g:simpleclipboard_incontainer_target = 'local'
+      changed = true
+
+    elseif IsTcpOpen($"127.0.0.1:{base_port}")
+      Log('Container: local base daemon reachable. Use local base.', 'ModeMsg')
+      g:simpleclipboard_port = base_port
+      g:simpleclipboard_incontainer_target = 'local'
+      changed = true
+
+    else
+      # 2) 再探宿主机（默认网关），找不到则尝试 host.docker.internal
+      var ip_cmd = "ip route | awk '/default/ { print $3 }'"
+      var container_host_ip = trim(system(ip_cmd))
+      if empty(container_host_ip)
+        var host_internal = trim(system("getent hosts host.docker.internal | awk '{print $1}'"))
+        if !empty(host_internal)
+          container_host_ip = host_internal
+          Log('Using host.docker.internal as container host IP: ' .. container_host_ip, 'Comment')
+        endif
+      endif
+
+      if !empty(container_host_ip)
+        var relay_addr = $"{container_host_ip}:{relay_port}"
+        var base_addr = $"{container_host_ip}:{base_port}"
+
+        if CanConnect(relay_addr)
+          Log('Container: host relay reachable. Use host relay.', 'ModeMsg')
+          g:simpleclipboard_port = relay_port
+          g:simpleclipboard_incontainer_target = 'host'
+          g:simpleclipboard_incontainer_host_ip = container_host_ip
+          changed = true
+
+        elseif CanConnect(base_addr)
+          Log('Container: host base reachable. Use host base.', 'ModeMsg')
+          g:simpleclipboard_port = base_port
+          g:simpleclipboard_incontainer_target = 'host'
+          g:simpleclipboard_incontainer_host_ip = container_host_ip
+          changed = true
+
+        else
+          Log('Container: host relay/base unreachable. Default to local relay port.', 'Comment')
+          g:simpleclipboard_port = relay_port
+          # 默认回到本地目标，后续 GetDaemonAddress 返回 127.0.0.1
+          g:simpleclipboard_incontainer_target = 'local'
+          changed = true
+        endif
       else
-        Log('Container: relay and base both unreachable. Defaulting to relay port.', 'Comment')
+        Log('Container: cannot determine host IP. Default to local relay port.', 'Comment')
         g:simpleclipboard_port = relay_port
+        g:simpleclipboard_incontainer_target = 'local'
         changed = true
       endif
     endif
@@ -266,14 +303,31 @@ def GetDaemonAddress(): string
   var port = g:simpleclipboard_port
 
   if InContainer()
-    var ip_cmd = "ip route | awk '/default/ { print $3 }'"
-    var container_host_ip = trim(system(ip_cmd))
-    if !empty(container_host_ip)
-      host = container_host_ip
+    var tgt = get(g:, 'simpleclipboard_incontainer_target', '')
+    if tgt ==# 'local' || tgt ==# ''
+      host = '127.0.0.1'
+    elseif tgt ==# 'host'
+      var ip = get(g:, 'simpleclipboard_incontainer_host_ip', '')
+      if empty(ip)
+        # 容错：如果没保存到 IP，重新计算一次
+        var ip_cmd = "ip route | awk '/default/ { print $3 }'"
+        var container_host_ip = trim(system(ip_cmd))
+        if empty(container_host_ip)
+          var host_internal = trim(system("getent hosts host.docker.internal | awk '{print $1}'"))
+          if !empty(host_internal)
+            container_host_ip = host_internal
+            Log('Using host.docker.internal as container host IP.', 'Comment')
+          endif
+        endif
+        host = !empty(container_host_ip) ? container_host_ip : '127.0.0.1'
+      else
+        host = ip
+      endif
     else
-      Log('Could not determine container host IP. Falling back to 127.0.0.1.', 'WarningMsg')
+      # 未知值，回退本地
       host = '127.0.0.1'
     endif
+
   elseif IsSSH()
     host = '127.0.0.1'
   endif

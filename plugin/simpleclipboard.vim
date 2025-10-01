@@ -19,6 +19,12 @@ g:simpleclipboard_debug_to_file = get(g:, 'simpleclipboard_debug_to_file', 0)
 g:simpleclipboard_disable_osc52 = get(g:, 'simpleclipboard_disable_osc52', 0)
 g:simpleclipboard_bind_addr = get(g:, 'simpleclipboard_bind_addr', '0.0.0.0')
 
+
+# 容器环境下，指示应连接本地(local)还是宿主机(host)
+g:simpleclipboard_incontainer_target = get(g:, 'simpleclipboard_incontainer_target', '')
+# 若选择 host，记录探测到的宿主机 IP
+g:simpleclipboard_incontainer_host_ip = get(g:, 'simpleclipboard_incontainer_host_ip', '')
+
 # --- 端口规划 ---
 # 本地主守护进程监听的端口
 g:simpleclipboard_port = get(g:, 'simpleclipboard_port', 12344)
