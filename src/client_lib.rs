@@ -35,7 +35,7 @@ fn connect_with_timeout(addr: &str) -> std::io::Result<TcpStream> {
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_set_clipboard_tcp(payload: *const c_char) -> i32 {
     // payload 格式：
-    // 旧协议： "address \x01 text"
+    // 旧协议： "address \x01 set  \x01 text"
     // 新协议：
     //   Set:  "address \x01 set  \x01 text  \x01 token?"
     //   Ping: "address \x01 ping \x01 ''    \x01 token?"
@@ -61,7 +61,7 @@ pub extern "C" fn rust_set_clipboard_tcp(payload: *const c_char) -> i32 {
     let config = bincode::config::standard().with_limit::<MAX_BYTES>();
 
     if parts.len() == 2 {
-        // 旧协议：发送纯字符串（保持向后兼容）
+        // 旧协议：解析 action + text
         let text = parts[1].to_string();
         let msg = Msg::Legacy { text };
         match bincode::encode_into_std_write(msg, &mut stream, config) {
