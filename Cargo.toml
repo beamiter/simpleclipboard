@@ -8,6 +8,16 @@ name = "simpleclipboard"
 crate-type = ["cdylib"]
 path = "src/client_lib.rs"
 
+[[bin]]
+name = "simpleclipboard-daemon"
+path = "src/simpleclipboard_daemon.rs"
+[[bin]]
+name = "simpletree-daemon"
+path = "src/simpletree_daemon.rs"
+[[bin]]
+name = "ts-hl-daemon"
+path = "src/ts_hl_daemon.rs"
+
 [dependencies]
 anyhow = "1.0.100"
 arboard = "3.6.1"
@@ -26,13 +36,9 @@ tokio-util = "0.7.16"
 tower = { version = "0.5.2", features = ["buffer", "limit", "timeout", "util"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
-
-[[bin]]
-name = "simpleclipboard-daemon"
-path = "src/simpleclipboard_daemon.rs"
-[[bin]]
-name = "simpletree-daemon"
-path = "src/simpletree_daemon.rs"
+tree-sitter = "0.25.10"
+tree-sitter-javascript = "0.25.0"
+tree-sitter-rust = "0.24.0"
 
 [dev-dependencies]
 tempfile = "3.23.0"
