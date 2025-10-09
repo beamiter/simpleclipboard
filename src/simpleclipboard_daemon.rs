@@ -15,7 +15,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task;
 use tokio::time::timeout;
 use tower::{Service, ServiceBuilder, ServiceExt}; // 引入 ServiceExt 以便调用 ready()
-use tracing::{info, warn};
+use tracing::{info, warn, debug};
 use tracing_subscriber::EnvFilter;
 
 const MAX_BYTES: usize = 160 * 1024 * 1024; // 160MB
@@ -52,14 +52,6 @@ fn expected_token() -> Option<String> {
     }
 }
 
-fn allow_legacy_env() -> bool {
-    // 默认不允许在“非本地监听”时使用 Legacy；仅当显式开启时才允许
-    true || matches!(
-        env::var("SIMPLECLIPBOARD_ALLOW_LEGACY"),
-        Ok(ref v) if v == "1" || v.eq_ignore_ascii_case("true")
-    )
-}
-
 fn token_ok(provided: &Option<String>) -> bool {
     match expected_token() {
         None => true,
@@ -92,7 +84,6 @@ async fn set_clipboard_text_async(text: String) {
 
 async fn forward_legacy_async(addr: &str, text: String) -> io::Result<()> {
     let mut s = tokio::net::TcpStream::connect(addr).await?;
-    // 发 Legacy 以兼容旧 final
     let cfg = bincode::config::standard().with_limit::<MAX_BYTES>();
     let msg = Msg::Legacy { text };
     let mut buf = Vec::new();
@@ -107,7 +98,6 @@ async fn forward_legacy_async(addr: &str, text: String) -> io::Result<()> {
 struct Handler {
     final_addr: Option<Arc<String>>,
     listen_is_local: bool,
-    allow_legacy_nonlocal: bool,
 }
 
 impl Handler {
@@ -117,7 +107,6 @@ impl Handler {
         Self {
             final_addr: final_addr().map(Arc::new),
             listen_is_local,
-            allow_legacy_nonlocal: allow_legacy_env(),
         }
     }
 }
@@ -139,7 +128,6 @@ impl Service<Msg> for Handler {
     fn call(&mut self, msg: Msg) -> Self::Future {
         let final_addr = self.final_addr.clone();
         let listen_is_local = self.listen_is_local;
-        let allow_legacy_nonlocal = self.allow_legacy_nonlocal;
 
         Box::pin(async move {
             match msg {
@@ -166,7 +154,7 @@ impl Service<Msg> for Handler {
                     }
                 }
                 Msg::Legacy { text } => {
-                    if listen_is_local || allow_legacy_nonlocal {
+                    if listen_is_local {
                         if let Some(addr) = final_addr {
                             if let Err(e) = forward_legacy_async(&addr, text.clone()).await {
                                 warn!(
@@ -272,6 +260,7 @@ async fn main() -> io::Result<()> {
         tokio::spawn(async move {
             match read_full_msg(stream).await {
                 Ok(msg) => {
+                    debug!("msg: {:?}", msg);
                     if let Err(e) = svc.ready().await {
                         warn!("service not ready: {e}");
                         return;

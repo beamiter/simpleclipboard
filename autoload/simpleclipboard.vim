@@ -146,13 +146,34 @@ def StartRelay(): void
     Log("Daemon executable for relay found but is not executable: " .. daemon_exe_path, 'ErrorMsg')
     return
   endif
+
+  var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
+  var token = get(g:, 'simpleclipboard_token', '')
+  var env_map = {
+    'SIMPLECLIPBOARD_ADDR': '0.0.0.0:' .. relay_port,
+    'SIMPLECLIPBOARD_FINAL_ADDR': '127.0.0.1:' .. final_port,
+  }
+  if token !=# ''
+    env_map['SIMPLECLIPBOARD_TOKEN'] = token
+  endif
+
   Log('Starting persistent relay service with daemon...', 'Question')
-  var env_var = $'SIMPLECLIPBOARD_ADDR=0.0.0.0:{relay_port}'
-  # 优先尝试 job_start 脱离 Vim 生命周期（nohup 作为兜底）
   try
-    job_start([daemon_exe_path], { 'env': {'SIMPLECLIPBOARD_ADDR': '0.0.0.0:' .. relay_port}, out_io: 'null', err_io: 'null', stoponexit: 'none' })
+    # 直接用 job_start 启动并脱离 Vim 生命周期
+    job_start([daemon_exe_path], {
+      'env': env_map,
+      out_io: 'null',
+      err_io: 'null',
+      stoponexit: 'none'
+    })
   catch
-    var command = $"{env_var} nohup {daemon_exe_path} >/dev/null 2>&1 &"
+    # 兜底用 nohup；把环境变量都拼进 shell 命令
+    var env_parts = []
+    for [k, v] in items(env_map)
+      call add(env_parts, $"{k}={v}")
+    endfor
+    var env_str = join(env_parts, ' ')
+    var command = $"{env_str} nohup {daemon_exe_path} >/dev/null 2>&1 &"
     try
       job_start(['sh', '-c', command], {stoponexit: 'none'})
     catch
