@@ -8,8 +8,15 @@ var s_enabled: bool = false
 
 # 待用的 TS 高亮组 -> Vim 高亮组 默认链接
 const s_groups = [
-  'TSComment', 'TSString', 'TSNumber', 'TSBoolean',
-  'TSKeyword', 'TSFunction', 'TSType', 'TSVariable', 'TSNamespace'
+  'TSComment', 'TSString', 'TStringRegex', 'TStringEscape', 'TStringSpecial',
+  'TSNumber', 'TSBoolean', 'TSConstant', 'TSConstBuiltin',
+  'TSKeyword', 'TSKeywordOperator', 'TSOperator',
+  'TSPunctDelimiter', 'TSPunctBracket',
+  'TSFunction', 'TSFunctionBuiltin', 'TSMethod',
+  'TSType', 'TSTypeBuiltin', 'TSNamespace',
+  'TSVariable', 'TSVariableParameter', 'TSVariableBuiltin',
+  'TSProperty', 'TSField',
+  'TSMacro', 'TSAttribute'
 ]
 
 # =============== 工具 ===============
@@ -32,19 +39,61 @@ enddef
 
 def EnsureHlGroupsAndProps()
   try
+    # 先给这些组一个合理的默认链接/颜色（用户可覆盖）
+    # 你也可以删掉颜色，全部用 link，交给配色主题决定
+    highlight default link TSComment Comment
+    highlight default link TSString String
+    highlight default link TStringRegex String
+    highlight default link TStringEscape SpecialChar
+    highlight default link TStringSpecial Special
+    highlight default link TSNumber Number
+    highlight default link TSBoolean Boolean
+    highlight default link TSConstant Constant
+    highlight default link TSConstBuiltin Constant
+
+    highlight default link TSKeyword Keyword
+    highlight default link TSKeywordOperator Keyword
+    highlight default link TSOperator Operator
+    highlight default link TSPunctDelimiter Delimiter
+    highlight default link TSPunctBracket Delimiter
+
+    highlight default link TSFunction Function
+    highlight default link TSFunctionBuiltin Function
+    highlight default link TSMethod Function
+
+    highlight default link TSType Type
+    highlight default link TSTypeBuiltin Type
+    highlight default link TSNamespace Identifier
+
+    # 为了避免“变量全白”，给变量/参数/属性/字段更分明的默认色
+    # 你可在 vimrc 里覆盖：hi link TSVariable Identifier 等
+    if !hlexists('TSVariable')
+      highlight default TSVariable ctermfg=109 guifg=#56b6c2
+    else
+      highlight default link TSVariable Identifier
+    endif
+    if !hlexists('TSVariableParameter')
+      highlight default TSVariableParameter ctermfg=180 guifg=#d19a66
+    else
+      highlight default link TSVariableParameter Identifier
+    endif
+    if !hlexists('TSProperty')
+      highlight default TSProperty ctermfg=139 guifg=#c678dd
+    else
+      highlight default link TSProperty Identifier
+    endif
+    if !hlexists('TSField')
+      highlight default TSField ctermfg=139 guifg=#c678dd
+    else
+      highlight default link TSField Identifier
+    endif
+    highlight default link TSVariableBuiltin Constant
+
+    highlight default link TSMacro Macro
+    highlight default link TSAttribute PreProc
+
+    # 为每个组注册 textprop 类型（已存在则忽略异常）
     for g in s_groups
-      execute 'highlight default link ' .. g .. ' ' .. (
-            g ==# 'TSComment'   ? 'Comment'     :
-            g ==# 'TSString'    ? 'String'      :
-            g ==# 'TSNumber'    ? 'Number'      :
-            g ==# 'TSBoolean'   ? 'Boolean'     :
-            g ==# 'TSKeyword'   ? 'Keyword'     :
-            g ==# 'TSFunction'  ? 'Function'    :
-            g ==# 'TSType'      ? 'Type'        :
-            g ==# 'TSNamespace' ? 'Identifier'  :
-                                   'Identifier'
-      )
-      # 每个组建一个 textprop type；已存在会失败，忽略异常
       try
         call prop_type_add(g, {highlight: g, combine: v:true, priority: 11})
       catch

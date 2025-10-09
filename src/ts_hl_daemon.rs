@@ -128,60 +128,147 @@ fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
 
 fn map_capture_to_group(name: &str) -> &'static str {
     match name {
+        // 基础
         "comment" => "TSComment",
         "string" => "TSString",
+        "string.regex" => "TStringRegex",
+        "string.escape" => "TStringEscape",
+        "string.special" => "TStringSpecial",
         "number" => "TSNumber",
         "boolean" => "TSBoolean",
+        "null" => "TSConstant",
+
+        // 关键字/运算符/标点
         "keyword" => "TSKeyword",
-        "function" => "TSFunction",
-        "type" => "TSType",
-        "namespace" => "TSNamespace",
+        "keyword.operator" => "TSKeywordOperator",
+        "operator" => "TSOperator",
+        "punctuation.delimiter" => "TSPunctDelimiter",
+        "punctuation.bracket" => "TSPunctBracket",
+
+        // 变量/常量/内置
         "variable" => "TSVariable",
+        "variable.parameter" => "TSVariableParameter",
+        "variable.builtin" => "TSVariableBuiltin",
+        "constant" => "TSConstant",
+        "constant.builtin" => "TSConstBuiltin",
+
+        // 成员/属性/字段
+        "property" => "TSProperty",
+        "field" => "TSField",
+
+        // 函数/方法/内置
+        "function" => "TSFunction",
+        "method" => "TSMethod",
+        "function.builtin" => "TSFunctionBuiltin",
+
+        // 类型/命名空间/宏/属性
+        "type" => "TSType",
+        "type.builtin" => "TSTypeBuiltin",
+        "namespace" => "TSNamespace",
+        "macro" => "TSMacro",
+        "attribute" => "TSAttribute",
+
+        // 默认兜底
         _ => "TSVariable",
     }
 }
 
 static RUST_QUERY: &str = r#"
-; comments
+; ----- comments -----
 (line_comment) @comment
 (block_comment) @comment
 
-; strings
+; ----- strings -----
 (string_literal) @string
 (char_literal) @string
 (raw_string_literal) @string
 
-; numbers, bool
+; ----- numbers, bool -----
 (integer_literal) @number
 (float_literal) @number
 (boolean_literal) @boolean
 
-; keywords via identifier regex (more robust across grammar versions)
+; ----- keywords（用 identifier 正则，版本更稳）
 ((identifier) @keyword
   (#match? @keyword "^(let|fn|mod|struct|enum|impl|trait|for|while|loop|if|else|match|return|use|pub|const|static|mut|ref|as|where|in|move|unsafe|async|await)$"))
 
-; functions and types
+; ----- functions / methods / types -----
 (function_item name: (identifier) @function)
 (call_expression function: (identifier) @function)
+; 方法调用：foo.bar(...) 的 bar 当作 method
+(call_expression
+  function: (field_expression
+              field: (field_identifier) @method))
 (type_identifier) @type
-(primitive_type) @type
+(primitive_type) @type.builtin
 
-; fallback variables (keep after keyword rule to avoid override)
+; ----- parameters -----
+(parameter (identifier) @variable.parameter)
+; 闭包参数
+(closure_parameters (identifier) @variable.parameter)
+
+; ----- fields / properties（Rust 中字段是 field_identifier） -----
+(field_identifier) @field
+
+; ----- macros / attributes / lifetime -----
+(macro_invocation) @macro
+(macro_invocation macro: (identifier) @macro)
+(attribute) @attribute
+(attribute_item) @attribute
+(lifetime) @type.builtin
+
+; ----- punctuation / operators（适度加一些常见标点，避免太激进） -----
+"(" @punctuation.bracket
+")" @punctuation.bracket
+"{" @punctuation.bracket
+"}" @punctuation.bracket
+"[" @punctuation.bracket
+"]" @punctuation.bracket
+
+"," @punctuation.delimiter
+"." @punctuation.delimiter
+";" @punctuation.delimiter
+":" @punctuation.delimiter
+"->" @operator
+"=>" @operator
+"=" @operator
+"==" @operator
+"!=" @operator
+"<" @operator
+">" @operator
+"<=" @operator
+">=" @operator
+"+" @operator
+"-" @operator
+"*" @operator
+"/" @operator
+"%" @operator
+"&&" @operator
+"||" @operator
+"!" @operator
+
+; ----- fallback variables -----
 (identifier) @variable
 "#;
 
 static JS_QUERY: &str = r#"
+; ----- comments -----
 (comment) @comment
 
+; ----- strings / regex / escapes -----
 (string) @string
 (template_string) @string
+(escape_sequence) @string.escape
+(regex) @string.regex
+(template_substitution) @string.special
 
+; ----- numbers / booleans / null -----
 (number) @number
-
 (true) @boolean
 (false) @boolean
 (null) @constant
 
+; ----- keywords（逐条字面量，兼容性较好） -----
 "var" @keyword
 "let" @keyword
 "const" @keyword
@@ -218,19 +305,84 @@ static JS_QUERY: &str = r#"
 "yield" @keyword
 "await" @keyword
 
-(function_declaration name: (identifier) @function)
-(method_definition name: (property_identifier) @function)
+; ----- operators -----
+"=" @keyword.operator
+"+=" @keyword.operator
+"-=" @keyword.operator
+"*=" @keyword.operator
+"/=" @keyword.operator
+"%=" @keyword.operator
+"**=" @keyword.operator
+"==" @operator
+"===" @operator
+"!=" @operator
+"!==" @operator
+"<" @operator
+"<=" @operator
+">" @operator
+">=" @operator
+"+" @operator
+"-" @operator
+"*" @operator
+"/" @operator
+"%" @operator
+"**" @operator
+"&&" @operator
+"||" @operator
+"!" @operator
+"??" @operator
+"?. " @operator
+"??=" @keyword.operator
+"&&=" @keyword.operator
+"||=" @keyword.operator
+"=>" @operator
 
-; 变量声明的箭头函数：把变量名当作函数名高亮
+; ----- punctuation -----
+"(" @punctuation.bracket
+")" @punctuation.bracket
+"{" @punctuation.bracket
+"}" @punctuation.bracket
+"[" @punctuation.bracket
+"]" @punctuation.bracket
+
+"," @punctuation.delimiter
+";" @punctuation.delimiter
+"." @punctuation.delimiter
+":" @punctuation.delimiter
+"?" @punctuation.delimiter
+
+; ----- functions / methods / classes -----
+(function_declaration name: (identifier) @function)
+(function name: (identifier) @function)
+(method_definition name: (property_identifier) @method)
+(class_declaration name: (identifier) @type)
+
+; 变量声明的箭头函数：把变量名当作函数名
 (lexical_declaration
   (variable_declarator
     name: (identifier) @function
     value: (arrow_function)))
 
-; 调用处：简单把被调用的标识符当作函数
 (call_expression function: (identifier) @function)
 
-(class_declaration name: (identifier) @type)
+; ----- parameters -----
+(formal_parameters (identifier) @variable.parameter)
+(formal_parameters (rest_pattern (identifier) @variable.parameter))
+; 单参数箭头函数
+(arrow_function parameters: (identifier) @variable.parameter)
 
+; ----- properties / fields -----
+(pair key: (property_identifier) @property)
+(pair key: (identifier) @property)
+(member_expression property: (property_identifier) @property)
+
+; ----- builtins -----
+((identifier) @variable.builtin
+  (#match? @variable.builtin "^(undefined|arguments|NaN|Infinity)$"))
+
+((identifier) @constant.builtin
+  (#match? @constant.builtin "^(console|JSON|Math|Date|Number|String|Boolean|Array|Object|RegExp|Error|Promise|Symbol|BigInt)$"))
+
+; ----- fallback -----
 (identifier) @variable
 "#;
