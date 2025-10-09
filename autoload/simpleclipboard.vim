@@ -381,10 +381,9 @@ def IsDaemonRunning(): bool
   return false
 enddef
 
-# autoload/simpleclipboard.vim 中 StartDaemon 片段
 export def StartDaemon(): void
-  if InContainer()
-    Log("Vim is in a remote/container environment, local daemon management is skipped.", 'Comment')
+  if InContainer() || IsSSH()
+    Log("Skip local daemon autostart in SSH/container.", 'Comment')
     return
   endif
 
@@ -402,7 +401,7 @@ export def StartDaemon(): void
   Log('Starting local daemon: ' .. daemon_exe_path, 'Question')
   try
     var port = g:simpleclipboard_port
-    var bind_addr = get(g:, 'simpleclipboard_bind_addr', '0.0.0.0')
+    var bind_addr = get(g:, 'simpleclipboard_bind_addr', '127.0.0.1')  # 更安全的默认
     var job_env = {'SIMPLECLIPBOARD_ADDR': bind_addr .. ':' .. port}
     job_start([daemon_exe_path], { 'env': job_env, out_io: 'null', err_io: 'null', stoponexit: 'none' })
     sleep 150m
@@ -602,6 +601,14 @@ enddef
 
 export def CopyToSystemClipboard(text: string): bool
   SetupRelayIfNeeded()
+  # 在 SSH 环境，如果隧道未就绪，直接跳过 TCP daemon，使用 OSC52/Cmds
+  if IsSSH()
+    var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
+    if !IsTcpOpen($"127.0.0.1:{final_port}")
+      Log('SSH tunnel missing; skip daemon and use OSC52/Cmds.', 'Comment')
+      return CopyViaOsc52(text) || CopyViaCmds(text)
+    endif
+  endif
   Log('Attempting copy via TCP daemon...', 'Question')
   if CopyViaDaemonTCP(text)
     return true
