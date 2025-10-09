@@ -7,6 +7,31 @@ enddef
 # 图标集合（会根据 NF 状态初始化，并允许 g:simpletree_icons 覆盖）
 var s_icons: dict<string> = {}
 
+# 统一的文件类型图标映射（可被 g:simpletree_file_icon_map 覆盖）
+var s_file_icon_map: dict<string> = {
+  'vim': '', 'lua': '', 'py': '', 'rb': '', 'go': '', 'rs': '',
+  'js': '', 'ts': '', 'jsx': '', 'tsx': '',
+  'c': '', 'h': '', 'cpp': '', 'hpp': '',
+  'java': '', 'kt': '',
+  'sh': '', 'bash': '', 'zsh': '',
+  'md': '', 'txt': '',
+  'json': '', 'toml': '', 'yml': '', 'yaml': '', 'ini': '',
+  'lock': '',
+  'html': '', 'css': '', 'scss': '',
+  'png': '', 'jpg': '', 'jpeg': '', 'gif': '', 'svg': '', 'webp': '',
+  'pdf': '',
+  'zip': '', 'tar': '', 'gz': '', '7z': ''
+}
+
+def SetupFileIconMap()
+  var override = get(g:, 'simpletree_file_icon_map', {})
+  if type(override) == v:t_dict
+    for [k, v] in items(override)
+      s_file_icon_map[k] = v
+    endfor
+  endif
+enddef
+
 def SetupIcons()
   if NFEnabled()
     s_icons = {
@@ -27,6 +52,8 @@ def SetupIcons()
   for [k, v] in items(get(g:, 'simpletree_icons', {}))
     s_icons[k] = v
   endfor
+  # 保证文件类型图标映射已加载（供 FileIcon/SetupSyntaxTree 复用）
+  SetupFileIconMap()
 enddef
 
 # 文件类型图标（常用扩展；未命中时用通用文件图标）
@@ -38,21 +65,9 @@ def FileIcon(name: string): string
   if ext ==# ''
     return '󰈙'   # 通用文件（无扩展）
   endif
-  var m = {
-    'vim': '', 'lua': '', 'py': '', 'rb': '', 'go': '', 'rs': '',
-    'js': '', 'ts': '', 'jsx': '', 'tsx': '',
-    'c': '', 'h': '', 'cpp': '', 'hpp': '',
-    'java': '', 'kt': '',
-    'sh': '', 'bash': '', 'zsh': '',
-    'md': '', 'txt': '',
-    'json': '', 'toml': '', 'yml': '', 'yaml': '', 'ini': '',
-    'lock': '',
-    'html': '', 'css': '', 'scss': '',
-    'png': '', 'jpg': '', 'jpeg': '', 'gif': '', 'svg': '', 'webp': '',
-    'pdf': '',
-    'zip': '', 'tar': '', 'gz': '', '7z': ''
-  }
-  return get(m, ext, s_icons.file)
+  # 确保映射已初始化
+  SetupFileIconMap()
+  return get(s_file_icon_map, ext, s_icons.file)
 enddef
 
 call SetupIcons()
@@ -72,13 +87,16 @@ var s_loading: dict<bool> = {}            # path -> true
 var s_pending: dict<number> = {}          # path -> request id
 var s_line_index: list<dict<any>> = []    # 渲染行对应的节点
 
+# 渲染节流
+var s_render_timer: number = 0
+
 # 剪贴板（复制/剪切）
 var s_clipboard: dict<any> = {mode: '', items: []}  # {mode: 'copy'|'cut', items: [paths...]}
 
 # 帮助面板状态
 var s_help_winid: number = 0
 var s_help_bufnr: number = -1
-var s_help_popupid: number = 0      # 新增：浮窗 ID
+var s_help_popupid: number = 0      # 浮窗 ID
 
 # Reveal 定位
 var s_reveal_target: string = ''
@@ -120,7 +138,6 @@ def CanonDir(p: string): string
 enddef
 
 def AbsPath(p: string): string
-  # Log('AbsPath enter: p="' .. p .. '"', 'MoreMsg')
   if p ==# ''
     var cwdp = simplify(fnamemodify(getcwd(), ':p'))
     Log('AbsPath resolved empty p to cwd: ' .. cwdp)
@@ -129,10 +146,8 @@ def AbsPath(p: string): string
   var ap = fnamemodify(p, ':p')
   if ap ==# ''
     ap = fnamemodify(getcwd() .. '/' .. p, ':p')
-    # Log('AbsPath fnamemodify empty -> try cwd join: ' .. ap)
   endif
   ap = simplify(ap)
-  # Log('AbsPath result: ' .. ap, 'MoreMsg')
   return ap
 enddef
 
@@ -145,7 +160,6 @@ enddef
 
 def IsDir(p: string): bool
   var res = isdirectory(p)
-  # Log('IsDir("' .. p .. '") => ' .. (res ? 'true' : 'false'))
   return res
 enddef
 
@@ -165,7 +179,6 @@ enddef
 
 # 递归复制：文件或目录
 def CopyPath(src: string, dst: string): bool
-  # Log('CopyPath "' .. src .. '" -> "' .. dst .. '"')
   if isdirectory(src)
     if !isdirectory(dst)
       try
@@ -404,6 +417,21 @@ def BIsRunning(): bool
   return s_brunning
 enddef
 
+def BackendCrashed()
+  try
+    for [p, id] in items(s_pending)
+      try | BCancel(id) | catch | endtry
+    endfor
+  catch
+  endtry
+  s_pending = {}
+  s_loading = {}
+  echohl ErrorMsg
+  echom '[SimpleTree] backend exited. State cleared. Please retry.'
+  echohl None
+  Render()
+enddef
+
 def BEnsureBackend(cmd: string = ''): bool
   if BIsRunning()
     return true
@@ -472,6 +500,10 @@ def BEnsureBackend(cmd: string = ''): bool
         s_bjob = v:null
         s_bbuf = ''
         s_bcbs = {}
+        try
+          BackendCrashed()
+        catch
+        endtry
       },
       stoponexit: 'term'
     })
@@ -550,6 +582,24 @@ def CancelPending(path: string)
   endif
 enddef
 
+def ScheduleRender()
+  if !exists('*timer_start')
+    Render()
+    return
+  endif
+  if s_render_timer != 0
+    return
+  endif
+  try
+    s_render_timer = timer_start(20, (_) => {
+      s_render_timer = 0
+      Render()
+    })
+  catch
+    Render()
+  endtry
+enddef
+
 def ScanDirAsync(path: string)
   if has_key(s_cache, path) || get(s_loading, path, v:false)
     return
@@ -569,7 +619,7 @@ def ScanDirAsync(path: string)
     (entries) => {
       acc += entries
       s_cache[p] = acc
-      Render()
+      ScheduleRender()
     },
     () => {
       s_loading[p] = false
@@ -577,14 +627,14 @@ def ScanDirAsync(path: string)
       if has_key(s_pending, p) && s_pending[p] == req_id
         call remove(s_pending, p)
       endif
-      Render()
+      ScheduleRender()
     },
     (_msg) => {
       s_loading[p] = false
       if has_key(s_pending, p) && s_pending[p] == req_id
         call remove(s_pending, p)
       endif
-      Render()
+      ScheduleRender()
     }
   )
 
@@ -611,7 +661,10 @@ def SetupSyntaxTree(): void
     call win_execute(s_winid, 'syntax match SimpleTreeLoading "Loading\.\.\."')
 
     # 目录：图标 -> 名称 -> 斜杠（nextgroup + contained）
-    var dir_pat = '\%(' .. escape(s_icons.dir, '\') .. '\|' .. escape(s_icons.dir_open, '\') .. '\)'
+    var dir1 = s_icons.dir
+    var dir2 = s_icons.dir_open
+    # 在 very nomagic 下对字面量图标匹配，再恢复 \m
+    var dir_pat = '\%(' .. '\V' .. escape(dir1, '\') .. '\m' .. '\|' .. '\V' .. escape(dir2, '\') .. '\m' .. '\)'
     var cmd_dir = 'syntax match SimpleTreeIconDir "^\s*\zs' .. dir_pat .. '\ze\s" nextgroup=SimpleTreeDirName,SimpleTreeDirSlash skipwhite'
     call win_execute(s_winid, cmd_dir)
     # 目录名：图标后面的非斜杠字符段（允许空格，直到斜杠或行尾）
@@ -621,20 +674,7 @@ def SetupSyntaxTree(): void
 
     # 文件 icon 分色（仅当启用 Nerd Font 且显示文件图标）
     if NFEnabled() && !!get(g:, 'simpletree_show_file_icons', 1)
-      var m = {
-        'vim': '', 'lua': '', 'py': '', 'rb': '', 'go': '', 'rs': '',
-        'js': '', 'ts': '', 'jsx': '', 'tsx': '',
-        'c': '', 'h': '', 'cpp': '', 'hpp': '',
-        'java': '', 'kt': '',
-        'sh': '', 'bash': '', 'zsh': '',
-        'md': '', 'txt': '',
-        'json': '', 'toml': '', 'yml': '', 'yaml': '', 'ini': '',
-        'lock': '',
-        'html': '', 'css': '', 'scss': '',
-        'png': '', 'jpg': '', 'jpeg': '', 'gif': '', 'svg': '', 'webp': '',
-        'pdf': '',
-        'zip': '', 'tar': '', 'gz': '', '7z': ''
-      }
+      SetupFileIconMap()
       var cats_lang = ['vim', 'lua', 'py', 'rb', 'go', 'rs', 'js', 'ts', 'jsx', 'tsx', 'c', 'h', 'cpp', 'hpp', 'java', 'kt']
       var cats_script = ['sh', 'bash', 'zsh']
       var cats_web = ['html', 'css', 'scss']
@@ -643,7 +683,7 @@ def SetupSyntaxTree(): void
       var cats_img = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp']
       var cats_arc = ['zip', 'tar', 'gz', '7z']
 
-      var kv = items(m)
+      var kv = items(s_file_icon_map)
       var i = 0
       while i < len(kv)
         var ext = kv[i][0]
@@ -664,7 +704,8 @@ def SetupSyntaxTree(): void
         elseif index(cats_arc, ext) >= 0
           grp = 'SimpleTreeIconArchive'
         endif
-        var pat = '^\s*\zs' .. escape(ico, '\') .. '\ze\s'
+        # very nomagic 包裹图标，末尾恢复 \m
+        var pat = '^\s*\zs\V' .. escape(ico, '\') .. '\m\ze\s'
         var cmd = 'syntax match ' .. grp .. ' "' .. pat .. '"'
         call win_execute(s_winid, cmd)
         i = i + 1
@@ -940,7 +981,18 @@ export def OnToggleRootLock()
   echo '[SimpleTree] root lock: ' .. (s_root_locked ? 'ON' : 'OFF')
 enddef
 
+def GuardRootLock(): bool
+  if s_root_locked
+    echo '[SimpleTree] root is locked. Press L to unlock.'
+    return true
+  endif
+  return false
+enddef
+
 export def OnRootHere()
+  if GuardRootLock()
+    return
+  endif
   var node = CursorNode()
   if empty(node) || get(node, 'loading', v:false)
     return
@@ -950,11 +1002,6 @@ export def OnRootHere()
 enddef
 
 export def OnRootUp()
-  var should_check_locked = false
-  if s_root_locked && should_check_locked
-    echo '[SimpleTree] root is locked. Press L to unlock.'
-    return
-  endif
   if s_root ==# ''
     return
   endif
@@ -970,6 +1017,9 @@ export def OnRootUp()
 enddef
 
 export def OnRootPrompt()
+  if GuardRootLock()
+    return
+  endif
   var start = s_root !=# '' ? s_root : getcwd()
   var inp = input('SimpleTree new root: ', start, 'dir')
   if inp ==# ''
@@ -979,6 +1029,9 @@ export def OnRootPrompt()
 enddef
 
 export def OnRootCwd()
+  if GuardRootLock()
+    return
+  endif
   SetRoot(getcwd())
 enddef
 
@@ -1248,6 +1301,7 @@ enddef
 
 export def OnToggleHidden()
   s_hide_dotfiles = !s_hide_dotfiles
+  g:simpletree_hide_dotfiles = s_hide_dotfiles ? 1 : 0
   Refresh()
 enddef
 
@@ -1509,7 +1563,7 @@ def BuildHelpLines(): list<string>
     'R     刷新树（仅重扫缓存）',
     'H     显示/隐藏点文件',
     'q     关闭树窗口',
-    'e     将当前节点设为根（目录；文件取父目录）',
+    'e     将当前节点设为根（目录；文件取父目录））',
     'U     根上移一层',
     'C     输入路径作为根',
     '.     使用当前工作目录作为根',

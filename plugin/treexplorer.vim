@@ -28,6 +28,8 @@ g:simpletree_show_file_icons = get(g:, 'simpletree_show_file_icons', 1)
 g:simpletree_folder_suffix = get(g:, 'simpletree_folder_suffix', 1)
 # 图标覆盖（如 {'dir': '', 'dir_open': '', 'file': '', 'loading': ''}）
 g:simpletree_icons = get(g:, 'simpletree_icons', {})
+# 文件类型图标映射覆盖
+g:simpletree_file_icon_map = get(g:, 'simpletree_file_icon_map', {})
 # 一键折叠（Collapse All）的快捷键（默认 Z，缓冲区内生效）
 g:simpletree_collapse_all_key = get(g:, 'simpletree_collapse_all_key', 'Z')
 
