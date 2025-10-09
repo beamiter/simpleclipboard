@@ -1,5 +1,3 @@
-// src/simpleclipboard_daemon.rs
-
 use arboard::Clipboard;
 use bincode::{Decode, Encode};
 use lazy_static::lazy_static;
@@ -10,7 +8,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task;
 use tokio::time::timeout;
@@ -18,7 +16,7 @@ use tower::{Service, ServiceBuilder, ServiceExt};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
-const MAX_BYTES: usize = 160 * 1024 * 1024; // 160MB
+const MAX_BYTES: usize = 160 * 1024 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Encode, Decode)]
@@ -26,6 +24,12 @@ pub enum Msg {
     Ping { token: Option<String> },
     Set { text: String, token: Option<String> },
     Legacy { text: String },
+}
+
+#[derive(Debug, Encode, Decode)]
+pub struct Ack {
+    pub ok: bool,
+    pub detail: Option<String>,
 }
 
 fn pid_path() -> PathBuf {
@@ -36,7 +40,6 @@ fn pid_path() -> PathBuf {
 }
 
 fn listen_address() -> String {
-    // 更安全的默认：仅本机
     env::var("SIMPLECLIPBOARD_ADDR").unwrap_or_else(|_| "127.0.0.1:12344".to_string())
 }
 
@@ -63,23 +66,26 @@ lazy_static! {
     static ref CLIPBOARD: Mutex<Option<Clipboard>> = Mutex::new(Clipboard::new().ok());
 }
 
-async fn set_clipboard_text_async(text: String) {
-    // arboard 是阻塞 API，放到阻塞线程池
-    let _ = task::spawn_blocking(move || {
+async fn set_clipboard_text_async(text: String) -> bool {
+    task::spawn_blocking(move || {
         let mut lock = CLIPBOARD.lock().unwrap();
         if lock.is_none() {
             *lock = Clipboard::new().ok();
         }
         if let Some(cb) = lock.as_mut() {
-            if let Err(_) = cb.set_text(text.clone()) {
-                *lock = Clipboard::new().ok();
-                if let Some(cb2) = lock.as_mut() {
-                    let _ = cb2.set_text(text);
-                }
+            if cb.set_text(text.clone()).is_ok() {
+                return true;
+            }
+            // 失败后重建再试一次
+            *lock = Clipboard::new().ok();
+            if let Some(cb2) = lock.as_mut() {
+                return cb2.set_text(text).is_ok();
             }
         }
+        false
     })
-    .await;
+    .await
+    .unwrap_or(false)
 }
 
 async fn forward_legacy_async(addr: &str, text: String) -> io::Result<()> {
@@ -107,10 +113,10 @@ impl Handler {
     }
 }
 
-type BoxFut = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Infallible>> + Send>>;
+type BoxFut = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Ack, Infallible>> + Send>>;
 
 impl Service<Msg> for Handler {
-    type Response = ();
+    type Response = Ack;
     type Error = Infallible;
     type Future = BoxFut;
 
@@ -125,47 +131,65 @@ impl Service<Msg> for Handler {
         let final_addr = self.final_addr.clone();
 
         Box::pin(async move {
-            match msg {
+            let ack = match msg {
                 Msg::Ping { token } => {
                     if token_ok(&token) {
-                        // 协议无响应，直接返回
                         info!("Ping accepted");
+                        Ack { ok: true, detail: Some("ping_ok".into()) }
                     } else {
                         warn!("Ping rejected by token");
+                        Ack { ok: false, detail: Some("token_rejected".into()) }
                     }
                 }
                 Msg::Set { text, token } => {
-                    if token_ok(&token) {
-                        if let Some(addr) = final_addr {
-                            if let Err(e) = forward_legacy_async(&addr, text.clone()).await {
+                    if !token_ok(&token) {
+                        warn!("Set rejected by token");
+                        Ack { ok: false, detail: Some("token_rejected".into()) }
+                    } else if let Some(addr) = final_addr {
+                        match forward_legacy_async(&addr, text.clone()).await {
+                            Ok(()) => Ack { ok: true, detail: Some("forwarded".into()) },
+                            Err(e) => {
                                 warn!("Relay forward failed: {e}. Fallback to local clipboard");
-                                set_clipboard_text_async(text).await;
+                                let ok = set_clipboard_text_async(text).await;
+                                // 关键语义：fallback 到本地成功也返回 ok=false，让客户端触发 OSC52 回退
+                                Ack { ok: false, detail: Some(if ok { "forward_failed_fallback_ok" } else { "forward_failed_fallback_err" }.into()) }
                             }
-                        } else {
-                            set_clipboard_text_async(text).await;
                         }
                     } else {
-                        warn!("Set rejected by token");
+                        let ok = set_clipboard_text_async(text).await;
+                        if ok {
+                            Ack { ok: true, detail: Some("local_set_ok".into()) }
+                        } else {
+                            Ack { ok: false, detail: Some("local_set_err".into()) }
+                        }
                     }
                 }
                 Msg::Legacy { text } => {
                     if let Some(addr) = final_addr {
-                        if let Err(e) = forward_legacy_async(&addr, text.clone()).await {
-                            warn!("Legacy relay forward failed: {e}. Fallback to local clipboard");
-                            set_clipboard_text_async(text).await;
+                        match forward_legacy_async(&addr, text.clone()).await {
+                            Ok(()) => Ack { ok: true, detail: Some("forwarded".into()) },
+                            Err(e) => {
+                                warn!("Legacy relay forward failed: {e}. Fallback to local clipboard");
+                                let ok = set_clipboard_text_async(text).await;
+                                Ack { ok: false, detail: Some(if ok { "forward_failed_fallback_ok" } else { "forward_failed_fallback_err" }.into()) }
+                            }
                         }
                     } else {
-                        set_clipboard_text_async(text).await;
+                        let ok = set_clipboard_text_async(text).await;
+                        if ok {
+                            Ack { ok: true, detail: Some("local_set_ok".into()) }
+                        } else {
+                            Ack { ok: false, detail: Some("local_set_err".into()) }
+                        }
                     }
                 }
-            }
-            Ok(())
+            };
+            Ok(ack)
         })
     }
 }
 
-async fn read_full_msg(mut stream: TcpStream) -> io::Result<Msg> {
-    // 读到 EOF（客户端写完会关），并设置超时和大小限制
+async fn read_full_msg(stream: &mut TcpStream) -> io::Result<Msg> {
     let mut buf = Vec::new();
     let read_res = timeout(READ_TIMEOUT, async {
         let mut tmp = [0u8; 16 * 1024];
@@ -200,7 +224,6 @@ async fn read_full_msg(mut stream: TcpStream) -> io::Result<Msg> {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> io::Result<()> {
-    // 日志初始化：可用 RUST_LOG=info/simpleclipboard=debug 控制
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
@@ -209,12 +232,10 @@ async fn main() -> io::Result<()> {
     let listener = TcpListener::bind(&address).await?;
     info!("Listening on {address}");
 
-    // 写 pidfile
     let pid_file = pid_path();
     let pid = std::process::id();
     fs::write(&pid_file, pid.to_string())?;
 
-    // Ctrl+C 清理
     {
         let pid_file_clone = pid_file.clone();
         tokio::spawn(async move {
@@ -228,12 +249,11 @@ async fn main() -> io::Result<()> {
         .concurrency_limit(1024)
         .rate_limit(200, Duration::from_secs(1))
         .timeout(Duration::from_secs(5));
-    // .load_shed() // 需要时开启过载丢弃
 
     let base_handler = Handler::new();
 
     loop {
-        let (stream, peer) = match listener.accept().await {
+        let (mut stream, peer) = match listener.accept().await {
             Ok(s) => s,
             Err(e) => {
                 warn!("accept error: {e}");
@@ -245,15 +265,31 @@ async fn main() -> io::Result<()> {
         let mut svc = builder.clone().service(handler);
 
         tokio::spawn(async move {
-            match read_full_msg(stream).await {
+            match read_full_msg(&mut stream).await {
                 Ok(msg) => {
                     debug!("msg: {:?}", msg);
                     if let Err(e) = svc.ready().await {
                         warn!("service not ready: {e}");
                         return;
                     }
-                    if let Err(_e) = svc.call(msg).await {
-                        // Error=Infallible，这里理论上不会到达
+                    match svc.call(msg).await {
+                        Ok(ack) => {
+                            // 编码并写回 ACK
+                            let cfg = bincode::config::standard().with_limit::<MAX_BYTES>();
+                            match bincode::encode_to_vec(ack, cfg) {
+                                Ok(buf) => {
+                                    let _ = stream.write_all(&buf).await;
+                                    let _ = stream.flush().await;
+                                    let _ = stream.shutdown().await;
+                                }
+                                Err(e) => {
+                                    warn!("encode ack failed: {e}");
+                                }
+                            }
+                        }
+                        Err(_e) => {
+                            // Infallible，不会到达
+                        }
                     }
                 }
                 Err(e) => {

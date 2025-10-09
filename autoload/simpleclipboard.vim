@@ -664,3 +664,12 @@ export def CopyYankedToClipboardEvent(ev: any = v:null, _timer_id: any = 0)
     echohl None
   endif
 enddef
+
+export def Status(): void
+  Log('IsSSH: ' .. string(IsSSH()), 'Comment')
+  Log('InContainer: ' .. string(InContainer()), 'Comment')
+  Log('Port (g:simpleclipboard_port): ' .. string(g:simpleclipboard_port), 'Comment')
+  Log('Daemon addr resolved: ' .. GetDaemonAddress(), 'Comment')
+  var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
+  Log('Tunnel 127.0.0.1:' .. final_port .. ' open: ' .. string(IsTcpOpen($"127.0.0.1:{final_port}")), 'Comment')
+enddef

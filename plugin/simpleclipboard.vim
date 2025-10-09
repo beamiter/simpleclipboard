@@ -43,6 +43,8 @@ g:simpleclipboard_relay_setup_done = get(g:, 'simpleclipboard_relay_setup_done',
 command! SimpleCopyYank simpleclipboard#CopyYankedToClipboard()
 command! SimpleCopyStop simpleclipboard#StopDaemon()
 command! -range=% SimpleCopyRange simpleclipboard#CopyRangeToClipboard(<line1>, <line2>)
+command! SimpleCopyStatus call simpleclipboard#Status()
+
 nnoremap <silent> <Plug>(SimpleCopyYank) <Cmd>SimpleCopyYank<CR>
 if !g:simpleclipboard_no_default_mappings
   nnoremap <silent> <leader>y <Plug>(SimpleCopyYank)
