@@ -14,8 +14,8 @@ use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task;
 use tokio::time::timeout;
-use tower::{Service, ServiceBuilder, ServiceExt}; // 引入 ServiceExt 以便调用 ready()
-use tracing::{info, warn, debug};
+use tower::{Service, ServiceBuilder, ServiceExt};
+use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 const MAX_BYTES: usize = 160 * 1024 * 1024; // 160MB
@@ -97,16 +97,12 @@ async fn forward_legacy_async(addr: &str, text: String) -> io::Result<()> {
 #[derive(Clone)]
 struct Handler {
     final_addr: Option<Arc<String>>,
-    listen_is_local: bool,
 }
 
 impl Handler {
-    fn new(listen_addr: &str) -> Self {
-        let listen_is_local =
-            listen_addr.starts_with("127.0.0.1:") || listen_addr.starts_with("localhost:");
+    fn new() -> Self {
         Self {
             final_addr: final_addr().map(Arc::new),
-            listen_is_local,
         }
     }
 }
@@ -127,7 +123,6 @@ impl Service<Msg> for Handler {
 
     fn call(&mut self, msg: Msg) -> Self::Future {
         let final_addr = self.final_addr.clone();
-        let listen_is_local = self.listen_is_local;
 
         Box::pin(async move {
             match msg {
@@ -154,19 +149,13 @@ impl Service<Msg> for Handler {
                     }
                 }
                 Msg::Legacy { text } => {
-                    if listen_is_local {
-                        if let Some(addr) = final_addr {
-                            if let Err(e) = forward_legacy_async(&addr, text.clone()).await {
-                                warn!(
-                                    "Legacy relay forward failed: {e}. Fallback to local clipboard"
-                                );
-                                set_clipboard_text_async(text).await;
-                            }
-                        } else {
+                    if let Some(addr) = final_addr {
+                        if let Err(e) = forward_legacy_async(&addr, text.clone()).await {
+                            warn!("Legacy relay forward failed: {e}. Fallback to local clipboard");
                             set_clipboard_text_async(text).await;
                         }
                     } else {
-                        warn!("Legacy rejected on non-local listener");
+                        set_clipboard_text_async(text).await;
                     }
                 }
             }
@@ -235,14 +224,13 @@ async fn main() -> io::Result<()> {
         });
     }
 
-    // 构建 tower 模板（Builder 可 Clone），以及一个可 Clone 的基础 handler
     let builder = ServiceBuilder::new()
         .concurrency_limit(1024)
         .rate_limit(200, Duration::from_secs(1))
         .timeout(Duration::from_secs(5));
     // .load_shed() // 需要时开启过载丢弃
 
-    let base_handler = Handler::new(&address);
+    let base_handler = Handler::new();
 
     loop {
         let (stream, peer) = match listener.accept().await {
@@ -253,7 +241,6 @@ async fn main() -> io::Result<()> {
             }
         };
 
-        // 为每个连接单独构建 service，而不是克隆已构建的 service
         let handler = base_handler.clone();
         let mut svc = builder.clone().service(handler);
 
