@@ -6,14 +6,14 @@ edition = "2024"
 [lib]
 name = "simpleclipboard"
 crate-type = ["cdylib"]
-path = "src/simpleclipboard_lib.rs"
+path = "src/simpleclipboard/simpleclipboard_lib.rs"
 
 [[bin]]
 name = "simpleclipboard-daemon"
-path = "src/simpleclipboard_daemon.rs"
+path = "src/simpleclipboard/simpleclipboard_daemon.rs"
 [[bin]]
 name = "simpletree-daemon"
-path = "src/simpletree_daemon.rs"
+path = "src/simpletree/simpletree_daemon.rs"
 [[bin]]
 name = "ts-hl-daemon"
 path = "src/ts_hl/ts_hl_daemon.rs"
