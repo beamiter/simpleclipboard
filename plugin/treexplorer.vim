@@ -32,6 +32,9 @@ g:simpletree_icons = get(g:, 'simpletree_icons', {})
 g:simpletree_file_icon_map = get(g:, 'simpletree_file_icon_map', {})
 # 一键折叠（Collapse All）的快捷键（默认 Z，缓冲区内生效）
 g:simpletree_collapse_all_key = get(g:, 'simpletree_collapse_all_key', 'Z')
+# 是否在多窗口时弹出选择目标窗口（默认开启）
+g:simpletree_choose_window = get(g:, 'simpletree_choose_window', 1)
+g:simpletree_split_force_right = get(g:, 'simpletree_split_force_right', 1)
 
 # ---------------- 命令与映射 ----------------
 command! -nargs=? -complete=dir SimpleTree treexplorer#Toggle(<q-args>)

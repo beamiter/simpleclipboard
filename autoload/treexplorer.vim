@@ -114,6 +114,49 @@ var s_bcbs: dict<any> = {}   # id -> {OnChunk, OnDone, OnError}
 # =============================================================
 # 工具函数
 # =============================================================
+# 列出当前 tab 页的候选目标窗口（排除树窗口，且仅普通缓冲区，即 buftype 为空）
+def CandidateWindows(): list<dict<any>>
+  var wins = getwininfo()
+  var tabnr = tabpagenr()
+  var res: list<dict<any>> = []
+  for w in wins
+    if get(w, 'tabnr', 0) != tabnr
+      continue
+    endif
+    if w.winid == s_winid
+      continue
+    endif
+    # 只选择普通缓冲区窗口（buftype 为空）
+    var bt = getbufvar(w.bufnr, '&buftype')
+    if type(bt) == v:t_string && bt ==# ''
+      var name = bufname(w.bufnr)
+      res->add({winid: w.winid, winnr: w.winnr, bufnr: w.bufnr, name: name})
+    endif
+  endfor
+  return res
+enddef
+
+# 交互式选择目标窗口；返回选中的 winid，返回 0 表示选择“新建分屏”或取消
+def ChooseTargetWindowId(cands: list<dict<any>>): number
+  if len(cands) == 0
+    return 0
+  endif
+  var lines: list<string> = ['选择目标窗口：', '----------------------------------------']
+  var i = 0
+  while i < len(cands)
+    var w = cands[i]
+    var nm = (w.name !=# '' ? w.name : '[No Name]')
+    lines->add(printf('%2d) 窗口 #%d  缓冲区 #%d  %s', i + 1, w.winnr, w.bufnr, nm))
+    i += 1
+  endwhile
+  lines->add('0) 新建右侧分屏')
+  var sel = inputlist(lines)
+  if sel <= 0 || sel > len(cands)
+    return 0
+  endif
+  return cands[sel - 1].winid
+enddef
+
 # 去掉尾部斜杠；保留 Unix 根 "/"；保留 Windows 盘根 "C:/" 的形式
 def RStripSlash(p: string): string
   if p ==# ''
@@ -1188,13 +1231,34 @@ def OpenFile(p: string)
   # keep_in_file = 1 表示打开后保持在文件窗口
   var keep_in_file = !!get(g:, 'simpletree_keep_focus', 1)
 
-  var other = OtherWindowId()
-  if other != 0
-    call win_gotoid(other)
+  # 选择目标窗口：当当前 tab 中有两个及以上候选窗口时，弹出选择列表
+  var target_win = 0
+  var cands = CandidateWindows()
+  if len(cands) >= 2
+    if !!get(g:, 'simpletree_choose_window', 1)
+      target_win = ChooseTargetWindowId(cands)
+    else
+      # 未开启选择时，默认使用第一个候选窗口
+      target_win = cands[0].winid
+    endif
+  elseif len(cands) == 1
+    target_win = cands[0].winid
   else
-    execute 'vsplit'
+    target_win = 0
   endif
-  execute 'edit ' .. fnameescape(p)
+
+  if target_win != 0
+    call win_gotoid(target_win)
+    execute 'edit ' .. fnameescape(p)
+  else
+    # 无候选或选择了“新建分屏”时，右侧新建分屏并打开
+    if !!get(g:, 'simpletree_split_force_right', 1)
+      execute 'belowright vsplit'
+    else
+      execute 'vsplit'
+    endif
+    execute 'edit ' .. fnameescape(p)
+  endif
 
   # 只有在不需要保持在文件窗口时，才回到树窗口
   if !keep_in_file && WinValid()
