@@ -87,6 +87,8 @@ fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
     let (language, query_src) = match lang {
         "rust" => (tree_sitter_rust::LANGUAGE, RUST_QUERY),
         "javascript" => (tree_sitter_javascript::LANGUAGE, JS_QUERY),
+        "c" => (tree_sitter_c::LANGUAGE, C_QUERY),
+        "cpp" => (tree_sitter_cpp::LANGUAGE, CPP_QUERY),
         _ => return Err(anyhow!("unsupported language: {lang}")),
     };
     parser.set_language(&language.into())?;
@@ -99,9 +101,9 @@ fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
     let query = tree_sitter::Query::new(&language.into(), query_src)?;
     let mut cursor = tree_sitter::QueryCursor::new();
 
-    let mut it = cursor.captures(&query, root, text.as_bytes());
-
     let mut spans = Vec::with_capacity(2048);
+
+    let mut it = cursor.captures(&query, root, text.as_bytes());
     while let Some((m, cap_ix)) = it.next() {
         let cap = m.captures[*cap_ix];
         let node = cap.node;
@@ -173,6 +175,7 @@ fn map_capture_to_group(name: &str) -> &'static str {
     }
 }
 
+// =============== Rust Query ===============
 static RUST_QUERY: &str = r#"
 ; ----- comments -----
 (line_comment) @comment
@@ -188,14 +191,13 @@ static RUST_QUERY: &str = r#"
 (float_literal) @number
 (boolean_literal) @boolean
 
-; ----- keywords（用 identifier 正则，版本更稳）
+; ----- keywords -----
 ((identifier) @keyword
   (#match? @keyword "^(let|fn|mod|struct|enum|impl|trait|for|while|loop|if|else|match|return|use|pub|const|static|mut|ref|as|where|in|move|unsafe|async|await)$"))
 
 ; ----- functions / methods / types -----
 (function_item name: (identifier) @function)
 (call_expression function: (identifier) @function)
-; 方法调用：foo.bar(...) 的 bar 当作 method
 (call_expression
   function: (field_expression
               field: (field_identifier) @method))
@@ -204,10 +206,9 @@ static RUST_QUERY: &str = r#"
 
 ; ----- parameters -----
 (parameter (identifier) @variable.parameter)
-; 闭包参数
 (closure_parameters (identifier) @variable.parameter)
 
-; ----- fields / properties（Rust 中字段是 field_identifier） -----
+; ----- fields -----
 (field_identifier) @field
 
 ; ----- macros / attributes / lifetime -----
@@ -217,7 +218,7 @@ static RUST_QUERY: &str = r#"
 (attribute_item) @attribute
 (lifetime) @type.builtin
 
-; ----- punctuation / operators（适度加一些常见标点，避免太激进） -----
+; ----- punctuation / operators -----
 "(" @punctuation.bracket
 ")" @punctuation.bracket
 "{" @punctuation.bracket
@@ -251,6 +252,7 @@ static RUST_QUERY: &str = r#"
 (identifier) @variable
 "#;
 
+// =============== JavaScript Query ===============
 static JS_QUERY: &str = r#"
 ; ----- comments -----
 (comment) @comment
@@ -268,7 +270,7 @@ static JS_QUERY: &str = r#"
 (false) @boolean
 (null) @constant
 
-; ----- keywords（逐条字面量，兼容性较好） -----
+; ----- keywords -----
 "var" @keyword
 "let" @keyword
 "const" @keyword
@@ -331,7 +333,6 @@ static JS_QUERY: &str = r#"
 "||" @operator
 "!" @operator
 "??" @operator
-"?. " @operator
 "??=" @keyword.operator
 "&&=" @keyword.operator
 "||=" @keyword.operator
@@ -357,7 +358,6 @@ static JS_QUERY: &str = r#"
 (method_definition name: (property_identifier) @method)
 (class_declaration name: (identifier) @type)
 
-; 变量声明的箭头函数：把变量名当作函数名
 (lexical_declaration
   (variable_declarator
     name: (identifier) @function
@@ -368,7 +368,6 @@ static JS_QUERY: &str = r#"
 ; ----- parameters -----
 (formal_parameters (identifier) @variable.parameter)
 (formal_parameters (rest_pattern (identifier) @variable.parameter))
-; 单参数箭头函数
 (arrow_function parameters: (identifier) @variable.parameter)
 
 ; ----- properties / fields -----
@@ -382,6 +381,277 @@ static JS_QUERY: &str = r#"
 
 ((identifier) @constant.builtin
   (#match? @constant.builtin "^(console|JSON|Math|Date|Number|String|Boolean|Array|Object|RegExp|Error|Promise|Symbol|BigInt)$"))
+
+; ----- fallback -----
+(identifier) @variable
+"#;
+
+// =============== C Query ===============
+static C_QUERY: &str = r#"
+; ----- comments -----
+(comment) @comment
+
+; ----- preprocessor -----
+(preproc_directive) @macro
+(preproc_include) @macro
+(preproc_def) @macro
+(preproc_function_def) @macro
+
+; ----- strings / chars -----
+(string_literal) @string
+(char_literal) @string
+(escape_sequence) @string.escape
+
+; ----- numbers -----
+(number_literal) @number
+
+; ----- keywords -----
+"if" @keyword
+"else" @keyword
+"switch" @keyword
+"case" @keyword
+"default" @keyword
+"while" @keyword
+"do" @keyword
+"for" @keyword
+"break" @keyword
+"continue" @keyword
+"return" @keyword
+"goto" @keyword
+"sizeof" @keyword
+"typedef" @keyword
+"struct" @keyword
+"union" @keyword
+"enum" @keyword
+"static" @keyword
+"extern" @keyword
+"const" @keyword
+"volatile" @keyword
+"register" @keyword
+"auto" @keyword
+"inline" @keyword
+"restrict" @keyword
+
+; ----- types -----
+(primitive_type) @type.builtin
+(type_identifier) @type
+(sized_type_specifier) @type.builtin
+
+; ----- functions -----
+(function_declarator declarator: (identifier) @function)
+(function_definition declarator: (function_declarator declarator: (identifier) @function))
+(call_expression function: (identifier) @function)
+
+; ----- parameters -----
+(parameter_declaration declarator: (identifier) @variable.parameter)
+(parameter_declaration declarator: (pointer_declarator declarator: (identifier) @variable.parameter))
+
+; ----- fields / members -----
+(field_identifier) @field
+(field_expression field: (field_identifier) @field)
+
+; ----- constants -----
+((identifier) @constant
+  (#match? @constant "^[A-Z_][A-Z0-9_]*$"))
+
+; ----- operators / punctuation -----
+"=" @operator
+"==" @operator
+"!=" @operator
+"<" @operator
+">" @operator
+"<=" @operator
+">=" @operator
+"+" @operator
+"-" @operator
+"*" @operator
+"/" @operator
+"%" @operator
+"&&" @operator
+"||" @operator
+"!" @operator
+"&" @operator
+"|" @operator
+"^" @operator
+"~" @operator
+"<<" @operator
+">>" @operator
+"+=" @keyword.operator
+"-=" @keyword.operator
+"*=" @keyword.operator
+"/=" @keyword.operator
+"%=" @keyword.operator
+"&=" @keyword.operator
+"|=" @keyword.operator
+"^=" @keyword.operator
+"<<=" @keyword.operator
+">>=" @keyword.operator
+"++" @operator
+"--" @operator
+"->" @operator
+
+"(" @punctuation.bracket
+")" @punctuation.bracket
+"{" @punctuation.bracket
+"}" @punctuation.bracket
+"[" @punctuation.bracket
+"]" @punctuation.bracket
+"," @punctuation.delimiter
+";" @punctuation.delimiter
+"." @punctuation.delimiter
+
+; ----- fallback -----
+(identifier) @variable
+"#;
+
+// =============== C++ Query ===============
+static CPP_QUERY: &str = r#"
+; ----- comments -----
+(comment) @comment
+
+; ----- preprocessor -----
+(preproc_directive) @macro
+(preproc_include) @macro
+(preproc_def) @macro
+
+; ----- strings / chars -----
+(string_literal) @string
+(char_literal) @string
+(escape_sequence) @string.escape
+(raw_string_literal) @string
+
+; ----- numbers -----
+(number_literal) @number
+
+; ----- keywords -----
+"class" @keyword
+"namespace" @keyword
+"using" @keyword
+"template" @keyword
+"typename" @keyword
+"public" @keyword
+"private" @keyword
+"protected" @keyword
+"virtual" @keyword
+"override" @keyword
+"final" @keyword
+"explicit" @keyword
+"friend" @keyword
+"operator" @keyword
+"new" @keyword
+"delete" @keyword
+"this" @keyword
+"nullptr" @constant.builtin
+"true" @boolean
+"false" @boolean
+"try" @keyword
+"catch" @keyword
+"throw" @keyword
+"noexcept" @keyword
+"constexpr" @keyword
+"static_assert" @keyword
+"decltype" @keyword
+"auto" @keyword
+"concept" @keyword
+"requires" @keyword
+"if" @keyword
+"else" @keyword
+"switch" @keyword
+"case" @keyword
+"default" @keyword
+"while" @keyword
+"do" @keyword
+"for" @keyword
+"break" @keyword
+"continue" @keyword
+"return" @keyword
+"goto" @keyword
+"sizeof" @keyword
+"typedef" @keyword
+"struct" @keyword
+"union" @keyword
+"enum" @keyword
+"static" @keyword
+"extern" @keyword
+"const" @keyword
+"volatile" @keyword
+"register" @keyword
+"inline" @keyword
+"restrict" @keyword
+
+; ----- types -----
+(primitive_type) @type.builtin
+(type_identifier) @type
+(sized_type_specifier) @type.builtin
+(qualified_identifier) @type
+
+; ----- namespace -----
+(namespace_identifier) @namespace
+
+; ----- functions / methods -----
+(function_declarator declarator: (identifier) @function)
+(function_declarator declarator: (qualified_identifier name: (identifier) @function))
+(function_definition declarator: (function_declarator declarator: (identifier) @function))
+(call_expression function: (identifier) @function)
+(call_expression function: (qualified_identifier name: (identifier) @function))
+(call_expression function: (field_expression field: (field_identifier) @method))
+
+; ----- parameters -----
+(parameter_declaration declarator: (identifier) @variable.parameter)
+(parameter_declaration declarator: (pointer_declarator declarator: (identifier) @variable.parameter))
+(parameter_declaration declarator: (reference_declarator value: (identifier) @variable.parameter))
+
+; ----- fields / properties -----
+(field_identifier) @field
+(field_expression field: (field_identifier) @field)
+
+; ----- operators / punctuation -----
+"=" @operator
+"==" @operator
+"!=" @operator
+"<" @operator
+">" @operator
+"<=" @operator
+">=" @operator
+"+" @operator
+"-" @operator
+"*" @operator
+"/" @operator
+"%" @operator
+"&&" @operator
+"||" @operator
+"!" @operator
+"&" @operator
+"|" @operator
+"^" @operator
+"~" @operator
+"<<" @operator
+">>" @operator
+"+=" @keyword.operator
+"-=" @keyword.operator
+"*=" @keyword.operator
+"/=" @keyword.operator
+"%=" @keyword.operator
+"&=" @keyword.operator
+"|=" @keyword.operator
+"^=" @keyword.operator
+"<<=" @keyword.operator
+">>=" @keyword.operator
+"++" @operator
+"--" @operator
+"->" @operator
+"::" @operator
+
+"(" @punctuation.bracket
+")" @punctuation.bracket
+"{" @punctuation.bracket
+"}" @punctuation.bracket
+"[" @punctuation.bracket
+"]" @punctuation.bracket
+"," @punctuation.delimiter
+";" @punctuation.delimiter
+"." @punctuation.delimiter
+":" @punctuation.delimiter
 
 ; ----- fallback -----
 (identifier) @variable

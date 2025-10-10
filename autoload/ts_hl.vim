@@ -5,6 +5,7 @@ var s_job: any = v:null
 var s_running: bool = false
 var s_req_timer: number = 0
 var s_enabled: bool = false
+var s_active_bufs: dict<bool> = {}
 
 # 待用的 TS 高亮组 -> Vim 高亮组 默认链接
 const s_groups = [
@@ -32,15 +33,24 @@ def DetectLang(buf: number): string
     return 'rust'
   elseif ft ==# 'javascript' || ft ==# 'javascriptreact' || ft ==# 'jsx'
     return 'javascript'
+  elseif ft ==# 'c'
+    return 'c'
+  elseif ft ==# 'cpp' || ft ==# 'cc'
+    return 'cpp'
   else
     return ''
   endif
 enddef
 
+def IsSupportedLang(buf: number): bool
+  var ft = getbufvar(buf, '&filetype')
+  var supported = ['rust', 'javascript', 'javascriptreact', 'jsx', 'c', 'cpp', 'cc']
+  return index(supported, ft) >= 0
+enddef
+
 def EnsureHlGroupsAndProps()
   try
     # 先给这些组一个合理的默认链接/颜色（用户可覆盖）
-    # 你也可以删掉颜色，全部用 link，交给配色主题决定
     highlight default link TSComment Comment
     highlight default link TSString String
     highlight default link TStringRegex String
@@ -65,8 +75,7 @@ def EnsureHlGroupsAndProps()
     highlight default link TSTypeBuiltin Type
     highlight default link TSNamespace Identifier
 
-    # 为了避免“变量全白”，给变量/参数/属性/字段更分明的默认色
-    # 你可在 vimrc 里覆盖：hi link TSVariable Identifier 等
+    # 为了避免"变量全白"，给变量/参数/属性/字段更分明的默认色
     if !hlexists('TSVariable')
       highlight default TSVariable ctermfg=109 guifg=#56b6c2
     else
@@ -176,7 +185,9 @@ def EnsureDaemon(): bool
   endif
   var exe = FindDaemon()
   if exe ==# ''
-    echohl ErrorMsg | echom '[ts-hl] daemon not found, set g:ts_hl_daemon_path or place vim-ts-daemon in runtimepath/lib' | echohl None
+    echohl ErrorMsg
+    echom '[ts-hl] daemon not found, set g:ts_hl_daemon_path or place ts-hl-daemon in runtimepath/lib'
+    echohl None
     return false
   endif
   try
@@ -189,18 +200,22 @@ def EnsureDaemon(): bool
       exit_cb: (ch, code) => {
         s_running = false
         s_job = v:null
+        Log('Daemon exited with code ' .. code)
       },
       stoponexit: 'term'
     })
   catch
     s_job = v:null
     s_running = false
-    echohl ErrorMsg | echom '[ts-hl] failed to start daemon: ' .. v:exception | echohl None
+    echohl ErrorMsg
+    echom '[ts-hl] failed to start daemon: ' .. v:exception
+    echohl None
     return false
   endtry
   s_running = (s_job != v:null)
   if s_running
     EnsureHlGroupsAndProps()
+    Log('Daemon started successfully')
   endif
   return s_running
 enddef
@@ -213,6 +228,7 @@ def Send(req: dict<any>)
     var j = json_encode(req) .. "\n"
     ch_sendraw(s_job, j)
   catch
+    Log('Failed to send request: ' .. v:exception)
   endtry
 enddef
 
@@ -230,12 +246,17 @@ def RequestNow(buf: number)
   var lines = getbufline(buf, 1, '$')
   var text = join(lines, "\n")
   Send({type: 'highlight', buf: buf, lang: lang, text: text})
+  Log('Requested highlight for buffer ' .. buf .. ' (' .. lang .. ')')
 enddef
 
 def ScheduleRequest(buf: number)
   if !s_enabled
     return
   endif
+  if !IsSupportedLang(buf)
+    return
+  endif
+
   if s_req_timer != 0 && exists('*timer_stop')
     try
       call timer_stop(s_req_timer)
@@ -243,6 +264,7 @@ def ScheduleRequest(buf: number)
     endtry
     s_req_timer = 0
   endif
+
   if exists('*timer_start')
     try
       var ms = get(g:, 'ts_hl_debounce', 120)
@@ -255,6 +277,54 @@ def ScheduleRequest(buf: number)
     endtry
   else
     RequestNow(buf)
+  endif
+enddef
+
+def AutoEnableForBuffer(buf: number)
+  if !bufexists(buf)
+    return
+  endif
+
+  # 检查全局开关
+  var auto_enable_ft = get(g:, 'ts_hl_auto_enable_filetypes', [])
+  if type(auto_enable_ft) != v:t_list || len(auto_enable_ft) == 0
+    return
+  endif
+
+  var ft = getbufvar(buf, '&filetype')
+  if index(auto_enable_ft, ft) < 0
+    return
+  endif
+
+  # 如果该缓冲区已标记启用，跳过
+  if has_key(s_active_bufs, buf) && s_active_bufs[buf]
+    return
+  endif
+
+  # 自动启用并标记
+  if !s_enabled
+    Log('Auto-enabling for filetype: ' .. ft)
+    Enable()
+  endif
+  s_active_bufs[buf] = true
+
+  # 立即请求高亮
+  RequestNow(buf)
+enddef
+
+def CheckAndStopDaemon()
+  var has_active = false
+  for [bufnr, active] in items(s_active_bufs)
+    if active && bufexists(str2nr(bufnr))
+      has_active = true
+      break
+    endif
+  endfor
+
+  if !has_active && s_enabled && get(g:, 'ts_hl_auto_stop', 1)
+    Log('No active buffers, stopping daemon')
+    Disable()
+    s_active_bufs = {}
   endif
 enddef
 
@@ -273,6 +343,7 @@ export def Enable()
     autocmd BufEnter,BufWinEnter * call ts_hl#OnBufEvent(bufnr())
     autocmd FileType * call ts_hl#OnBufEvent(bufnr())
     autocmd TextChanged,TextChangedI * call ts_hl#OnBufEvent(bufnr())
+    autocmd BufWinLeave,BufDelete * call ts_hl#OnBufClose(str2nr(expand('<abuf>')))
   augroup END
 
   # 对当前缓冲立即请求一次
@@ -288,7 +359,18 @@ export def Disable()
   augroup TsHl
     autocmd!
   augroup END
-  # 不强制停止 daemon，保留复用；如需停止可扩展命令
+
+  # 停止 daemon
+  if s_running && s_job != v:null
+    try
+      call job_stop(s_job, 'term')
+      s_running = false
+      s_job = v:null
+      Log('Daemon stopped')
+    catch
+    endtry
+  endif
+
   echo '[ts-hl] disabled'
 enddef
 
@@ -301,5 +383,16 @@ export def Toggle()
 enddef
 
 export def OnBufEvent(buf: number)
+  AutoEnableForBuffer(buf)
   ScheduleRequest(buf)
+enddef
+
+export def OnBufClose(buf: number)
+  if has_key(s_active_bufs, buf)
+    s_active_bufs[buf] = false
+  endif
+  # 延迟检查，避免频繁启停
+  if exists('*timer_start')
+    timer_start(2000, (id) => CheckAndStopDaemon())
+  endif
 enddef

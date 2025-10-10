@@ -37,6 +37,8 @@ tower = { version = "0.5.2", features = ["buffer", "limit", "timeout", "util"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
 tree-sitter = "0.25.10"
+tree-sitter-c = "0.24.1"
+tree-sitter-cpp = "0.23.4"
 tree-sitter-javascript = "0.25.0"
 tree-sitter-rust = "0.24.0"
 
