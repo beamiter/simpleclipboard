@@ -1,5 +1,5 @@
 ; ============================================
-; C++ Tree-sitter Query - Compatible Fix
+; C++ Tree-sitter Query - Compatible Full Version
 ; ============================================
 
 ; ----- Comments -----
@@ -13,7 +13,7 @@
 (preproc_ifdef) @macro
 (preproc_directive) @macro
 
-; Preprocessor paths (避免使用 path 字段，直接匹配子节点)
+; Preprocessor include paths (不使用 path 字段)
 (preproc_include (string_literal) @string)
 (preproc_include (system_lib_string) @string)
 
@@ -31,118 +31,115 @@
 (true) @boolean
 (false) @boolean
 
-; ----- Null & This -----
-(null) @constant.builtin
+; ----- Builtins -----
 (this) @variable.builtin
+"nullptr" @constant.builtin
 
 ; ----- Type Specifiers -----
 (primitive_type) @type.builtin
 (type_identifier) @type
-(sized_type_specifier) @type.builtin
 (placeholder_type_specifier) @type.builtin
 
-; Qualified types (不使用 scope/name 字段，直接匹配子节点)
+; Qualified identifiers/types（不使用字段标签）
 (qualified_identifier (namespace_identifier) @namespace)
 (qualified_identifier (type_identifier) @type)
-
-; Template types（不使用 name 字段）
 (template_type (type_identifier) @type)
 
 ; ----- Namespaces -----
 (namespace_identifier) @namespace
+; 说明：不同版本的 grammar 中 namespace_definition 的名称子节点常被别名为 namespace_identifier，
+; 直接匹配 namespace_identifier 更稳妥，避免 Impossible pattern。
 
-; namespace 定义（不使用 name 字段）
-(namespace_definition (identifier) @namespace)
+; ----- Keywords (字面匹配更稳妥) -----
 
-; using 声明中的命名空间（不使用 scope 字段）
-(using_declaration
-  (qualified_identifier (namespace_identifier) @namespace))
+"class" @keyword
+"struct" @keyword
+"union" @keyword
+"enum" @keyword
 
-; ----- Keywords -----
-; 说明：你的关键词目前用 identifier + #match? 的方式，这在 C++ 中很多关键字有独立的词法，不会被解析成 identifier。
-; 如果需要更准确的关键词高亮，建议直接按字面匹配（例如 "class" @keyword）。
-; 为保持原文件结构，暂不改动这块，只提醒其可能匹配不到。
+"namespace" @keyword
+"using" @keyword
+"typedef" @keyword
 
-((identifier) @keyword
-  (#match? @keyword "^(class|struct|union|enum)$"))
+"template" @keyword
+"typename" @keyword
 
-((identifier) @keyword
-  (#match? @keyword "^(namespace|using)$"))
+"public" @keyword
+"private" @keyword
+"protected" @keyword
 
-((identifier) @keyword
-  (#match? @keyword "^(template|typename)$"))
+"virtual" @keyword
+"override" @keyword
+"final" @keyword
+"explicit" @keyword
+"inline" @keyword
+"static" @keyword
+"extern" @keyword
+"friend" @keyword
 
-((identifier) @keyword
-  (#match? @keyword "^(typedef)$"))
+"new" @keyword
+"delete" @keyword
 
-((identifier) @keyword
-  (#match? @keyword "^(public|private|protected)$"))
+"try" @keyword
+"catch" @keyword
+"throw" @keyword
+"noexcept" @keyword
 
-((identifier) @keyword
-  (#match? @keyword "^(virtual|override|final|explicit|inline|static|extern|friend)$"))
+"constexpr" @keyword
+"consteval" @keyword
+"constinit" @keyword
+"decltype" @keyword
+"concept" @keyword
+"requires" @keyword
 
-((identifier) @keyword
-  (#match? @keyword "^(new|delete)$"))
+"co_await" @keyword
+"co_return" @keyword
+"co_yield" @keyword
 
-((identifier) @keyword
-  (#match? @keyword "^(try|catch|throw|noexcept)$"))
+"const" @keyword
+"volatile" @keyword
+"mutable" @keyword
+"register" @keyword
+"restrict" @keyword
 
-((identifier) @keyword
-  (#match? @keyword "^(constexpr|consteval|constinit|decltype|concept|requires)$"))
+"if" @keyword
+"else" @keyword
+"switch" @keyword
+"case" @keyword
+"default" @keyword
+"while" @keyword
+"do" @keyword
+"for" @keyword
+"break" @keyword
+"continue" @keyword
+"return" @keyword
+"goto" @keyword
 
-((identifier) @keyword
-  (#match? @keyword "^(co_await|co_return|co_yield)$"))
-
-((identifier) @keyword
-  (#match? @keyword "^(const|volatile|mutable|register|restrict)$"))
-
-((identifier) @keyword
-  (#match? @keyword "^(if|else|switch|case|default|while|do|for|break|continue|return|goto)$"))
-
-((identifier) @keyword
-  (#match? @keyword "^(sizeof|static_assert|operator)$"))
-
-((identifier) @constant.builtin
-  (#eq? @constant.builtin "nullptr"))
+"sizeof" @keyword
+"static_assert" @keyword
+"operator" @keyword
 
 ; ----- Functions & Methods -----
 
-; Function declarations
+; Declarations
 (function_declarator (identifier) @function)
 (function_declarator (qualified_identifier (identifier) @function))
 (function_declarator (field_identifier) @function)
 
-; Function definitions
-(function_definition
-  (function_declarator (identifier) @function))
-
-(function_definition
-  (function_declarator
-    (qualified_identifier (identifier) @function)))
-
-; Method definitions
-(function_definition
-  (function_declarator (field_identifier) @method))
-
-; Constructor/Destructor
-(function_definition
-  (function_declarator (destructor_name) @function))
+; Definitions
+(function_definition (function_declarator (identifier) @function))
+(function_definition (function_declarator (qualified_identifier (identifier) @function)))
+(function_definition (function_declarator (field_identifier) @method))
+(function_definition (function_declarator (destructor_name) @function))
 
 ; Template functions
 (template_declaration
-  (function_definition
-    (function_declarator (identifier) @function)))
+  (function_definition (function_declarator (identifier) @function)))
 
-; Function calls
-(call_expression
-  (identifier) @function)
-
-(call_expression
-  (qualified_identifier (identifier) @function))
-
-; Method calls
-(call_expression
-  (field_expression (field_identifier) @method))
+; Calls
+(call_expression (identifier) @function)
+(call_expression (qualified_identifier (identifier) @function))
+(call_expression (field_expression (field_identifier) @method))
 
 ; ----- Parameters -----
 (parameter_declaration (identifier) @variable.parameter)
@@ -152,16 +149,24 @@
 
 ; ----- Fields & Properties -----
 (field_identifier) @field
-(field_expression (field_identifier) @field)
 
-; 说明：不同版本 grammar 中 field_declaration 的结构可能是
-; field_declaration -> (field_declarator -> (field_identifier))
-; 因此直接匹配 field_declaration 的 declarator 字段可能不适用，改为更通用的匹配：
-(field_declaration (field_declarator (field_identifier) @field))
-(field_declaration (field_identifier) @field)
+(field_expression
+  (field_identifier) @field)
+
+; 成员声明（避免不存在的 field_declarator，覆盖常见形态）
+(field_declaration (identifier) @field)
+(field_declaration (init_declarator (identifier) @field))
+(field_declaration (pointer_declarator (identifier) @field))
+(field_declaration (reference_declarator (identifier) @field))
+(field_declaration (array_declarator (identifier) @field))
 
 ; ----- Variables -----
+; 覆盖常见局部变量声明形态
 (declaration (identifier) @variable)
+(declaration (init_declarator (identifier) @variable))
+(declaration (pointer_declarator (identifier) @variable))
+(declaration (reference_declarator (identifier) @variable))
+(declaration (array_declarator (identifier) @variable))
 (init_declarator (identifier) @variable)
 
 ; ----- Constants -----
@@ -212,6 +217,7 @@
 
 "->" @operator
 "::" @operator
+
 "?" @operator
 
 ; ----- Punctuation -----
