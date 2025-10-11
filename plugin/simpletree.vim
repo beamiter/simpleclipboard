@@ -16,6 +16,10 @@ g:simpletree_keep_focus = get(g:, 'simpletree_keep_focus', 1)
 g:simpletree_debug = get(g:, 'simpletree_debug', 0)
 g:simpletree_daemon_path = get(g:, 'simpletree_daemon_path', '')
 g:simpletree_root_locked = get(g:, 'simpletree_root_locked', 1)
+# 自动跟随当前 buffer（默认开启）
+g:simpletree_auto_follow = get(g:, 'simpletree_auto_follow', 1)
+# 当当前文件不在根目录下时，是否自动切换根到文件所在目录（默认关闭；尊重根锁）
+g:simpletree_auto_follow_change_root = get(g:, 'simpletree_auto_follow_change_root', 0)
 
 # =============================================================
 # Nerd Font UI 配置与工具
@@ -48,4 +52,12 @@ nnoremap <silent> <leader>e <Cmd>SimpleTree<CR>
 augroup SimpleTreeBackend
   autocmd!
   autocmd VimLeavePre * try | call simpletree#Stop() | catch | endtry
+augroup END
+
+augroup SimpleTreeAutoFollow
+  autocmd!
+  # 进入任意缓冲区后尝试自动跟随；仅在启用时生效
+  autocmd BufEnter * if get(g:, 'simpletree_auto_follow', 1) |
+        \ try | call simpletree#AutoFollow() | catch | endtry |
+        \ endif
 augroup END

@@ -220,6 +220,41 @@ def PathExists(p: string): bool
   return filereadable(p) || isdirectory(p)
 enddef
 
+# 统一分隔符为 / 并做绝对化与尾斜杠处理
+def NormPath(p: string): string
+  var ap = AbsPath(p)
+  ap = substitute(ap, '\\', '/', 'g')
+  return RStripSlash(ap)
+enddef
+
+# 判断 p 是否在 root 之下（或等于 root）
+def IsSubPath(root: string, p: string): bool
+  if root ==# '' || p ==# ''
+    return false
+  endif
+  var r = NormPath(root)
+  var a = NormPath(p)
+
+  # Windows 下不区分大小写
+  if has('win32') || has('win64') || has('win95') || has('win32unix')
+    r = tolower(r)
+    a = tolower(a)
+  endif
+
+  if a ==# r
+    return true
+  endif
+
+  # 对根 "/" 特判
+  if r ==# '/'
+    return a =~ '^/'
+  endif
+
+  # 盘根如 "C:/" 不追加第二个斜杠；普通目录检查 r + "/"
+  var r_prefix = r =~? '^[A-Za-z]:/$' ? r : (r .. '/')
+  return stridx(a, r_prefix) == 0
+enddef
+
 # 递归复制：文件或目录
 def CopyPath(src: string, dst: string): bool
   if isdirectory(src)
@@ -1131,6 +1166,54 @@ enddef
 # =============================================================
 # 用户交互（导出）
 # =============================================================
+# 自动跟随当前 buffer：在切换到普通文件缓冲区时，若树已打开则 Reveal
+export def AutoFollow()
+  # 树未打开或未设置根则忽略
+  if !WinValid() || s_root ==# ''
+    return
+  endif
+
+  # 当前在树窗口内，不跟随
+  if win_getid() == s_winid
+    return
+  endif
+
+  # 只处理普通缓冲区（buftype 为空）
+  var bt = &buftype
+  if type(bt) != v:t_string || bt !=# ''
+    return
+  endif
+
+  var curf = expand('%:p')
+  if curf ==# '' || !filereadable(curf)
+    return
+  endif
+  var ap = AbsPath(curf)
+
+  # 若文件在根之下，直接 Reveal
+  if IsSubPath(s_root, ap)
+    RevealPath(ap)
+    return
+  endif
+
+  # 文件不在当前根下：根据配置决定是否自动切根
+  if !!get(g:, 'simpletree_auto_follow_change_root', 0)
+    if s_root_locked
+      Log('AutoFollow: root locked; skip changing root', 'WarningMsg')
+      return
+    endif
+    # 切根到当前文件所在目录，并 Reveal 到文件
+    var new_root = fnamemodify(ap, ':h')
+    if IsDir(new_root)
+      SetRoot(new_root)
+      RevealPath(ap)
+    endif
+  else
+    # 不切根时，若文件超出当前根，仅在日志中提示（debug 模式）
+    Log('AutoFollow: file outside root; no change', 'Comment')
+  endif
+enddef
+
 def CursorNode(): dict<any>
   var lnum = line('.')
   if lnum <= 0 || lnum > len(s_line_index)
