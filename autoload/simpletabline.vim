@@ -26,6 +26,22 @@ def ConfBool(name: string, default_val: bool): bool
   return default_val
 enddef
 
+# 将普通数字串转为上标（0..9 -> ⁰..⁹），不识别的字符原样返回
+def SupDigit(s: string): string
+  if s ==# ''
+    return ''
+  endif
+  var m: dict<string> = {
+    '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
+    '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹'
+  }
+  var out = ''
+  for ch in split(s, '\zs')
+    out ..= get(m, ch, ch)
+  endfor
+  return out
+enddef
+
 # 读取 SimpleTree 的 root（若不可用返回空字符串）
 def TreeRoot(): string
   var r = ''
@@ -152,7 +168,6 @@ def ListedNormalBuffers(): list<dict<any>>
   return res
 enddef
 
-
 # 生成在 Tabline 上显示的名称：默认相对 SimpleTree 根并缩写
 # g:simpletabline_path_mode: 'abbr'|'rel'|'tail'|'abs'
 # g:simpletabline_fallback_cwd_root: 1 使用 CWD 作为 root（当未打开 SimpleTree 或 root 为空）
@@ -192,12 +207,20 @@ def BufDisplayName(b: dict<any>): string
 enddef
 
 # 计算单项标签的“可见文字宽度”（不含高亮控制符）
+# 已移除 prefix/suffix，保证与渲染一致
 def LabelText(b: dict<any>, key: string): string
   var name = BufDisplayName(b)
   var sep = Conf('simpletabline_key_sep', ' ')
   var show_mod = Conf('simpletabline_show_modified', 1) != 0
   var mod_mark = (show_mod && get(b, 'changed', 0) == 1) ? ' +' : ''
-  return (key !=# '' ? key .. sep : '') .. name .. mod_mark
+
+  var key_txt = key
+  if key_txt !=# '' && ConfBool('simpletabline_superscript_index', true)
+    key_txt = SupDigit(key_txt)
+  endif
+
+  var base = (key_txt !=# '' ? key_txt .. sep : '') .. name .. mod_mark
+  return base
 enddef
 
 # 构建当前可见窗口的缓冲区序列：
@@ -411,34 +434,57 @@ export def Tabline(): string
   # Pick 映射取本次可见分配
   s_pick_map = copy(s_idx_to_buf)
 
+  var first = true
+  var prev_is_cur = false
+
   for vbn in visible
     var k = string(vbn)
     if !has_key(bynr, k)
       continue
     endif
     var b = bynr[k]
-
     var is_cur = (b.bufnr == curbn)
-    var grp = is_cur ? '%#SimpleTablineActive#' : '%#SimpleTablineInactive#'
 
-    var key = get(buf_keys, string(b.bufnr), '')
-    var key_part = ''
-    if show_keys && key !=# ''
-      var kgrp = s_pick_mode ? '%#SimpleTablinePickDigit#' : grp
-      key_part = kgrp .. key .. '%#None#' .. Conf('simpletabline_key_sep', ' ')
+    # 输出分隔符（非第一个项）
+    if !first
+      var use_cur_sep = (prev_is_cur || is_cur)
+      if use_cur_sep
+        s ..= '%#SimpleTablineSepCurrent#' .. sep .. '%#None#'
+      else
+        s ..= '%#SimpleTablineSep#' .. sep .. '%#None#'
+      endif
     endif
 
+    # 索引显示文本（可选上标 + 独立高亮组；Pick 模式优先）
+    var key_raw = get(buf_keys, string(b.bufnr), '')
+    var key_txt = key_raw
+    if key_txt !=# '' && ConfBool('simpletabline_superscript_index', true)
+      key_txt = SupDigit(key_txt)
+    endif
+    var key_part = ''
+    if show_keys && key_txt !=# ''
+      var key_grp = s_pick_mode ? '%#SimpleTablinePickDigit#' : (is_cur ? '%#SimpleTablineIndexActive#' : '%#SimpleTablineIndex#')
+      key_part = key_grp .. key_txt .. '%#None#' .. Conf('simpletabline_key_sep', ' ')
+    endif
+
+    # 名称 + 修改标记（现有激活/非激活组）
+    var grp_item = is_cur ? '%#SimpleTablineActive#' : '%#SimpleTablineInactive#'
     var name = BufDisplayName(b)
     var show_mod = Conf('simpletabline_show_modified', 1) != 0
     var mod_mark = (show_mod && get(b, 'changed', 0) == 1) ? ' +' : ''
+    var name_part = grp_item .. name .. mod_mark .. '%#None#'
 
-    var item = grp .. key_part .. name .. mod_mark .. '%#None#'
+    # 不再使用 prefix/suffix，只输出键位和名称
+    var item = key_part .. name_part
 
     if s ==# ''
       s = item
     else
-      s ..= '%#SimpleTablineFill#' .. sep .. '%#None#' .. item
+      s ..= item
     endif
+
+    first = false
+    prev_is_cur = is_cur
   endfor
 
   if right_omitted

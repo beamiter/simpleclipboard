@@ -11,19 +11,25 @@ g:simpletabline_item_sep      = get(g:, 'simpletabline_item_sep', ' | ')
 g:simpletabline_key_sep       = get(g:, 'simpletabline_key_sep', ' ')
 g:simpletabline_ellipsis      = get(g:, 'simpletabline_ellipsis', ' … ')
 g:simpletabline_listed_only   = get(g:, 'simpletabline_listed_only', 1)
+g:simpletabline_superscript_index = get(g:, 'simpletabline_superscript_index', 1)
 
 # 高亮默认链接到内置 TabLine 组（可按需自定义）
-highlight default link SimpleTablineActive   TabLineSel
-highlight default link SimpleTablineInactive TabLine
-highlight default link SimpleTablineFill     TabLineFill
-highlight default link SimpleTablinePickDigit Title
+highlight default link SimpleTablineActive        TabLineSel
+highlight default link SimpleTablineInactive      TabLine
+highlight default link SimpleTablineFill          TabLineFill
+highlight default link SimpleTablinePickDigit     Title
+highlight default link SimpleTablineIndex         TabLine
+highlight default link SimpleTablineIndexActive   TabLineSel
+# 新增分隔符高亮：普通与“当前项两侧”的分隔符
+highlight default link SimpleTablineSep           TabLineFill
+highlight default link SimpleTablineSepCurrent    TabLineSel
 
 # 启用 tabline（函数由 autoload/simpletabline.vim 提供）
 set showtabline=2
 set tabline=%!simpletabline#Tabline()
 
 # 命令与映射
-command! BufferPick call simpletabline#BufferPick()
+command! BufferPick  call simpletabline#BufferPick()
 nnoremap <silent> <leader>bp :BufferPick<CR>
 command! BufferJump1 call simpletabline#BufferJump1()
 command! BufferJump2 call simpletabline#BufferJump2()
@@ -44,9 +50,13 @@ augroup SimpleTablineAuto
   # 其它刷新
   autocmd TabEnter,VimResized * try | redrawstatus | catch | endtry
   autocmd ColorScheme * try
-        \ | highlight default link SimpleTablineActive   TabLineSel
-        \ | highlight default link SimpleTablineInactive TabLine
-        \ | highlight default link SimpleTablineFill     TabLineFill
-        \ | highlight default link SimpleTablinePickDigit Title
+        \ | highlight default link SimpleTablineActive        TabLineSel
+        \ | highlight default link SimpleTablineInactive      TabLine
+        \ | highlight default link SimpleTablineFill          TabLineFill
+        \ | highlight default link SimpleTablinePickDigit     Title
+        \ | highlight default link SimpleTablineIndex         TabLine
+        \ | highlight default link SimpleTablineIndexActive   TabLineSel
+        \ | highlight default link SimpleTablineSep           TabLineFill
+        \ | highlight default link SimpleTablineSepCurrent    TabLineSel
         \ | catch | endtry
 augroup END
