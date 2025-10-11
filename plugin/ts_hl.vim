@@ -26,6 +26,11 @@ g:ts_hl_log_file = get(g:, 'ts_hl_log_file', '/tmp/ts-hl.log')
 # 侧边栏宽度
 g:ts_hl_outline_width = get(g:, 'ts_hl_outline_width', 32)
 
+# Outline UI 配置
+g:ts_hl_outline_fancy = get(g:, 'ts_hl_outline_fancy', 1)           # 使用 Unicode/Nerd Font 图标
+g:ts_hl_outline_ascii = get(g:, 'ts_hl_outline_ascii', 0)           # 使用 ASCII 连接线
+g:ts_hl_outline_show_position = get(g:, 'ts_hl_outline_show_position', 1)  # 显示 (lnum:col)
+
 # =============== 命令 ===============
 command! TsHlEnable  call ts_hl#Enable()
 command! TsHlDisable call ts_hl#Disable()
