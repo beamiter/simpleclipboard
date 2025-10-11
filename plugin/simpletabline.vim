@@ -31,10 +31,6 @@ augroup SimpleTablineAuto
   autocmd!
   # 初始化（进入 Vim 后）
   autocmd VimEnter * try | call simpletabline#OnBufEnter() | redrawstatus | catch | endtry
-  # MRU 更新：BufEnter/BufAdd/BufDelete
-  autocmd BufEnter *  try | call simpletabline#OnBufEnter()                            | redrawstatus | catch | endtry
-  autocmd BufAdd   *  try | call simpletabline#OnBufAdd(str2nr(expand('<abuf>')))      | redrawstatus | catch | endtry
-  autocmd BufDelete * try | call simpletabline#OnBufDelete(str2nr(expand('<abuf>')))   | redrawstatus | catch | endtry
   # 其它刷新
   autocmd TabEnter,VimResized * try | redrawstatus | catch | endtry
   autocmd ColorScheme * try

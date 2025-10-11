@@ -6,7 +6,6 @@ var s_pick_map: dict<number> = {}   # digit -> bufnr
 var s_last_visible: list<number> = []
 
 # MRU 与索引分配
-var s_mru: list<number> = []               # 最近使用的 bufnr（0 位最最近）
 var s_idx_to_buf: dict<number> = {}        # digit(1..9,0) -> bufnr
 var s_buf_to_idx: dict<number> = {}        # bufnr -> digit(1..9,0)
 
@@ -106,6 +105,30 @@ def AbbrevRelPath(rel: string): string
   return join(out, '/')
 enddef
 
+# 按可见顺序为可见 buffers 分配 1..9,0；只分配给可见项
+def AssignDigitsForVisible(visible: list<number>)
+  s_idx_to_buf = {}
+  s_buf_to_idx = {}
+  var digits: list<number> = []
+  for d in range(1, 9)
+    digits->add(d)
+  endfor
+  digits->add(0)
+
+  var i = 0
+  var j = 0
+  while i < len(visible) && j < len(digits)
+    var bn = visible[i]
+    if IsEligibleBuffer(bn)
+      var dg = digits[j]
+      s_idx_to_buf[dg] = bn
+      s_buf_to_idx[bn] = dg
+      j += 1
+    endif
+    i += 1
+  endwhile
+enddef
+
 def ListedNormalBuffers(): list<dict<any>>
   var use_listed = Conf('simpletabline_listed_only', 1) != 0
   var bis = use_listed ? getbufinfo({'buflisted': 1}) : getbufinfo({'bufloaded': 1})
@@ -116,9 +139,19 @@ def ListedNormalBuffers(): list<dict<any>>
       res->add(b)
     endif
   endfor
-  sort(res, (a, b) => a.bufnr - b.bufnr)
+
+  var side = get(g:, 'simpletabline_newbuf_side', 'right')
+  if side ==# 'left'
+    # 新 buffer 在左侧：bufnr 大的排前面
+    sort(res, (a, b) => b.bufnr - a.bufnr)
+  else
+    # 默认：新 buffer 在右侧
+    sort(res, (a, b) => a.bufnr - b.bufnr)
+  endif
+
   return res
 enddef
+
 
 # 生成在 Tabline 上显示的名称：默认相对 SimpleTree 根并缩写
 # g:simpletabline_path_mode: 'abbr'|'rel'|'tail'|'abs'
@@ -167,8 +200,10 @@ def LabelText(b: dict<any>, key: string): string
   return (key !=# '' ? key .. sep : '') .. name .. mod_mark
 enddef
 
-# 构建当前可见窗口的缓冲区序列，保证当前缓冲区可见，左右均衡填充；不足时两端省略
-# buf_keys 的键为字符串化的 bufnr
+# 构建当前可见窗口的缓冲区序列：
+# - 若当前 buffer 在 s_last_visible 中，且宽度预算允许，则保持 s_last_visible 不动；
+# - 若超出预算，则仅从两端裁剪（优先裁剪离当前更远的一侧），始终保留当前；
+# - 否则按原有“居中扩展”算法计算。
 def ComputeVisible(all: list<dict<any>>, buf_keys: dict<string>): list<number>
   var cols = max([&columns, 20])
   var sep = Conf('simpletabline_item_sep', ' | ')
@@ -187,18 +222,79 @@ def ComputeVisible(all: list<dict<any>>, buf_keys: dict<string>): list<number>
     cur_idx = 0
   endif
 
-  # 预生成 label 宽度（使用已分配的 key；未分配为空）
+  # 预生成每个 bufnr 的 label 宽度（使用当前已分配的 key；未分配为空）
   var widths: list<number> = []
+  var widths_by_bn: dict<number> = {}
   var i = 0
   while i < len(all)
     var key = get(buf_keys, string(all[i].bufnr), '')
     var txt = LabelText(all[i], key)
-    widths->add(strdisplaywidth(txt))
+    var w = strdisplaywidth(txt)
+    widths->add(w)
+    widths_by_bn[all[i].bufnr] = w
     i += 1
   endwhile
 
   # 留出一些边缘空间，避免溢出
   var budget = cols - 2
+
+  # ---------- 粘性分支：若当前在上次可见集内，尽量保持不动 ----------
+  if len(s_last_visible) > 0
+    # 仅保留当前 still-present 的 bufnr
+    var present: dict<number> = {}
+    for bi in all
+      present[bi.bufnr] = 1
+    endfor
+    var cand: list<number> = []
+    for bn in s_last_visible
+      if has_key(present, bn)
+        cand->add(bn)
+      endif
+    endfor
+
+    if index(cand, curbn) >= 0
+      # 计算 cand 的总宽度
+      def ComputeUsed(lst: list<number>): number
+        var used = 0
+        var k = 0
+        while k < len(lst)
+          used += get(widths_by_bn, lst[k], 1)
+          if k > 0
+            used += sep_w
+          endif
+          k += 1
+        endwhile
+        return used
+      enddef
+
+      var used_cand = ComputeUsed(cand)
+      if used_cand <= budget
+        s_last_visible = cand
+        return copy(cand)
+      endif
+
+      # 裁剪两端直到满足预算：始终保留 curbn，优先裁剪离当前更远的一侧（平衡）
+      var bs = copy(cand)
+      while len(bs) > 0 && ComputeUsed(bs) > budget
+        var idx_cur = index(bs, curbn)
+        if idx_cur < 0
+          break
+        endif
+        var dist_left = idx_cur
+        var dist_right = len(bs) - 1 - idx_cur
+        if dist_right >= dist_left
+          try | bs->remove(len(bs) - 1) | catch | break | endtry
+        else
+          try | bs->remove(0) | catch | break | endtry
+        endif
+      endwhile
+      s_last_visible = bs
+      return bs
+    endif
+  endif
+  # ---------- 结束粘性分支 ----------
+
+  # 原有“以当前为中心左右扩展”的计算
   var visible_idx: list<number> = [cur_idx]
   var used = widths[cur_idx]
   var left = cur_idx - 1
@@ -257,64 +353,6 @@ def IsEligibleBuffer(bn: number): bool
   return use_listed ? is_listed : true
 enddef
 
-def ReassignIndices()
-  s_idx_to_buf = {}
-  s_buf_to_idx = {}
-  # 数字键顺序：1..9, 0
-  var digits: list<number> = []
-  for d in range(1, 9)
-    digits->add(d)
-  endfor
-  digits->add(0)
-  var maxk = min([len(digits), 10])
-  var i = 0
-  var assigned = 0
-  while i < len(s_mru) && assigned < maxk
-    var bn = s_mru[i]
-    if IsEligibleBuffer(bn)
-      var dg = digits[assigned]
-      s_idx_to_buf[dg] = bn
-      s_buf_to_idx[bn] = dg
-      assigned += 1
-    endif
-    i += 1
-  endwhile
-enddef
-
-export def OnBufEnter()
-  var bn = bufnr('%')
-  if !IsEligibleBuffer(bn)
-    return
-  endif
-  var i = index(s_mru, bn)
-  if i >= 0
-    s_mru->remove(i)
-  endif
-  s_mru->insert(bn, 0)
-  ReassignIndices()
-enddef
-
-export def OnBufAdd(bn: number)
-  if !IsEligibleBuffer(bn)
-    return
-  endif
-  var i = index(s_mru, bn)
-  if i >= 0
-    s_mru->remove(i)
-  endif
-  s_mru->insert(bn, 0)
-  ReassignIndices()
-enddef
-
-export def OnBufDelete(bn: number)
-  var i = index(s_mru, bn)
-  if i >= 0
-    s_mru->remove(i)
-  endif
-  ReassignIndices()
-enddef
-
-# 根据 MRU 分配的键生成 tabline 字符串
 export def Tabline(): string
   var all = ListedNormalBuffers()
   if len(all) == 0
@@ -325,16 +363,36 @@ export def Tabline(): string
   var ellipsis = Conf('simpletabline_ellipsis', ' … ')
   var show_keys = 1
 
-  # bufnr -> key 字符串映射（键用字符串化的 bufnr）
+  # 第一次：不带数字，估算可见集
+  var buf_keys1: dict<string> = {}
+  for binfo in all
+    buf_keys1[string(binfo.bufnr)] = ''
+  endfor
+  var visible1 = ComputeVisible(all, buf_keys1)
+
+  # 基于 visible1 从左到右分配 1..9,0
+  AssignDigitsForVisible(visible1)
+
+  # 第二次：带上数字再计算一次可见集，保证宽度准确
+  var buf_keys2: dict<string> = {}
+  for binfo in all
+    var dg2 = get(s_buf_to_idx, binfo.bufnr, -1)
+    buf_keys2[string(binfo.bufnr)] = dg2 < 0 ? '' : (dg2 == 0 ? '0' : string(dg2))
+  endfor
+  var visible2 = ComputeVisible(all, buf_keys2)
+
+  # 用最终的可见集再分配一次数字，确保“可见项左到右编号”
+  AssignDigitsForVisible(visible2)
+
+  # 用最终分配生成 buf_keys
   var buf_keys: dict<string> = {}
   for binfo in all
     var dg = get(s_buf_to_idx, binfo.bufnr, -1)
     buf_keys[string(binfo.bufnr)] = dg < 0 ? '' : (dg == 0 ? '0' : string(dg))
   endfor
+  var visible = visible2
 
-  var visible = ComputeVisible(all, buf_keys)
-
-  # bufnr -> bufinfo 索引表（键为字符串）
+  # 后续保持你原有的渲染逻辑
   var bynr: dict<dict<any>> = {}
   for binfo in all
     bynr[string(binfo.bufnr)] = binfo
@@ -350,7 +408,7 @@ export def Tabline(): string
     s ..= '%#SimpleTablineInactive#' .. ellipsis
   endif
 
-  # Pick 映射取全局 MRU 分配
+  # Pick 映射取本次可见分配
   s_pick_map = copy(s_idx_to_buf)
 
   for vbn in visible
