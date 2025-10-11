@@ -37,15 +37,15 @@ g:simpletree_choose_window = get(g:, 'simpletree_choose_window', 1)
 g:simpletree_split_force_right = get(g:, 'simpletree_split_force_right', 1)
 
 # ---------------- 命令与映射 ----------------
-command! -nargs=? -complete=dir SimpleTree treexplorer#Toggle(<q-args>)
-command! SimpleTreeRefresh treexplorer#Refresh()
-command! SimpleTreeClose treexplorer#Close()
-command! SimpleTreeDebug call treexplorer#DebugStatus()
+command! -nargs=? -complete=dir SimpleTree simpletree#Toggle(<q-args>)
+command! SimpleTreeRefresh simpletree#Refresh()
+command! SimpleTreeClose simpletree#Close()
+command! SimpleTreeDebug call simpletree#DebugStatus()
 
 nnoremap <silent> <leader>e <Cmd>SimpleTree<CR>
 
 # ---------------- 自动命令 ----------------
 augroup SimpleTreeBackend
   autocmd!
-  autocmd VimLeavePre * try | call treexplorer#Stop() | catch | endtry
+  autocmd VimLeavePre * try | call simpletree#Stop() | catch | endtry
 augroup END
