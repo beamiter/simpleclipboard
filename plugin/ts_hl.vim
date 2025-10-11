@@ -23,7 +23,7 @@ g:ts_hl_auto_stop = get(g:, 'ts_hl_auto_stop', 1)
 g:ts_hl_debug = get(g:, 'ts_hl_debug', 0)
 g:ts_hl_log_file = get(g:, 'ts_hl_log_file', '/tmp/ts-hl.log')
 
-# 新增：侧边栏宽度
+# 侧边栏宽度
 g:ts_hl_outline_width = get(g:, 'ts_hl_outline_width', 32)
 
 # =============== 命令 ===============
@@ -31,7 +31,7 @@ command! TsHlEnable  call ts_hl#Enable()
 command! TsHlDisable call ts_hl#Disable()
 command! TsHlToggle  call ts_hl#Toggle()
 
-# 新增：侧边栏命令
+# 侧边栏命令
 command! TsHlOutlineOpen   call ts_hl#OutlineOpen()
 command! TsHlOutlineClose  call ts_hl#OutlineClose()
 command! TsHlOutlineToggle call ts_hl#OutlineToggle()
@@ -44,7 +44,7 @@ if !hasmapto('<Plug>TsHlToggle')
   nnoremap <silent> <leader>th <Cmd>TsHlToggle<CR>
 endif
 
-# 新增：侧边栏 Toggle
+# 侧边栏 Toggle
 if !hasmapto('<Plug>TsHlOutlineToggle')
   nnoremap <silent> <leader>to <Cmd>TsHlOutlineToggle<CR>
 endif

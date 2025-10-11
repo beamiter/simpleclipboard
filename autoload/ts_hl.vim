@@ -6,7 +6,7 @@ var s_running: bool = false
 var s_req_timer: number = 0
 var s_enabled: bool = false
 var s_active_bufs: dict<bool> = {}
-# =============== 新增：侧边栏状态 ===============
+# =============== 侧边栏状态 ===============
 var s_outline_win: number = 0
 var s_outline_buf: number = 0
 var s_outline_src_buf: number = 0
@@ -432,7 +432,7 @@ def KindIcon(kind: string): string
   endif
 enddef
 
-# =============== 新增：符号请求 ===============
+# =============== 符号请求 ===============
 def RequestSymbolsNow(buf: number)
   if !EnsureDaemon()
     return
@@ -509,7 +509,7 @@ export def DumpAST()
   Send({type: 'dump_ast', buf: buf, lang: lang, text: text})
 enddef
 
-# =============== 新增：渲染符号侧边栏 ===============
+# =============== 渲染符号侧边栏 ===============
 def ApplySymbols(buf: number, syms: list<dict<any>>)
   if s_outline_win == 0 || s_outline_buf == 0 || s_outline_src_buf != buf
     return
@@ -552,7 +552,7 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
   endtry
 enddef
 
-# =============== 新增：侧边栏窗口管理 ===============
+# =============== 侧边栏窗口管理 ===============
 export def OutlineOpen()
   # 侧边栏展示当前窗口的 buffer 符号
   var src = bufnr()

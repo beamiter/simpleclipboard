@@ -868,7 +868,7 @@ def EnsureWindowAndBuffer()
   call win_execute(s_winid, 'nnoremap <silent> <buffer> r :call treexplorer#OnRename()<CR>')
   call win_execute(s_winid, 'nnoremap <silent> <buffer> D :call treexplorer#OnDelete()<CR>')
   # 一键折叠（Collapse All）
-  var ca_key = get(g:, 'simpletree_collapse_all_key', 'Z')
+  var ca_key = get(g:, 'simpletree_collapse_all_key', 'z')
   call win_execute(s_winid, 'nnoremap <nowait> <silent> <buffer> ' .. ca_key .. ' :call treexplorer#OnCollapseAll()<CR>')
   # Help
   call win_execute(s_winid, 'nnoremap <silent> <buffer> ? :call treexplorer#ShowHelp()<CR>')
@@ -1315,7 +1315,7 @@ export def OnCollapse()
   endif
 enddef
 
-# 新增：一键折叠根下所有目录
+# 一键折叠根下所有目录
 export def OnCollapseAll()
   if s_root ==# ''
     echo '[SimpleTree] root not set'
@@ -1617,7 +1617,7 @@ enddef
 
 # ====== 帮助面板（?）======
 def BuildHelpLines(): list<string>
-  var ca_key = get(g:, 'simpletree_collapse_all_key', 'Z')
+  var ca_key = get(g:, 'simpletree_collapse_all_key', 'z')
   return [
     'SimpleTree 快捷键说明',
     '----------------------------------------',

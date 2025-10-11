@@ -1,15 +1,36 @@
-; comments: 行内以 " 开头（grammar 通常有 comment 节点）
-(comment) @comment
+; 字符串/数字/标识符
+(string_literal) @string
+(integer_literal) @number
+(identifier) @variable
 
-; strings / numbers
-(string) @string
-(number) @number
+; 关键词（按 AST 中出现的字面量 token）
+"if" @keyword
+"else" @keyword
+"endif" @keyword
+"for" @keyword
+"endfor" @keyword
+"return" @keyword
+"set" @keyword
+"setlocal" @keyword
+"execute" @keyword
+"source" @keyword
+"colorscheme" @keyword
+"autocmd" @keyword
+"augroup" @keyword
+"command" @keyword
+"silent" @keyword
+"call" @keyword
+"map" @keyword
+"nmap" @keyword
+"vmap" @keyword
+"xmap" @keyword
+"nnoremap" @keyword
+"inoremap" @keyword
+"vnoremap" @keyword
+"tnoremap" @keyword
+"noremap" @keyword
 
-; keywords：用 identifier 匹配已知关键字
-((identifier) @keyword
-  (#match? @keyword "^(let|function|endfunction|return|if|endif|elseif|else|for|endfor|while|endwhile|try|catch|finally|endtry|set|autocmd|augroup|end|command|lua|map|noremap|nnoremap|inoremap|vnoremap|tnoremap)$"))
-
-; 括号/分隔符/运算符
+; 括号/分隔符/运算符（按 AST 中出现的）
 "(" @punctuation.bracket
 ")" @punctuation.bracket
 "[" @punctuation.bracket
@@ -17,12 +38,14 @@
 "{" @punctuation.bracket
 "}" @punctuation.bracket
 
-"," @punctuation.delimiter
-";" @punctuation.delimiter
-"." @punctuation.delimiter
+","  @punctuation.delimiter
+"."  @punctuation.delimiter
 
-"=" @operator
+"="  @operator
 "==" @operator
-"=~" @operator
-"!~" @operator
 "!=" @operator
+">"  @operator
+"<"  @operator
+">=" @operator
+"<=" @operator
+"||" @operator

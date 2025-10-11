@@ -1,8 +1,14 @@
-; 函数（function 定义的名字）
-(function_definition name: (identifier) @symbol.function)
+; 用户自定义命令
+(command_statement
+  (command_name) @symbol.macro)
 
-; 命令定义（:command 的名字）
-(command_definition name: (identifier) @symbol.macro)
+(user_command
+  (command_name) @symbol.macro)
 
-; augroup 的名字
-(augroup_command name: (identifier) @symbol.namespace)
+; augroup 名称
+(augroup_statement
+  (augroup_name) @symbol.namespace)
+
+; 可选：colorscheme 的名字（你的 AST 有 name 节点）
+(colorscheme_statement
+  (name) @symbol.namespace)

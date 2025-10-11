@@ -176,13 +176,20 @@ fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
 
 fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
     if lang == "vim" {
-        if let Ok(symbols) =
-            run_ts_query_symbols(tree_sitter_vim::language(), queries::VIM_SYM_QUERY, text)
-        {
-            return Ok(symbols);
-        } else {
-            return Ok(symbols_vim_naive(text));
+        // TS：命令、组
+        let mut symbols = run_ts_query_symbols(text).unwrap_or_default();
+        // 回退：Vim9 函数 def/export def
+        let fallback = symbols_vim_naive(text);
+        for s in fallback.into_iter().filter(|x| x.kind == "function") {
+            let dup = symbols.iter().any(|x| {
+                x.kind == s.kind && x.name == s.name && x.lnum == s.lnum && x.col == s.col
+            });
+            if !dup {
+                symbols.push(s);
+            }
         }
+        symbols.sort_by_key(|s| (s.lnum, s.col));
+        return Ok(symbols);
     }
 
     let mut parser = tree_sitter::Parser::new();
@@ -238,14 +245,17 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
 }
 
 fn run_ts_query_highlight(text: &str) -> Result<Vec<Span>> {
-    let mut parser = tree_sitter::Parser::new();
     let (language, query_src) = (tree_sitter_vim::language(), queries::VIM_QUERY);
+    let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language)?;
     let tree = parser
         .parse(text, None)
         .ok_or_else(|| anyhow!("parse failed"))?;
     let root = tree.root_node();
-    let query = tree_sitter::Query::new(&language, query_src)?;
+    let query = match tree_sitter::Query::new(&language, query_src) {
+        Ok(q) => q,
+        Err(_) => return Ok(Vec::new()),
+    };
     let mut cursor = tree_sitter::QueryCursor::new();
 
     let mut spans = Vec::new();
@@ -271,18 +281,18 @@ fn run_ts_query_highlight(text: &str) -> Result<Vec<Span>> {
     Ok(spans)
 }
 
-fn run_ts_query_symbols(
-    language: tree_sitter::Language,
-    query_src: &str,
-    text: &str,
-) -> Result<Vec<Symbol>> {
+fn run_ts_query_symbols(text: &str) -> Result<Vec<Symbol>> {
+    let (language, query_src) = (tree_sitter_vim::language(), queries::VIM_SYM_QUERY);
     let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language.clone().into())?;
+    parser.set_language(&language)?;
     let tree = parser
         .parse(text, None)
         .ok_or_else(|| anyhow!("parse failed"))?;
     let root = tree.root_node();
-    let query = tree_sitter::Query::new(&language.into(), query_src)?;
+    let query = match tree_sitter::Query::new(&language, query_src) {
+        Ok(q) => q,
+        Err(_) => return Ok(Vec::new()),
+    };
     let mut cursor = tree_sitter::QueryCursor::new();
 
     let mut symbols = Vec::new();
