@@ -36,6 +36,7 @@ command! TsHlOutlineOpen   call ts_hl#OutlineOpen()
 command! TsHlOutlineClose  call ts_hl#OutlineClose()
 command! TsHlOutlineToggle call ts_hl#OutlineToggle()
 command! TsHlOutlineRefresh call ts_hl#OutlineRefresh()
+command! TsHlDumpAST call ts_hl#DumpAST()
 
 # =============== 快捷键 ===============
 # 建议快捷键（用户可在 vimrc 中覆盖）

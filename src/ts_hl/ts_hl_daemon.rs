@@ -20,6 +20,12 @@ enum Request {
         lang: String,
         text: String,
     },
+    #[serde(rename = "dump_ast")]
+    DumpAst {
+        buf: i64,
+        lang: String,
+        text: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -29,6 +35,8 @@ enum Event {
     Highlights { buf: i64, spans: Vec<Span> },
     #[serde(rename = "symbols")]
     Symbols { buf: i64, symbols: Vec<Symbol> },
+    #[serde(rename = "ast")]
+    Ast { buf: i64, lines: Vec<String> },
     #[serde(rename = "error")]
     Error { message: String },
 }
@@ -94,6 +102,10 @@ fn main() -> Result<()> {
                     },
                 )?,
             },
+            Request::DumpAst { buf, lang, text } => {
+                let lines = dump_ast(&lang, &text)?;
+                send(&mut out, &Event::Ast { buf, lines })?;
+            }
         }
     }
 
@@ -110,7 +122,6 @@ fn send(out: &mut std::io::Stdout, ev: &Event) -> Result<()> {
 
 fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
     if lang == "vim" {
-        debug_dump_vim_ast(text);
         // 优先尝试 tree-sitter-vim 查询；失败则回退到简单解析
         if let Ok(spans) = run_ts_query_highlight(text) {
             return Ok(spans);
@@ -627,36 +638,43 @@ fn node_text(node: tree_sitter::Node, bytes: &[u8]) -> String {
     String::from_utf8_lossy(s).to_string()
 }
 
-// 仅用于本地调试：打印 AST
-#[allow(dead_code)]
-fn debug_dump_vim_ast(text: &str) {
+fn dump_ast(lang: &str, text: &str) -> Result<Vec<String>> {
     let mut parser = tree_sitter::Parser::new();
-    let lang = tree_sitter_vim::language();
-    parser.set_language(&lang).unwrap();
-    let tree = parser.parse(text, None).unwrap();
+    let language = match lang {
+        "vim" => tree_sitter_vim::language(),
+        "rust" => tree_sitter_rust::LANGUAGE.into(),
+        "javascript" => tree_sitter_javascript::LANGUAGE.into(),
+        "c" => tree_sitter_c::LANGUAGE.into(),
+        "cpp" => tree_sitter_cpp::LANGUAGE.into(),
+        _ => return Err(anyhow!("unsupported language: {lang}")),
+    };
+    parser.set_language(&language)?;
+    let tree = parser
+        .parse(text, None)
+        .ok_or_else(|| anyhow!("parse failed"))?;
     let root = tree.root_node();
 
-    fn walk(node: tree_sitter::Node, src: &[u8], depth: usize) {
-        let kind = node.kind();
+    let mut lines = Vec::new();
+    fn walk(node: tree_sitter::Node, depth: usize, out: &mut Vec<String>) {
         let sp = node.start_position();
         let ep = node.end_position();
-        eprintln!(
+        out.push(format!(
             "{:indent$}{} [{}:{} - {}:{}]",
             "",
-            kind,
+            node.kind(),
             sp.row + 1,
             sp.column + 1,
             ep.row + 1,
             ep.column + 1,
             indent = depth * 2
-        );
+        ));
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            walk(child, src, depth + 1);
+            walk(child, depth + 1, out);
         }
     }
-
-    walk(root, text.as_bytes(), 0);
+    walk(root, 0, &mut lines);
+    Ok(lines)
 }
 
 fn map_capture_to_group(name: &str) -> &'static str {

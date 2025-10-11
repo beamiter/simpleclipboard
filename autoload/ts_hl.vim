@@ -197,6 +197,10 @@ def OnDaemonEvent(line: string)
     var buf = get(ev, 'buf', 0)
     var syms = get(ev, 'symbols', [])
     ApplySymbols(buf, syms)
+  elseif ev.type ==# 'ast'
+    var buf = get(ev, 'buf', 0)
+    var lines = get(ev, 'lines', [])
+    ShowAst(buf, lines)
   elseif ev.type ==# 'error'
     echom '[ts-hl] error: ' .. get(ev, 'message', '')
   endif
@@ -473,6 +477,36 @@ def ScheduleSymbols(buf: number)
   else
     RequestSymbolsNow(buf)
   endif
+enddef
+
+def ShowAst(src_buf: number, lines: list<string>)
+  var curwin = win_getid()
+  try
+    execute 'botright vsplit'
+    execute 'enew'
+    execute 'file ts-hl-ast'
+    setlocal buftype=nofile bufhidden=wipe nobuflisted noswapfile
+    setlocal nowrap nonumber norelativenumber signcolumn=no
+    call setline(1, lines)
+  finally
+    if curwin != 0
+      call win_gotoid(curwin)
+    endif
+  endtry
+enddef
+
+export def DumpAST()
+  var buf = bufnr()
+  if !bufexists(buf)
+    return
+  endif
+  var lang = DetectLang(buf)
+  if lang ==# ''
+    echo '[ts-hl] unsupported filetype for AST'
+    return
+  endif
+  var text = join(getbufline(buf, 1, '$'), "\n")
+  Send({type: 'dump_ast', buf: buf, lang: lang, text: text})
 enddef
 
 # =============== 新增：渲染符号侧边栏 ===============
