@@ -111,9 +111,7 @@ fn send(out: &mut std::io::Stdout, ev: &Event) -> Result<()> {
 fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
     if lang == "vim" {
         // 优先尝试 tree-sitter-vim 查询；失败则回退到简单解析
-        if let Ok(spans) =
-            run_ts_query_highlight(tree_sitter_vim::language(), queries::VIM_QUERY, text)
-        {
+        if let Ok(spans) = run_ts_query_highlight(text) {
             return Ok(spans);
         } else {
             return Ok(highlight_vim_naive(text));
@@ -227,18 +225,15 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
     Ok(symbols)
 }
 
-fn run_ts_query_highlight(
-    language: tree_sitter::Language,
-    query_src: &str,
-    text: &str,
-) -> Result<Vec<Span>> {
+fn run_ts_query_highlight(text: &str) -> Result<Vec<Span>> {
     let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language.clone().into())?;
+    let (language, query_src) = (tree_sitter_vim::language(), queries::VIM_QUERY);
+    parser.set_language(&language)?;
     let tree = parser
         .parse(text, None)
         .ok_or_else(|| anyhow!("parse failed"))?;
     let root = tree.root_node();
-    let query = tree_sitter::Query::new(&language.into(), query_src)?;
+    let query = tree_sitter::Query::new(&language, query_src)?;
     let mut cursor = tree_sitter::QueryCursor::new();
 
     let mut spans = Vec::new();
