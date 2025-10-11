@@ -158,10 +158,8 @@ def ListedNormalBuffers(): list<dict<any>>
 
   var side = get(g:, 'simpletabline_newbuf_side', 'right')
   if side ==# 'left'
-    # 新 buffer 在左侧：bufnr 大的排前面
     sort(res, (a, b) => b.bufnr - a.bufnr)
   else
-    # 默认：新 buffer 在右侧
     sort(res, (a, b) => a.bufnr - b.bufnr)
   endif
 
@@ -190,7 +188,6 @@ def BufDisplayName(b: dict<any>): string
 
   var rel = (root !=# '') ? RelToRoot(abs, root) : ''
   if rel ==# ''
-    # 不在 root 下时，避免太长，退化为文件名
     return fnamemodify(n, ':t')
   endif
 
@@ -201,16 +198,15 @@ def BufDisplayName(b: dict<any>): string
   elseif mode ==# 'abs'
     return abs
   else
-    # 未知配置，回退为缩写
     return AbbrevRelPath(rel)
   endif
 enddef
 
 # 计算单项标签的“可见文字宽度”（不含高亮控制符）
-# 已移除 prefix/suffix，保证与渲染一致
+# 已移除 prefix/suffix，且默认去掉键位与名称之间的小间隙
 def LabelText(b: dict<any>, key: string): string
   var name = BufDisplayName(b)
-  var sep = Conf('simpletabline_key_sep', ' ')
+  var sep_key = Conf('simpletabline_key_sep', '')   # 默认无间隙
   var show_mod = Conf('simpletabline_show_modified', 1) != 0
   var mod_mark = (show_mod && get(b, 'changed', 0) == 1) ? ' +' : ''
 
@@ -219,14 +215,11 @@ def LabelText(b: dict<any>, key: string): string
     key_txt = SupDigit(key_txt)
   endif
 
-  var base = (key_txt !=# '' ? key_txt .. sep : '') .. name .. mod_mark
+  var base = (key_txt !=# '' ? key_txt .. sep_key : '') .. name .. mod_mark
   return base
 enddef
 
-# 构建当前可见窗口的缓冲区序列：
-# - 若当前 buffer 在 s_last_visible 中，且宽度预算允许，则保持 s_last_visible 不动；
-# - 若超出预算，则仅从两端裁剪（优先裁剪离当前更远的一侧），始终保留当前；
-# - 否则按原有“居中扩展”算法计算。
+# 构建当前可见窗口的缓冲区序列（含粘性窗口逻辑）
 def ComputeVisible(all: list<dict<any>>, buf_keys: dict<string>): list<number>
   var cols = max([&columns, 20])
   var sep = Conf('simpletabline_item_sep', ' | ')
@@ -245,7 +238,7 @@ def ComputeVisible(all: list<dict<any>>, buf_keys: dict<string>): list<number>
     cur_idx = 0
   endif
 
-  # 预生成每个 bufnr 的 label 宽度（使用当前已分配的 key；未分配为空）
+  # 预生成每个 bufnr 的 label 宽度
   var widths: list<number> = []
   var widths_by_bn: dict<number> = {}
   var i = 0
@@ -261,9 +254,8 @@ def ComputeVisible(all: list<dict<any>>, buf_keys: dict<string>): list<number>
   # 留出一些边缘空间，避免溢出
   var budget = cols - 2
 
-  # ---------- 粘性分支：若当前在上次可见集内，尽量保持不动 ----------
+  # ---------- 粘性分支 ----------
   if len(s_last_visible) > 0
-    # 仅保留当前 still-present 的 bufnr
     var present: dict<number> = {}
     for bi in all
       present[bi.bufnr] = 1
@@ -276,7 +268,6 @@ def ComputeVisible(all: list<dict<any>>, buf_keys: dict<string>): list<number>
     endfor
 
     if index(cand, curbn) >= 0
-      # 计算 cand 的总宽度
       def ComputeUsed(lst: list<number>): number
         var used = 0
         var k = 0
@@ -296,7 +287,6 @@ def ComputeVisible(all: list<dict<any>>, buf_keys: dict<string>): list<number>
         return copy(cand)
       endif
 
-      # 裁剪两端直到满足预算：始终保留 curbn，优先裁剪离当前更远的一侧（平衡）
       var bs = copy(cand)
       while len(bs) > 0 && ComputeUsed(bs) > budget
         var idx_cur = index(bs, curbn)
@@ -323,7 +313,6 @@ def ComputeVisible(all: list<dict<any>>, buf_keys: dict<string>): list<number>
   var left = cur_idx - 1
   var right = cur_idx + 1
 
-  # 向两侧扩展，优先右侧，再左侧
   while true
     var added = 0
     if right < len(all)
@@ -415,7 +404,6 @@ export def Tabline(): string
   endfor
   var visible = visible2
 
-  # 后续保持你原有的渲染逻辑
   var bynr: dict<dict<any>> = {}
   for binfo in all
     bynr[string(binfo.bufnr)] = binfo
@@ -455,7 +443,7 @@ export def Tabline(): string
       endif
     endif
 
-    # 索引显示文本（可选上标 + 独立高亮组；Pick 模式优先）
+    # 索引显示文本（上标可选；Pick 模式优先）
     var key_raw = get(buf_keys, string(b.bufnr), '')
     var key_txt = key_raw
     if key_txt !=# '' && ConfBool('simpletabline_superscript_index', true)
@@ -464,7 +452,8 @@ export def Tabline(): string
     var key_part = ''
     if show_keys && key_txt !=# ''
       var key_grp = s_pick_mode ? '%#SimpleTablinePickDigit#' : (is_cur ? '%#SimpleTablineIndexActive#' : '%#SimpleTablineIndex#')
-      key_part = key_grp .. key_txt .. '%#None#' .. Conf('simpletabline_key_sep', ' ')
+      var sep_key = Conf('simpletabline_key_sep', '')  # 默认无间隙
+      key_part = key_grp .. key_txt .. '%#None#' .. sep_key
     endif
 
     # 名称 + 修改标记（现有激活/非激活组）
@@ -474,7 +463,6 @@ export def Tabline(): string
     var mod_mark = (show_mod && get(b, 'changed', 0) == 1) ? ' +' : ''
     var name_part = grp_item .. name .. mod_mark .. '%#None#'
 
-    # 不再使用 prefix/suffix，只输出键位和名称
     var item = key_part .. name_part
 
     if s ==# ''
@@ -559,7 +547,6 @@ export def PickDigit(n: number)
 enddef
 
 export def BufferJump(n: number)
-  # 如果还没分配过索引（刚启动），先触发一次渲染
   if empty(keys(s_idx_to_buf))
     try | redrawstatus | catch | endtry
   endif
