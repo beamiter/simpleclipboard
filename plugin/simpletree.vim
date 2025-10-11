@@ -39,6 +39,9 @@ g:simpletree_collapse_all_key = get(g:, 'simpletree_collapse_all_key', 'z')
 # 是否在多窗口时弹出选择目标窗口（默认开启）
 g:simpletree_choose_window = get(g:, 'simpletree_choose_window', 1)
 g:simpletree_split_force_right = get(g:, 'simpletree_split_force_right', 1)
+g:simpletree_use_system_copy = get(g:, 'simpletree_use_system_copy', 0)
+# 在目标窗口做水平分屏时是否放到下方（默认 1）。若为 0 则遵循 &splitbelow 或传统行为。
+g:simpletree_split_below = get(g:, 'simpletree_split_below', 1)
 
 # ---------------- 命令与映射 ----------------
 command! -nargs=? -complete=dir SimpleTree simpletree#Toggle(<q-args>)

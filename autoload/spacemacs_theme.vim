@@ -10,7 +10,7 @@ export def set(mode: string)
   try
     execute 'colorscheme spacemacs'
   catch
-    " 若 colorscheme 文件未就绪，忽略错误
+    # 若 colorscheme 文件未就绪，忽略错误
   endtry
 enddef
 

@@ -227,6 +227,16 @@ def NormPath(p: string): string
   return RStripSlash(ap)
 enddef
 
+def PathEq(a: string, b: string): bool
+  var x = NormPath(a)
+  var y = NormPath(b)
+  if has('win32') || has('win64') || has('win95') || has('win32unix')
+    x = tolower(x)
+    y = tolower(y)
+  endif
+  return x ==# y
+enddef
+
 # 判断 p 是否在 root 之下（或等于 root）
 def IsSubPath(root: string, p: string): bool
   if root ==# '' || p ==# ''
@@ -255,8 +265,45 @@ def IsSubPath(root: string, p: string): bool
   return stridx(a, r_prefix) == 0
 enddef
 
+def TrySystemCopy(src: string, dst: string): bool
+  if !get(g:, 'simpletree_use_system_copy', 0)
+    return false
+  endif
+  if has('unix')
+    # cp -a：保留属性，递归复制目录；文件同样可用
+    try
+      var cmd = printf('cp -a -- %s %s', shellescape(src), shellescape(dst))
+      var rc = system(cmd)
+      return v:shell_error == 0
+    catch
+      return false
+    endtry
+  elseif has('win32') || has('win64')
+    try
+      if isdirectory(src)
+        # robocopy src dst /E /COPYALL /NFL /NDL（返回码为 0 或 1 认为成功）
+        var cmd = printf('robocopy %s %s /E /COPYALL /NFL /NDL', shellescape(src), shellescape(dst))
+        var rc = system(cmd)
+        return (v:shell_error == 0 || v:shell_error == 1)
+      else
+        # 单文件复制：powershell Copy-Item 或内置 copy
+        var cmd = printf('powershell -NoProfile -Command Copy-Item -LiteralPath %s -Destination %s -Force', shellescape(src), shellescape(dst))
+        var rc = system(cmd)
+        return v:shell_error == 0
+      endif
+    catch
+      return false
+    endtry
+  endif
+  return false
+enddef
+
 # 递归复制：文件或目录
 def CopyPath(src: string, dst: string): bool
+  # 优先尝试系统复制
+  if TrySystemCopy(src, dst)
+    return true
+  endif
   if isdirectory(src)
     if !isdirectory(dst)
       try
@@ -572,7 +619,7 @@ def BEnsureBackend(cmd: string = ''): bool
       err_mode: 'nl',
       err_cb: (ch, line) => {
         # 可选：stderr 日志
-      },
+        },
       exit_cb: (ch, code) => {
         s_brunning = false
         s_bjob = v:null
@@ -707,10 +754,15 @@ def ScanDirAsync(path: string)
       endif
       ScheduleRender()
     },
-    (_msg) => {
+    (msg) => {
       s_loading[p] = false
       if has_key(s_pending, p) && s_pending[p] == req_id
         call remove(s_pending, p)
+      endif
+      if type(msg) == v:t_string && msg !=# ''
+        echohl WarningMsg
+        echom '[SimpleTree] backend error: ' .. msg
+        echohl None
       endif
       ScheduleRender()
     }
@@ -726,6 +778,35 @@ enddef
 # =============================================================
 # 语法高亮（SimpleTree / SimpleTree Help）
 # =============================================================
+var s_syntax_sig: string = ''
+def ComputeSyntaxSig(): string
+  # 将影响语法的关键配置进行签名
+  SetupFileIconMap()
+  var parts: list<string> = []
+  parts->add('NF=' .. (NFEnabled() ? '1' : '0'))
+  parts->add('show_icons=' .. (get(g:, 'simpletree_show_file_icons', 1) ? '1' : '0'))
+  # s_icons 当前集合（含用户覆盖）
+  for [k, v] in items(s_icons)
+    parts->add(k .. '=' .. v)
+  endfor
+  # 文件类型图标映射（只签名键和值）
+  for [k, v] in items(s_file_icon_map)
+    parts->add('file:' .. k .. '=' .. v)
+  endfor
+  return join(parts, '|')
+enddef
+
+def EnsureSyntaxTree(): void
+  if !WinValid()
+    return
+  endif
+  var sig = ComputeSyntaxSig()
+  if s_syntax_sig !=# sig
+    s_syntax_sig = sig
+    SetupSyntaxTree()
+  endif
+enddef
+
 def SetupSyntaxTree(): void
   if !WinValid()
     return
@@ -912,6 +993,9 @@ def EnsureWindowAndBuffer()
   call win_execute(s_winid, 'autocmd!')
   call win_execute(s_winid, 'autocmd BufWipeout <buffer> ++once call simpletree#OnBufWipe()')
   call win_execute(s_winid, 'augroup END')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> v :call simpletree#OnOpenVSplit()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> s :call simpletree#OnOpenSplit()<CR>')
+  call win_execute(s_winid, 'nnoremap <silent> <buffer> t :call simpletree#OnOpenTab()<CR>')
 enddef
 
 def BuildLines(path: string, depth: number, lines: list<string>, idx: list<dict<any>>)
@@ -958,10 +1042,8 @@ def Render()
   endif
   EnsureWindowAndBuffer()
 
-  # 允许运行时切换 Nerd Font
   call SetupIcons()
-  # 根据当前图标/配置重新设置语法匹配和高亮
-  call SetupSyntaxTree()
+  call EnsureSyntaxTree()
 
   var lines: list<string> = []
   var idx: list<dict<any>> = []
@@ -1150,7 +1232,7 @@ def DebugContext(tag: string): void
   var curbufname = bufname(curbuf)
   var other = OtherWindowId()
   Log(printf('CTX[%s] root="%s" locked=%s tree_win=%d curbuf=%d curbufname="%s" other_win=%d',
-        tag, s_root, (s_root_locked ? 'true' : 'false'), s_winid, curbuf, curbufname, other), 'MoreMsg')
+    tag, s_root, (s_root_locked ? 'true' : 'false'), s_winid, curbuf, curbufname, other), 'MoreMsg')
   if other != 0
     var w = getwininfo(other)
     if len(w) > 0
@@ -1158,7 +1240,7 @@ def DebugContext(tag: string): void
       var oname = bufname(obuf)
       var ap = fnamemodify(oname, ':p')
       Log(printf('CTX[%s] other: bufnr=%d name="%s" abs="%s" readable=%s',
-            tag, obuf, oname, ap, (filereadable(ap) ? 'true' : 'false')), 'MoreMsg')
+        tag, obuf, oname, ap, (filereadable(ap) ? 'true' : 'false')), 'MoreMsg')
     endif
   endif
 enddef
@@ -1225,24 +1307,18 @@ enddef
 
 # 不再在找不到目标时跳到顶部，保持当前位置
 def FocusPath(path: string): void
-  if !WinValid()
-    return
-  endif
-  if path ==# ''
+  if !WinValid() || path ==# ''
     return
   endif
   var target: number = 0
   for i in range(len(s_line_index))
-    if get(s_line_index[i], 'path', '') ==# path
+    if PathEq(get(s_line_index[i], 'path', ''), path)
       target = i + 1
       break
     endif
   endfor
   if target > 0
-    try
-      call win_execute(s_winid, 'normal! ' .. target .. 'G')
-    catch
-    endtry
+    try | call win_execute(s_winid, 'normal! ' .. target .. 'G') | catch | endtry
   endif
 enddef
 
@@ -1862,7 +1938,7 @@ enddef
 # ====== Reveal：展开并定位到目标路径 ======
 def FocusIfPresent(path: string): bool
   for i in range(len(s_line_index))
-    if get(s_line_index[i], 'path', '') ==# path
+    if PathEq(get(s_line_index[i], 'path', ''), path)
       FocusPath(path)
       return true
     endif
@@ -2052,7 +2128,65 @@ export def DebugStatus()
   Log('DebugStatus logged', 'MoreMsg')
 enddef
 
-# =============================================================
-# 用户命令
-# =============================================================
-command! -nargs=? SimpleTree call simpletree#Toggle(<q-args>)
+export def OnOpenVSplit()
+  var node = CursorNode()
+  if empty(node) || node.is_dir || get(node, 'loading', v:false)
+    return
+  endif
+  if !!get(g:, 'simpletree_split_force_right', 1)
+    execute 'belowright vsplit'
+  else
+    execute 'vsplit'
+  endif
+  execute 'edit ' .. fnameescape(node.path)
+  if !get(g:, 'simpletree_keep_focus', 1) && WinValid()
+    call win_gotoid(s_winid)
+  endif
+enddef
+
+export def OnOpenSplit()
+  var node = CursorNode()
+  if empty(node) || node.is_dir || get(node, 'loading', v:false)
+    return
+  endif
+
+  var keep_in_file = !!get(g:, 'simpletree_keep_focus', 1)
+
+  # 选择目标窗口：与 OpenFile 保持一致逻辑
+  var target_win = 0
+  var cands = CandidateWindows()
+  if len(cands) >= 2
+    if !!get(g:, 'simpletree_choose_window', 1)
+      target_win = ChooseTargetWindowId(cands)
+    else
+      target_win = cands[0].winid
+    endif
+  elseif len(cands) == 1
+    target_win = cands[0].winid
+  else
+    target_win = 0
+  endif
+
+  if target_win != 0
+    # 在目标窗口里做水平分屏，不影响树窗口
+    call win_gotoid(target_win)
+    if !!get(g:, 'simpletree_split_below', 1) || &splitbelow
+      execute 'belowright split'
+    else
+      execute 'split'
+    endif
+    execute 'edit ' .. fnameescape(node.path)
+  else
+    # 无候选窗口：在右侧新建一个垂直分屏并直接在其中打开（不拆树窗口）
+    if !!get(g:, 'simpletree_split_force_right', 1)
+      execute 'belowright vsplit'
+    else
+      execute 'vsplit'
+    endif
+    execute 'edit ' .. fnameescape(node.path)
+  endif
+
+  if !keep_in_file && WinValid()
+    call win_gotoid(s_winid)
+  endif
+enddef
