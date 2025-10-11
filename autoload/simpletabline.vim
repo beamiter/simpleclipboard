@@ -11,22 +11,15 @@ def Conf(name: string, default: any): any
 enddef
 
 def ListedNormalBuffers(): list<dict<any>>
-  # 建议默认显示“列出的普通 buffer”
   var use_listed = !!Conf('simpletabline_listed_only', 1)
-
-  # 用过滤参数提高性能，但不要读取返回项中的 buflisted 字段
   var bis = use_listed ? getbufinfo({'buflisted': 1}) : getbufinfo({'bufloaded': 1})
   var res: list<dict<any>> = []
-
   for b in bis
-    # 只保留普通 buffer（buftype 空字符串）
     var bt = getbufvar(b.bufnr, '&buftype')
     if type(bt) == v:t_string && bt ==# ''
       res->add(b)
     endif
   endfor
-
-  # 稳定排序
   sort(res, (a, b) => a.bufnr - b.bufnr)
   return res
 enddef
@@ -140,16 +133,19 @@ export def Tabline(): string
 
   var sep = Conf('simpletabline_item_sep', ' | ')
   var ellipsis = Conf('simpletabline_ellipsis', ' … ')
-  var show_keys = 1   # 始终显示数字键，便于直观 pick
+  var show_keys = 1
 
   var visible = ComputeVisible(all)
 
-  # 左省略与右省略判断
-  # 通过 all 的第一个和最后一个是否在 visible 来判断
+  # 建 bufnr -> bufinfo 索引表（把键统一转成字符串，避免类型混淆）
+  var bynr: dict<dict<any>> = {}
+  for binfo in all
+    bynr[string(binfo.bufnr)] = binfo
+  endfor
+
   var left_omitted = (len(visible) > 0 && visible[0] != all[0].bufnr)
   var right_omitted = (len(visible) > 0 && visible[-1] != all[-1].bufnr)
 
-  # 组装字符串（使用状态栏高亮控制：%#Group#）
   var s = ''
   var curbn = bufnr('%')
 
@@ -157,12 +153,16 @@ export def Tabline(): string
     s ..= '%#SimpleTablineInactive#' .. ellipsis
   endif
 
-  # 分配 pick 键并填充 s_pick_map
   s_pick_map = {}
   var count_assigned = 0
 
   for vbn in visible
-    var b = filter(copy(all), (it) => it.bufnr == vbn)[0]
+    var k = string(vbn)
+    if !has_key(bynr, k)
+      continue
+    endif
+    var b = bynr[k]
+
     var is_cur = (b.bufnr == curbn)
     var grp = is_cur ? '%#SimpleTablineActive#' : '%#SimpleTablineInactive#'
 
@@ -171,8 +171,6 @@ export def Tabline(): string
       key = string(count_assigned + 1)
     elseif count_assigned == 9
       key = '0'
-    else
-      key = ''
     endif
     if key !=# ''
       s_pick_map[str2nr(key)] = b.bufnr
@@ -197,19 +195,13 @@ export def Tabline(): string
     endif
 
     count_assigned += 1
-    if count_assigned >= 10
-      # 可见超过 10 项时，其余不再分配键，但仍显示
-      # 这里继续显示即可
-    endif
   endfor
 
   if right_omitted
     s ..= '%#SimpleTablineInactive#' .. ellipsis .. '%#None#'
   endif
 
-  # 右侧填充
   s ..= '%=%#SimpleTablineFill#'
-
   return s
 enddef
 
