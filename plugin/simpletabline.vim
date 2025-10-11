@@ -25,6 +25,16 @@ set tabline=%!simpletabline#Tabline()
 # 命令与映射
 command! BufferPick call simpletabline#BufferPick()
 nnoremap <silent> <leader>bp :BufferPick<CR>
+command! BufferJump1 call simpletabline#BufferJump1()
+command! BufferJump2 call simpletabline#BufferJump2()
+command! BufferJump3 call simpletabline#BufferJump3()
+command! BufferJump4 call simpletabline#BufferJump4()
+command! BufferJump5 call simpletabline#BufferJump5()
+command! BufferJump6 call simpletabline#BufferJump6()
+command! BufferJump7 call simpletabline#BufferJump7()
+command! BufferJump8 call simpletabline#BufferJump8()
+command! BufferJump9 call simpletabline#BufferJump9()
+command! BufferJump0 call simpletabline#BufferJump0()
 
 # 自动刷新与 MRU 更新
 augroup SimpleTablineAuto

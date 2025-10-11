@@ -511,3 +511,52 @@ export def PickDigit(n: number)
   endif
   call CancelPick()
 enddef
+
+export def BufferJump(n: number)
+  # 如果还没分配过索引（刚启动），先触发一次渲染
+  if empty(keys(s_idx_to_buf))
+    try | redrawstatus | catch | endtry
+  endif
+
+  if !has_key(s_idx_to_buf, n)
+    echo '[SimpleTabline] No visible buffer bound to ' .. (n == 0 ? '0' : string(n))
+    return
+  endif
+  var bn = s_idx_to_buf[n]
+  if bn > 0 && bufexists(bn)
+    execute 'buffer ' .. bn
+  else
+    echo '[SimpleTabline] Invalid buffer'
+  endif
+enddef
+
+export def BufferJump1()
+  BufferJump(1)
+enddef
+export def BufferJump2()
+  BufferJump(2)
+enddef
+export def BufferJump3()
+  BufferJump(3)
+enddef
+export def BufferJump4()
+  BufferJump(4)
+enddef
+export def BufferJump5()
+  BufferJump(5)
+enddef
+export def BufferJump6()
+  BufferJump(6)
+enddef
+export def BufferJump7()
+  BufferJump(7)
+enddef
+export def BufferJump8()
+  BufferJump(8)
+enddef
+export def BufferJump9()
+  BufferJump(9)
+enddef
+export def BufferJump0()
+  BufferJump(0)
+enddef
