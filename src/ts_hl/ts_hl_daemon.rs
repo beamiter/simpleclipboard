@@ -9,11 +9,9 @@ mod queries;
 #[serde(tag = "type")]
 enum Request {
     #[serde(rename = "highlight")]
-    Highlight {
-        buf: i64,
-        lang: String,
-        text: String,
-    },
+    Highlight { buf: i64, lang: String, text: String },
+    #[serde(rename = "symbols")]
+    Symbols { buf: i64, lang: String, text: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -21,6 +19,8 @@ enum Request {
 enum Event {
     #[serde(rename = "highlights")]
     Highlights { buf: i64, spans: Vec<Span> },
+    #[serde(rename = "symbols")]
+    Symbols { buf: i64, symbols: Vec<Symbol> },
     #[serde(rename = "error")]
     Error { message: String },
 }
@@ -32,6 +32,14 @@ struct Span {
     end_lnum: u32,
     end_col: u32,
     group: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct Symbol {
+    name: String,
+    kind: String,
+    lnum: u32,
+    col: u32,
 }
 
 fn main() -> Result<()> {
@@ -50,24 +58,18 @@ fn main() -> Result<()> {
         let req = match serde_json::from_str::<Request>(&line) {
             Ok(r) => r,
             Err(e) => {
-                send(
-                    &mut out,
-                    &Event::Error {
-                        message: format!("invalid request: {e}"),
-                    },
-                )?;
+                send(&mut out, &Event::Error { message: format!("invalid request: {e}") })?;
                 continue;
             }
         };
         match req {
             Request::Highlight { buf, lang, text } => match run_highlight(&lang, &text) {
                 Ok(spans) => send(&mut out, &Event::Highlights { buf, spans })?,
-                Err(e) => send(
-                    &mut out,
-                    &Event::Error {
-                        message: e.to_string(),
-                    },
-                )?,
+                Err(e) => send(&mut out, &Event::Error { message: e.to_string() })?,
+            },
+            Request::Symbols { buf, lang, text } => match run_symbols(&lang, &text) {
+                Ok(symbols) => send(&mut out, &Event::Symbols { buf, symbols })?,
+                Err(e) => send(&mut out, &Event::Error { message: e.to_string() })?,
             },
         }
     }
@@ -95,16 +97,13 @@ fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
     };
     parser.set_language(&language.into())?;
 
-    let tree = parser
-        .parse(text, None)
-        .ok_or_else(|| anyhow!("parse failed"))?;
+    let tree = parser.parse(text, None).ok_or_else(|| anyhow!("parse failed"))?;
     let root = tree.root_node();
 
     let query = tree_sitter::Query::new(&language.into(), query_src)?;
     let mut cursor = tree_sitter::QueryCursor::new();
 
     let mut spans = Vec::with_capacity(2048);
-
     let mut it = cursor.captures(&query, root, text.as_bytes());
     while let Some((m, cap_ix)) = it.next() {
         let cap = m.captures[*cap_ix];
@@ -117,7 +116,6 @@ fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
 
         let sp = node.start_position();
         let ep = node.end_position();
-        // tree-sitter Point: row/column 0-based, Vim 需要 1-based
         spans.push(Span {
             lnum: sp.row as u32 + 1,
             col: sp.column as u32 + 1,
@@ -128,6 +126,62 @@ fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
     }
 
     Ok(spans)
+}
+
+fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
+    let mut parser = tree_sitter::Parser::new();
+
+    let (language, query_src) = match lang {
+        "rust" => (tree_sitter_rust::LANGUAGE, queries::RUST_SYM_QUERY),
+        "javascript" => (tree_sitter_javascript::LANGUAGE, queries::JS_SYM_QUERY),
+        "c" => (tree_sitter_c::LANGUAGE, queries::C_SYM_QUERY),
+        "cpp" => (tree_sitter_cpp::LANGUAGE, queries::CPP_SYM_QUERY),
+        _ => return Err(anyhow!("unsupported language: {lang}")),
+    };
+    parser.set_language(&language.into())?;
+
+    let tree = parser.parse(text, None).ok_or_else(|| anyhow!("parse failed"))?;
+    let root = tree.root_node();
+
+    let query = tree_sitter::Query::new(&language.into(), query_src)?;
+    let mut cursor = tree_sitter::QueryCursor::new();
+
+    let mut symbols = Vec::with_capacity(256);
+    let bytes = text.as_bytes();
+
+    let mut it = cursor.captures(&query, root, bytes);
+    while let Some((m, cap_ix)) = it.next() {
+        let cap = m.captures[*cap_ix];
+        let node = cap.node;
+        if node.start_byte() >= node.end_byte() {
+            continue;
+        }
+        let cname = query.capture_names()[cap.index as usize];
+
+        // 只处理名字节点的捕获（symbol.*）
+        let kind = map_symbol_capture(cname);
+        if kind.is_empty() {
+            continue;
+        }
+
+        let name = node_text(node, bytes);
+        let sp = node.start_position();
+        symbols.push(Symbol {
+            name,
+            kind: kind.to_string(),
+            lnum: sp.row as u32 + 1,
+            col: sp.column as u32 + 1,
+        });
+    }
+
+    // 按位置排序，便于阅读
+    symbols.sort_by_key(|s| (s.lnum, s.col));
+    Ok(symbols)
+}
+
+fn node_text(node: tree_sitter::Node, bytes: &[u8]) -> String {
+    let s = &bytes[node.start_byte() as usize..node.end_byte() as usize];
+    String::from_utf8_lossy(s).to_string()
 }
 
 fn map_capture_to_group(name: &str) -> &'static str {
@@ -174,5 +228,24 @@ fn map_capture_to_group(name: &str) -> &'static str {
 
         // 默认兜底
         _ => "TSVariable",
+    }
+}
+
+fn map_symbol_capture(name: &str) -> &'static str {
+    match name {
+        // 统一使用 name 节点的捕获类别
+        "symbol.function" => "function",
+        "symbol.method" => "method",
+        "symbol.type" => "type",
+        "symbol.struct" => "struct",
+        "symbol.enum" => "enum",
+        "symbol.class" => "class",
+        "symbol.namespace" => "namespace",
+        "symbol.variable" => "variable",
+        "symbol.const" => "const",
+        "symbol.macro" => "macro",
+        "symbol.property" => "property",
+        "symbol.field" => "field",
+        _ => "",
     }
 }

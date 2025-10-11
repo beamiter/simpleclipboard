@@ -6,6 +6,12 @@ var s_running: bool = false
 var s_req_timer: number = 0
 var s_enabled: bool = false
 var s_active_bufs: dict<bool> = {}
+# =============== 新增：侧边栏状态 ===============
+var s_outline_win: number = 0
+var s_outline_buf: number = 0
+var s_outline_src_buf: number = 0
+var s_outline_items: list<dict<any>> = []
+var s_sym_timer: number = 0
 
 # 待用的 TS 高亮组 -> Vim 高亮组 默认链接
 const s_groups = [
@@ -174,6 +180,10 @@ def OnDaemonEvent(line: string)
     var buf = get(ev, 'buf', 0)
     var spans = get(ev, 'spans', [])
     ApplyHighlights(buf, spans)
+  elseif ev.type ==# 'symbols'
+    var buf = get(ev, 'buf', 0)
+    var syms = get(ev, 'symbols', [])
+    ApplySymbols(buf, syms)
   elseif ev.type ==# 'error'
     echom '[ts-hl] error: ' .. get(ev, 'message', '')
   endif
@@ -230,23 +240,6 @@ def Send(req: dict<any>)
   catch
     Log('Failed to send request: ' .. v:exception)
   endtry
-enddef
-
-def RequestNow(buf: number)
-  if !EnsureDaemon()
-    return
-  endif
-  var lang = DetectLang(buf)
-  if lang ==# ''
-    return
-  endif
-  if !bufexists(buf)
-    return
-  endif
-  var lines = getbufline(buf, 1, '$')
-  var text = join(lines, "\n")
-  Send({type: 'highlight', buf: buf, lang: lang, text: text})
-  Log('Requested highlight for buffer ' .. buf .. ' (' .. lang .. ')')
 enddef
 
 def ScheduleRequest(buf: number)
@@ -385,6 +378,8 @@ enddef
 export def OnBufEvent(buf: number)
   AutoEnableForBuffer(buf)
   ScheduleRequest(buf)
+  # 如果侧边栏打开，调度符号刷新
+  ScheduleSymbols(buf)
 enddef
 
 export def OnBufClose(buf: number)
@@ -394,5 +389,253 @@ export def OnBufClose(buf: number)
   # 延迟检查，避免频繁启停
   if exists('*timer_start')
     timer_start(2000, (id) => CheckAndStopDaemon())
+  endif
+enddef
+
+def KindIcon(kind: string): string
+  if kind ==# 'function'
+    return 'ƒ'
+  elseif kind ==# 'method'
+    return 'm'
+  elseif kind ==# 'type' || kind ==# 'struct' || kind ==# 'class'
+    return 'T'
+  elseif kind ==# 'enum'
+    return 'E'
+  elseif kind ==# 'namespace'
+    return 'N'
+  elseif kind ==# 'variable'
+    return 'v'
+  elseif kind ==# 'const'
+    return 'C'
+  elseif kind ==# 'macro'
+    return 'M'
+  elseif kind ==# 'property' || kind ==# 'field'
+    return 'p'
+  else
+    return '?'
+  endif
+enddef
+
+# =============== 新增：符号请求 ===============
+def RequestSymbolsNow(buf: number)
+  if !EnsureDaemon()
+    return
+  endif
+  var lang = DetectLang(buf)
+  if lang ==# ''
+    return
+  endif
+  if !bufexists(buf)
+    return
+  endif
+  var lines = getbufline(buf, 1, '$')
+  var text = join(lines, "\n")
+  Send({type: 'symbols', buf: buf, lang: lang, text: text})
+  Log('Requested symbols for buffer ' .. buf .. ' (' .. lang .. ')')
+enddef
+
+def ScheduleSymbols(buf: number)
+  # 仅在侧边栏开启且当前 buf 是侧边栏的源 buf 时才调度
+  if s_outline_win == 0 || s_outline_src_buf != buf
+    return
+  endif
+
+  if s_sym_timer != 0 && exists('*timer_stop')
+    try
+      call timer_stop(s_sym_timer)
+    catch
+    endtry
+    s_sym_timer = 0
+  endif
+
+  if exists('*timer_start')
+    try
+      var ms = get(g:, 'ts_hl_debounce', 120)
+      s_sym_timer = timer_start(ms, (id) => {
+        s_sym_timer = 0
+        RequestSymbolsNow(buf)
+      })
+    catch
+      RequestSymbolsNow(buf)
+    endtry
+  else
+    RequestSymbolsNow(buf)
+  endif
+enddef
+
+# =============== 新增：渲染符号侧边栏 ===============
+def ApplySymbols(buf: number, syms: list<dict<any>>)
+  if s_outline_win == 0 || s_outline_buf == 0 || s_outline_src_buf != buf
+    return
+  endif
+  if !bufexists(s_outline_buf)
+    return
+  endif
+  # 缓存列表以便跳转
+  s_outline_items = syms
+
+  var lines: list<string> = []
+  for s in syms
+    var kind = get(s, 'kind', 'unknown')
+    var name = get(s, 'name', '')
+    var lnum = get(s, 'lnum', 1)
+    var col  = get(s, 'col', 1)
+    var icon = KindIcon(kind)
+    lines->add(icon .. ' ' .. name .. '    (' .. lnum .. ':' .. col .. ')')
+  endfor
+
+  var curwin = win_getid()
+  try
+    if win_gotoid(s_outline_win)
+      # 写入侧边栏 buffer
+      setlocal modifiable
+      if len(lines) == 0
+        lines = ['<no symbols>']
+      endif
+      call setline(1, lines)
+      var last = len(lines)
+      if last > 0
+        call setline(last + 1, [])
+      endif
+      setlocal nomodifiable
+    endif
+  finally
+    if curwin != 0
+      call win_gotoid(curwin)
+    endif
+  endtry
+enddef
+
+# =============== 新增：侧边栏窗口管理 ===============
+export def OutlineOpen()
+  # 侧边栏展示当前窗口的 buffer 符号
+  var src = bufnr()
+  if !IsSupportedLang(src)
+    echo '[ts-hl] outline unsupported for this &filetype'
+    return
+  endif
+  if !EnsureDaemon()
+    return
+  endif
+
+  var curwin = win_getid()
+  try
+    # 打开右侧窗口
+    execute 'botright vsplit'
+    var w = win_getid()
+    var b = bufnr('%')
+
+    # 如果已有 buffer，则跳过去，否则新建
+    if s_outline_buf != 0 && bufexists(s_outline_buf)
+      execute 'buffer ' .. s_outline_buf
+    else
+      execute 'enew'
+      s_outline_buf = bufnr('%')
+      # 命名便于识别
+      execute 'file ts-hl-outline'
+      # 设置成 scratch buffer
+      setlocal buftype=nofile bufhidden=wipe nobuflisted noswapfile
+      setlocal nowrap nonumber norelativenumber signcolumn=no
+      setlocal foldcolumn=0
+      setlocal cursorline
+      setlocal filetype=ts_hl_outline
+      # 侧边栏快捷键
+      nnoremap <silent><buffer> <CR> :call ts_hl#OutlineJump()<CR>
+      nnoremap <silent><buffer> q :call ts_hl#OutlineClose()<CR>
+    endif
+
+    s_outline_win = win_getid()
+    s_outline_src_buf = src
+
+    # 调整侧边栏宽度
+    var width = get(g:, 'ts_hl_outline_width', 32)
+    execute 'vertical resize ' .. width
+
+    # 初次刷新
+    OutlineRefresh()
+    echo '[ts-hl] outline open'
+  finally
+    # 回到原窗口
+    if curwin != 0
+      call win_gotoid(curwin)
+    endif
+  endtry
+enddef
+
+export def OutlineClose()
+  if s_outline_win != 0
+    try
+      if win_gotoid(s_outline_win)
+        execute 'close'
+      endif
+    catch
+    endtry
+  endif
+  s_outline_win = 0
+  s_outline_buf = 0
+  s_outline_items = []
+  s_outline_src_buf = 0
+  echo '[ts-hl] outline closed'
+enddef
+
+export def OutlineToggle()
+  if s_outline_win != 0
+    OutlineClose()
+  else
+    OutlineOpen()
+  endif
+enddef
+
+export def OutlineRefresh()
+  if s_outline_src_buf == 0 || !bufexists(s_outline_src_buf)
+    return
+  endif
+  RequestSymbolsNow(s_outline_src_buf)
+enddef
+
+export def OutlineJump()
+  if s_outline_win == 0 || s_outline_src_buf == 0
+    return
+  endif
+  var idx = line('.') - 1
+  if idx < 0 || idx >= len(s_outline_items)
+    return
+  endif
+  var it = s_outline_items[idx]
+  var lnum = get(it, 'lnum', 1)
+  var col  = get(it, 'col', 1)
+
+  # 找到源 buffer 的窗口
+  var wins = win_findbuf(s_outline_src_buf)
+  if len(wins) > 0
+    call win_gotoid(wins[0])
+  else
+    execute 'buffer ' .. s_outline_src_buf
+  endif
+  call cursor(lnum, col)
+  normal! zv
+enddef
+
+# =============== 修改：请求调度 ===============
+def RequestNow(buf: number)
+  if !EnsureDaemon()
+    return
+  endif
+  var lang = DetectLang(buf)
+  if lang ==# ''
+    return
+  endif
+  if !bufexists(buf)
+    return
+  endif
+  var lines = getbufline(buf, 1, '$')
+  var text = join(lines, "\n")
+  Send({type: 'highlight', buf: buf, lang: lang, text: text})
+  Log('Requested highlight for buffer ' .. buf .. ' (' .. lang .. ')')
+
+  # 如果侧边栏打开且当前 buf 是源 buf，则同时请求 symbols
+  if s_outline_win != 0 && s_outline_src_buf == buf
+    Send({type: 'symbols', buf: buf, lang: lang, text: text})
+    Log('Requested symbols (inline) for buffer ' .. buf .. ' (' .. lang .. ')')
   endif
 enddef
