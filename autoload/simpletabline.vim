@@ -15,6 +15,18 @@ def Conf(name: string, default: any): any
   return get(g:, name, default)
 enddef
 
+# 将 g: 配置值安全地转成 bool
+def ConfBool(name: string, default_val: bool): bool
+  var v = get(g:, name, default_val)
+  if type(v) == v:t_bool
+    return v
+  endif
+  if type(v) == v:t_number
+    return v != 0
+  endif
+  return default_val
+enddef
+
 def ListedNormalBuffers(): list<dict<any>>
   var use_listed = Conf('simpletabline_listed_only', 1) != 0
   var bis = use_listed ? getbufinfo({'buflisted': 1}) : getbufinfo({'bufloaded': 1})
@@ -127,14 +139,20 @@ def IsEligibleBuffer(bn: number): bool
   if type(bt) != v:t_string || bt !=# ''
     return false
   endif
-  var use_listed = Conf('simpletabline_listed_only', 1) != 0
-  return use_listed ? (getbufvar(bn, '&buflisted') == 1) : true
+
+  var use_listed = ConfBool('simpletabline_listed_only', true)
+
+  # 安全读取 &buflisted 为布尔
+  var bl = getbufvar(bn, '&buflisted')
+  var is_listed = (type(bl) == v:t_bool) ? bl : (bl != 0)
+
+  return use_listed ? is_listed : true
 enddef
 
 def ReassignIndices()
   s_idx_to_buf = {}
   s_buf_to_idx = {}
-  " 数字键顺序：1..9, 0
+  # 数字键顺序：1..9, 0
   var digits: list<number> = []
   for d in range(1, 9)
     digits->add(d)
@@ -199,7 +217,7 @@ export def Tabline(): string
   var ellipsis = Conf('simpletabline_ellipsis', ' … ')
   var show_keys = 1
 
-  " bufnr -> key 字符串映射（键用字符串化的 bufnr）
+  # bufnr -> key 字符串映射（键用字符串化的 bufnr）
   var buf_keys: dict<string> = {}
   for binfo in all
     var dg = get(s_buf_to_idx, binfo.bufnr, -1)
@@ -224,7 +242,7 @@ export def Tabline(): string
     s ..= '%#SimpleTablineInactive#' .. ellipsis
   endif
 
-  " Pick 映射取全局 MRU 分配
+  # Pick 映射取全局 MRU 分配
   s_pick_map = copy(s_idx_to_buf)
 
   for vbn in visible
