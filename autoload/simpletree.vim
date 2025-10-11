@@ -2190,3 +2190,7 @@ export def OnOpenSplit()
     call win_gotoid(s_winid)
   endif
 enddef
+
+export def GetRoot(): string
+  return s_root
+enddef

@@ -27,6 +27,85 @@ def ConfBool(name: string, default_val: bool): bool
   return default_val
 enddef
 
+# 读取 SimpleTree 的 root（若不可用返回空字符串）
+def TreeRoot(): string
+  var r = ''
+  if exists('*simpletree#GetRoot')
+    try
+      r = simpletree#GetRoot()
+    catch
+    endtry
+  endif
+  return type(r) == v:t_string ? r : ''
+enddef
+
+def IsWin(): bool
+  return has('win32') || has('win64') || has('win95') || has('win32unix')
+enddef
+
+def NormPath(p: string): string
+  var ap = fnamemodify(p, ':p')
+  ap = simplify(substitute(ap, '\\', '/', 'g'))
+  var q = substitute(ap, '/\+$', '', '')
+  if q ==# ''
+    return '/'
+  endif
+  if q =~? '^[A-Za-z]:$'
+    return q .. '/'
+  endif
+  return q
+enddef
+
+# 返回 abs 相对于 root 的相对路径；若不在 root 下，返回空字符串
+def RelToRoot(abs: string, root: string): string
+  if abs ==# '' || root ==# ''
+    return ''
+  endif
+  var A = NormPath(abs)
+  var R = NormPath(root)
+  var aCmp = IsWin() ? tolower(A) : A
+  var rCmp = IsWin() ? tolower(R) : R
+  if aCmp ==# rCmp
+    return fnamemodify(A, ':t')
+  endif
+  var rprefix = (R =~? '^[A-Za-z]:/$') ? R : (R .. '/')
+  var rprefixCmp = IsWin() ? tolower(rprefix) : rprefix
+  if stridx(aCmp, rprefixCmp) == 0
+    return strpart(A, strlen(rprefix))
+  endif
+  return ''
+enddef
+
+# 将相对路径缩写为目录首字母 + 文件名；优先使用内置 pathshorten()
+def AbbrevRelPath(rel: string): string
+  if rel ==# ''
+    return rel
+  endif
+  if exists('*pathshorten')
+    try
+      return pathshorten(rel)
+    catch
+    endtry
+  endif
+  var parts = split(rel, '/')
+  if len(parts) <= 1
+    return rel
+  endif
+  var out: list<string> = []
+  var i = 0
+  while i < len(parts) - 1
+    var seg = parts[i]
+    if seg ==# '' || seg ==# '.'
+      out->add(seg)
+    else
+      out->add(strcharpart(seg, 0, 1))
+    endif
+    i += 1
+  endwhile
+  out->add(parts[-1])
+  return join(out, '/')
+enddef
+
 def ListedNormalBuffers(): list<dict<any>>
   var use_listed = Conf('simpletabline_listed_only', 1) != 0
   var bis = use_listed ? getbufinfo({'buflisted': 1}) : getbufinfo({'bufloaded': 1})
@@ -41,13 +120,42 @@ def ListedNormalBuffers(): list<dict<any>>
   return res
 enddef
 
-# 生成缓冲区显示名称（尾名；无名时标记）
+# 生成在 Tabline 上显示的名称：默认相对 SimpleTree 根并缩写
+# g:simpletabline_path_mode: 'abbr'|'rel'|'tail'|'abs'
+# g:simpletabline_fallback_cwd_root: 1 使用 CWD 作为 root（当未打开 SimpleTree 或 root 为空）
 def BufDisplayName(b: dict<any>): string
   var n = bufname(b.bufnr)
   if n ==# ''
     return '[No Name]'
   endif
-  return fnamemodify(n, ':t')
+
+  var mode = get(g:, 'simpletabline_path_mode', 'abbr')
+  if mode ==# 'tail'
+    return fnamemodify(n, ':t')
+  endif
+
+  var abs = fnamemodify(n, ':p')
+  var root = TreeRoot()
+  if root ==# '' && !!get(g:, 'simpletabline_fallback_cwd_root', 1)
+    root = getcwd()
+  endif
+
+  var rel = (root !=# '') ? RelToRoot(abs, root) : ''
+  if rel ==# ''
+    # 不在 root 下时，避免太长，退化为文件名
+    return fnamemodify(n, ':t')
+  endif
+
+  if mode ==# 'rel'
+    return rel
+  elseif mode ==# 'abbr'
+    return AbbrevRelPath(rel)
+  elseif mode ==# 'abs'
+    return abs
+  else
+    # 未知配置，回退为缩写
+    return AbbrevRelPath(rel)
+  endif
 enddef
 
 # 计算单项标签的“可见文字宽度”（不含高亮控制符）
