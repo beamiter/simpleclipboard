@@ -10,7 +10,7 @@ g:simpletabline_show_modified = get(g:, 'simpletabline_show_modified', 1)
 g:simpletabline_item_sep      = get(g:, 'simpletabline_item_sep', ' | ')
 g:simpletabline_key_sep       = get(g:, 'simpletabline_key_sep', ' ')
 g:simpletabline_ellipsis      = get(g:, 'simpletabline_ellipsis', ' … ')
-g:simpletabline_listed_only = get(g:, 'simpletabline_listed_only', 1)
+g:simpletabline_listed_only   = get(g:, 'simpletabline_listed_only', 1)
 
 # 高亮默认链接到内置 TabLine 组（可按需自定义）
 highlight default link SimpleTablineActive   TabLineSel
@@ -26,10 +26,17 @@ set tabline=%!simpletabline#Tabline()
 command! BufferPick call simpletabline#BufferPick()
 nnoremap <silent> <leader>bp :BufferPick<CR>
 
-# 自动刷新 tabline（状态变化时）
+# 自动刷新与 MRU 更新
 augroup SimpleTablineAuto
   autocmd!
-  autocmd BufAdd,BufDelete,BufEnter,TabEnter,VimResized * try | redrawstatus | catch | endtry
+  # 初始化（进入 Vim 后）
+  autocmd VimEnter * try | call simpletabline#OnBufEnter() | redrawstatus | catch | endtry
+  # MRU 更新：BufEnter/BufAdd/BufDelete
+  autocmd BufEnter *  try | call simpletabline#OnBufEnter()                            | redrawstatus | catch | endtry
+  autocmd BufAdd   *  try | call simpletabline#OnBufAdd(str2nr(expand('<abuf>')))      | redrawstatus | catch | endtry
+  autocmd BufDelete * try | call simpletabline#OnBufDelete(str2nr(expand('<abuf>')))   | redrawstatus | catch | endtry
+  # 其它刷新
+  autocmd TabEnter,VimResized * try | redrawstatus | catch | endtry
   autocmd ColorScheme * try
         \ | highlight default link SimpleTablineActive   TabLineSel
         \ | highlight default link SimpleTablineInactive TabLine

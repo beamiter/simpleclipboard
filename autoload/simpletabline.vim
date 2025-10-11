@@ -5,13 +5,18 @@ var s_pick_mode: bool = false
 var s_pick_map: dict<number> = {}   # digit -> bufnr
 var s_last_visible: list<number> = []
 
+# MRU 与索引分配
+var s_mru: list<number> = []               # 最近使用的 bufnr（0 位最最近）
+var s_idx_to_buf: dict<number> = {}        # digit(1..9,0) -> bufnr
+var s_buf_to_idx: dict<number> = {}        # bufnr -> digit(1..9,0)
+
 # 配置获取（带默认）
 def Conf(name: string, default: any): any
   return get(g:, name, default)
 enddef
 
 def ListedNormalBuffers(): list<dict<any>>
-  var use_listed = !!Conf('simpletabline_listed_only', 1)
+  var use_listed = Conf('simpletabline_listed_only', 1) != 0
   var bis = use_listed ? getbufinfo({'buflisted': 1}) : getbufinfo({'bufloaded': 1})
   var res: list<dict<any>> = []
   for b in bis
@@ -37,16 +42,16 @@ enddef
 def LabelText(b: dict<any>, key: string): string
   var name = BufDisplayName(b)
   var sep = Conf('simpletabline_key_sep', ' ')
-  var show_mod = !!Conf('simpletabline_show_modified', 1)
+  var show_mod = Conf('simpletabline_show_modified', 1) != 0
   var mod_mark = (show_mod && get(b, 'changed', 0) == 1) ? ' +' : ''
-  return key .. sep .. name .. mod_mark
+  return (key !=# '' ? key .. sep : '') .. name .. mod_mark
 enddef
 
 # 构建当前可见窗口的缓冲区序列，保证当前缓冲区可见，左右均衡填充；不足时两端省略
-def ComputeVisible(all: list<dict<any>>): list<number>
+# buf_keys 的键为字符串化的 bufnr
+def ComputeVisible(all: list<dict<any>>, buf_keys: dict<string>): list<number>
   var cols = max([&columns, 20])
   var sep = Conf('simpletabline_item_sep', ' | ')
-  var ellipsis = Conf('simpletabline_ellipsis', ' … ')
   var sep_w = strdisplaywidth(sep)
 
   # 当前缓冲区索引
@@ -62,34 +67,24 @@ def ComputeVisible(all: list<dict<any>>): list<number>
     cur_idx = 0
   endif
 
-  # 先为所有项预生成 label 宽度（假设 key 采用 1..9/0，实际分配只给可见项）
+  # 预生成 label 宽度（使用已分配的 key；未分配为空）
   var widths: list<number> = []
-  var keys_sim: list<string> = []
   var i = 0
   while i < len(all)
-    var key = ''
-    if i < 9
-      key = string(i + 1)
-    elseif i == 9
-      key = '0'
-    else
-      key = ''  # 超出 10 项时，非可见项不分配 key；可见时再重新测量
-    endif
-    keys_sim->add(key)
+    var key = get(buf_keys, string(all[i].bufnr), '')
     var txt = LabelText(all[i], key)
     widths->add(strdisplaywidth(txt))
     i += 1
   endwhile
 
-  # 留出一些边缘空间，避免溢出（你也可以配一个固定边距）
+  # 留出一些边缘空间，避免溢出
   var budget = cols - 2
-  # 当前项占用 + 分隔符（如果还有其它项）
   var visible_idx: list<number> = [cur_idx]
   var used = widths[cur_idx]
   var left = cur_idx - 1
   var right = cur_idx + 1
 
-  # 向两侧扩展，优先右侧，再左侧，保持尽可能多
+  # 向两侧扩展，优先右侧，再左侧
   while true
     var added = 0
     if right < len(all)
@@ -115,7 +110,6 @@ def ComputeVisible(all: list<dict<any>>): list<number>
     endif
   endwhile
 
-  # 记录可见，用于 pick 映射
   s_last_visible = []
   for j in range(len(visible_idx))
     s_last_visible->add(all[visible_idx[j]].bufnr)
@@ -124,7 +118,77 @@ def ComputeVisible(all: list<dict<any>>): list<number>
   return s_last_visible
 enddef
 
-# 根据可见列表分配 1..9/0 的 pick 键，并生成 tabline 字符串
+# MRU 更新与索引分配
+def IsEligibleBuffer(bn: number): bool
+  if bn <= 0 || bufexists(bn) == 0
+    return false
+  endif
+  var bt = getbufvar(bn, '&buftype')
+  if type(bt) != v:t_string || bt !=# ''
+    return false
+  endif
+  var use_listed = Conf('simpletabline_listed_only', 1) != 0
+  return use_listed ? (getbufvar(bn, '&buflisted') == 1) : true
+enddef
+
+def ReassignIndices()
+  s_idx_to_buf = {}
+  s_buf_to_idx = {}
+  " 数字键顺序：1..9, 0
+  var digits: list<number> = []
+  for d in range(1, 9)
+    digits->add(d)
+  endfor
+  digits->add(0)
+  var maxk = min([len(digits), 10])
+  var i = 0
+  var assigned = 0
+  while i < len(s_mru) && assigned < maxk
+    var bn = s_mru[i]
+    if IsEligibleBuffer(bn)
+      var dg = digits[assigned]
+      s_idx_to_buf[dg] = bn
+      s_buf_to_idx[bn] = dg
+      assigned += 1
+    endif
+    i += 1
+  endwhile
+enddef
+
+export def OnBufEnter()
+  var bn = bufnr('%')
+  if !IsEligibleBuffer(bn)
+    return
+  endif
+  var i = index(s_mru, bn)
+  if i >= 0
+    s_mru->remove(i)
+  endif
+  s_mru->insert(bn, 0)
+  ReassignIndices()
+enddef
+
+export def OnBufAdd(bn: number)
+  if !IsEligibleBuffer(bn)
+    return
+  endif
+  var i = index(s_mru, bn)
+  if i >= 0
+    s_mru->remove(i)
+  endif
+  s_mru->insert(bn, 0)
+  ReassignIndices()
+enddef
+
+export def OnBufDelete(bn: number)
+  var i = index(s_mru, bn)
+  if i >= 0
+    s_mru->remove(i)
+  endif
+  ReassignIndices()
+enddef
+
+# 根据 MRU 分配的键生成 tabline 字符串
 export def Tabline(): string
   var all = ListedNormalBuffers()
   if len(all) == 0
@@ -135,9 +199,16 @@ export def Tabline(): string
   var ellipsis = Conf('simpletabline_ellipsis', ' … ')
   var show_keys = 1
 
-  var visible = ComputeVisible(all)
+  " bufnr -> key 字符串映射（键用字符串化的 bufnr）
+  var buf_keys: dict<string> = {}
+  for binfo in all
+    var dg = get(s_buf_to_idx, binfo.bufnr, -1)
+    buf_keys[string(binfo.bufnr)] = dg < 0 ? '' : (dg == 0 ? '0' : string(dg))
+  endfor
 
-  # 建 bufnr -> bufinfo 索引表（把键统一转成字符串，避免类型混淆）
+  var visible = ComputeVisible(all, buf_keys)
+
+  # bufnr -> bufinfo 索引表（键为字符串）
   var bynr: dict<dict<any>> = {}
   for binfo in all
     bynr[string(binfo.bufnr)] = binfo
@@ -153,8 +224,8 @@ export def Tabline(): string
     s ..= '%#SimpleTablineInactive#' .. ellipsis
   endif
 
-  s_pick_map = {}
-  var count_assigned = 0
+  " Pick 映射取全局 MRU 分配
+  s_pick_map = copy(s_idx_to_buf)
 
   for vbn in visible
     var k = string(vbn)
@@ -166,35 +237,24 @@ export def Tabline(): string
     var is_cur = (b.bufnr == curbn)
     var grp = is_cur ? '%#SimpleTablineActive#' : '%#SimpleTablineInactive#'
 
-    var key = ''
-    if count_assigned < 9
-      key = string(count_assigned + 1)
-    elseif count_assigned == 9
-      key = '0'
-    endif
-    if key !=# ''
-      s_pick_map[str2nr(key)] = b.bufnr
-    endif
-
+    var key = get(buf_keys, string(b.bufnr), '')
     var key_part = ''
     if show_keys && key !=# ''
       var kgrp = s_pick_mode ? '%#SimpleTablinePickDigit#' : grp
-      key_part = kgrp .. key .. '%#None#'
+      key_part = kgrp .. key .. '%#None#' .. Conf('simpletabline_key_sep', ' ')
     endif
 
     var name = BufDisplayName(b)
-    var show_mod = !!Conf('simpletabline_show_modified', 1)
+    var show_mod = Conf('simpletabline_show_modified', 1) != 0
     var mod_mark = (show_mod && get(b, 'changed', 0) == 1) ? ' +' : ''
 
-    var item = grp .. (key_part !=# '' ? key_part .. Conf('simpletabline_key_sep', ' ') : '') .. name .. mod_mark .. '%#None#'
+    var item = grp .. key_part .. name .. mod_mark .. '%#None#'
 
     if s ==# ''
       s = item
     else
       s ..= '%#SimpleTablineFill#' .. sep .. '%#None#' .. item
     endif
-
-    count_assigned += 1
   endfor
 
   if right_omitted
@@ -222,16 +282,15 @@ enddef
 
 export def BufferPick()
   if s_pick_mode
-    # 已经是 pick 模式 -> 取消
     call CancelPick()
     return
   endif
   s_pick_mode = true
+  s_pick_map = copy(s_idx_to_buf)
   for n in range(1, 9)
     MapDigit(n)
   endfor
   MapDigit(0)
-  # Esc 退出
   try
     nnoremap <nowait> <silent> <Esc> :call simpletabline#CancelPick()<CR>
   catch
