@@ -557,7 +557,6 @@ export def OutlineOpen()
 
     # 初次刷新
     OutlineRefresh()
-    echo '[ts-hl] outline open'
   finally
     # 回到原窗口
     if curwin != 0
