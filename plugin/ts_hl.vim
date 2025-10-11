@@ -19,8 +19,9 @@ g:ts_hl_auto_enable_filetypes = get(g:, 'ts_hl_auto_enable_filetypes',
 # 当没有活跃缓冲区时是否自动停止 daemon（1=是, 0=否）
 g:ts_hl_auto_stop = get(g:, 'ts_hl_auto_stop', 1)
 
-# 调试模式（1=开启, 0=关闭）
+# 调试开关和日志文件
 g:ts_hl_debug = get(g:, 'ts_hl_debug', 0)
+g:ts_hl_log_file = get(g:, 'ts_hl_log_file', '/tmp/ts-hl.log')
 
 # 新增：侧边栏宽度
 g:ts_hl_outline_width = get(g:, 'ts_hl_outline_width', 32)

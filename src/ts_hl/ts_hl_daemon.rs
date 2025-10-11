@@ -110,6 +110,7 @@ fn send(out: &mut std::io::Stdout, ev: &Event) -> Result<()> {
 
 fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
     if lang == "vim" {
+        debug_dump_vim_ast(text);
         // 优先尝试 tree-sitter-vim 查询；失败则回退到简单解析
         if let Ok(spans) = run_ts_query_highlight(text) {
             return Ok(spans);
@@ -301,7 +302,6 @@ fn run_ts_query_symbols(
 }
 
 // ===== Vim 的回退解析（不依赖 tree-sitter），保证可用 =====
-
 fn highlight_vim_naive(text: &str) -> Vec<Span> {
     let mut spans = Vec::with_capacity(512);
     for (i, line) in text.lines().enumerate() {
@@ -322,28 +322,30 @@ fn highlight_vim_naive(text: &str) -> Vec<Span> {
             }
         }
 
-        // 2) 字符串：简单匹配单引号包裹（不处理转义）
-        let mut idx = 0usize;
-        while let Some(s) = line[idx..].find('\'') {
-            let start = idx + s;
-            if let Some(e) = line[start + 1..].find('\'') {
-                let end = start + 1 + e + 1;
-                spans.push(Span {
-                    lnum,
-                    col: (start as u32) + 1,
-                    end_lnum: lnum,
-                    end_col: (end as u32) + 1,
-                    group: "TSString".to_string(),
-                });
-                idx = end;
-            } else {
-                break;
+        // 2) 字符串：同时处理单引号与双引号（不做转义复杂处理）
+        for quote in ['\'', '"'] {
+            let mut idx = 0usize;
+            while let Some(s) = line[idx..].find(quote) {
+                let start = idx + s;
+                if let Some(e) = line[start + 1..].find(quote) {
+                    let end = start + 1 + e + 1;
+                    spans.push(Span {
+                        lnum,
+                        col: (start as u32) + 1,
+                        end_lnum: lnum,
+                        end_col: (end as u32) + 1,
+                        group: "TSString".to_string(),
+                    });
+                    idx = end;
+                } else {
+                    break;
+                }
             }
         }
 
-        // 3) 关键字（词边界）和运算符：粗略匹配
+        // 3) 关键字（Vimscript + Vim9script）
         let keywords = [
-            "let",
+            // 传统
             "function",
             "endfunction",
             "return",
@@ -371,14 +373,21 @@ fn highlight_vim_naive(text: &str) -> Vec<Span> {
             "inoremap",
             "vnoremap",
             "tnoremap",
+            // Vim9
+            "vim9script",
+            "def",
+            "enddef",
+            "var",
+            "const",
+            "import",
+            "export",
         ];
         for kw in keywords.iter() {
-            // 查找非字母边界上的 kw
             let mut pos = 0usize;
             while let Some(p) = line[pos..].find(kw) {
                 let s = pos + p;
-                let b1 = s.checked_sub(1).map(|i| line.as_bytes()[i]).unwrap_or(b' ');
-                let b2 = line.as_bytes().get(s + kw.len()).copied().unwrap_or(b' ');
+                let b1 = s.checked_sub(1).map(|i| bytes[i]).unwrap_or(b' ');
+                let b2 = bytes.get(s + kw.len()).copied().unwrap_or(b' ');
                 let is_boundary = !is_ident_char(b1) && !is_ident_char(b2);
                 if is_boundary {
                     spans.push(Span {
@@ -416,13 +425,15 @@ fn highlight_vim_naive(text: &str) -> Vec<Span> {
         }
 
         // 5) 括号/分隔符/简单运算符
-        let puncts = ['(', ')', '{', '}', '[', ']', ',', ';', '.', '='];
+        let puncts = [
+            '(', ')', '{', '}', '[', ']', ',', ';', '.', '=', '+', '-', '*', '/',
+        ];
         for (ci, ch) in line.chars().enumerate() {
             if puncts.contains(&ch) {
                 let grp = match ch {
                     '(' | ')' | '{' | '}' | '[' | ']' => "TSPunctBracket",
                     ',' | ';' | '.' => "TSPunctDelimiter",
-                    '=' => "TSOperator",
+                    '=' | '+' | '-' | '*' | '/' => "TSOperator",
                     _ => "TSOperator",
                 };
                 spans.push(Span {
@@ -435,41 +446,48 @@ fn highlight_vim_naive(text: &str) -> Vec<Span> {
             }
         }
 
-        // 6) 简单变量：let 左侧变量名
-        if let Some(pos) = line.find("let") {
-            // 仅在 let 后面的情况
-            let after = &line[pos + 3..];
-            if let Some(name_start_rel) = after.find(|c: char| !c.is_whitespace()) {
-                let name_start = pos + 3 + name_start_rel;
-                // 到等号或空白结束
-                let name_end = name_start
-                    + after[name_start_rel..]
-                        .find(|c: char| c.is_whitespace() || c == '=')
-                        .unwrap_or(after.len() - name_start_rel);
-                if name_end > name_start {
-                    spans.push(Span {
-                        lnum,
-                        col: (name_start as u32) + 1,
-                        end_lnum: lnum,
-                        end_col: (name_end as u32) + 1,
-                        group: "TSVariable".to_string(),
-                    });
+        // 6) Vim9 变量：var/const 名称（粗略）
+        for decl_kw in ["var", "const"] {
+            if let Some(pos) = line.find(decl_kw) {
+                let after = &line[pos + decl_kw.len()..];
+                if let Some(name_start_rel) = after.find(|c: char| !c.is_whitespace()) {
+                    let name_start = pos + decl_kw.len() + name_start_rel;
+                    let name_end = name_start
+                        + after[name_start_rel..]
+                            .find(|c: char| c.is_whitespace() || c == '=')
+                            .unwrap_or(after.len() - name_start_rel);
+                    if name_end > name_start {
+                        spans.push(Span {
+                            lnum,
+                            col: (name_start as u32) + 1,
+                            end_lnum: lnum,
+                            end_col: (name_end as u32) + 1,
+                            group: "TSVariable".to_string(),
+                        });
+                    }
                 }
             }
         }
 
-        // 7) 函数名：function 或 function! 后紧跟的名字
-        if let Some(fn_pos) = line.find("function") {
-            let mut s = fn_pos + "function".len();
-            // 跳过 ! 和空白
-            while s < line.len()
-                && (line.as_bytes()[s] == b'!' || line.as_bytes()[s].is_ascii_whitespace())
-            {
+        // 7) Vim9 函数名：def 或 export def 后紧跟名字，直到 '('
+        let mut def_pos = None;
+        if let Some(p) = line.find("def") {
+            def_pos = Some(p);
+        }
+        if let Some(p) = line.find("export def") {
+            // 如果同时有 "export def"，以它为准（更靠前的）
+            def_pos = Some(p + "export ".len());
+        }
+        if let Some(dp) = def_pos {
+            let mut s = dp + "def".len();
+            // 跳过空白
+            let bytes = line.as_bytes();
+            while s < line.len() && bytes[s].is_ascii_whitespace() {
                 s += 1;
             }
             let name_start = s;
             while s < line.len() {
-                let b = line.as_bytes()[s];
+                let b = bytes[s];
                 if b.is_ascii_whitespace() || b == b'(' {
                     break;
                 }
@@ -489,39 +507,67 @@ fn highlight_vim_naive(text: &str) -> Vec<Span> {
     spans
 }
 
-fn is_ident_char(b: u8) -> bool {
-    (b as char).is_ascii_alphanumeric() || b == b'_'
-}
-
 fn symbols_vim_naive(text: &str) -> Vec<Symbol> {
-    let mut syms = Vec::with_capacity(64);
+    let mut syms = Vec::with_capacity(128);
     for (i, line) in text.lines().enumerate() {
         let lnum = i as u32 + 1;
         let trimmed = line.trim_start();
-        // function / function!
-        if trimmed.starts_with("function") {
-            let mut s = "function".len();
-            let bytes = trimmed.as_bytes();
-            while s < trimmed.len() && (bytes[s] == b'!' || bytes[s].is_ascii_whitespace()) {
+        let base_col = (line.len() - trimmed.len()) as u32 + 1;
+        let b = trimmed.as_bytes();
+
+        // Vim9: def / export def
+        if trimmed.starts_with("def") || trimmed.starts_with("export def") {
+            let mut s: usize;
+            if trimmed.starts_with("export def") {
+                s = "export def".len();
+            } else {
+                s = "def".len();
+            }
+            while s < trimmed.len() && b[s].is_ascii_whitespace() {
                 s += 1;
             }
             let name_start = s;
             while s < trimmed.len() {
-                let b = bytes[s];
-                if b.is_ascii_whitespace() || b == b'(' {
+                let ch = b[s];
+                if ch.is_ascii_whitespace() || ch == b'(' {
                     break;
                 }
                 s += 1;
             }
             if s > name_start {
                 let name = &trimmed[name_start..s];
-                // 列号基于原行
-                let col = (line.len() - trimmed.len() + name_start) as u32 + 1;
                 syms.push(Symbol {
                     name: name.to_string(),
                     kind: "function".to_string(),
                     lnum,
-                    col,
+                    col: base_col + (name_start as u32),
+                });
+            }
+        }
+        // 传统：function / function!
+        else if trimmed.starts_with("function") {
+            let mut s = "function".len();
+            if s < trimmed.len() && b[s] == b'!' {
+                s += 1;
+            }
+            while s < trimmed.len() && b[s].is_ascii_whitespace() {
+                s += 1;
+            }
+            let name_start = s;
+            while s < trimmed.len() {
+                let ch = b[s];
+                if ch.is_ascii_whitespace() || ch == b'(' {
+                    break;
+                }
+                s += 1;
+            }
+            if s > name_start {
+                let name = &trimmed[name_start..s];
+                syms.push(Symbol {
+                    name: name.to_string(),
+                    kind: "function".to_string(),
+                    lnum,
+                    col: base_col + (name_start as u32),
                 });
             }
         }
@@ -531,45 +577,39 @@ fn symbols_vim_naive(text: &str) -> Vec<Symbol> {
             if !rest.is_empty() {
                 let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
                 let name = &rest[..end];
-                let col = (line.len() - trimmed.len()
-                    + "augroup".len()
-                    + (trimmed["augroup".len()..].len() - rest.len()))
-                    as u32
-                    + 1;
+                let offset_ws = trimmed["augroup".len()..].len() - rest.len();
                 syms.push(Symbol {
                     name: name.to_string(),
                     kind: "namespace".to_string(),
                     lnum,
-                    col,
+                    col: base_col + "augroup".len() as u32 + offset_ws as u32,
                 });
             }
         }
         // command 名字
         else if trimmed.starts_with("command") {
             let mut s = "command".len();
-            let bytes = trimmed.as_bytes();
-            if s < trimmed.len() && bytes[s] == b'!' {
+            if s < trimmed.len() && b[s] == b'!' {
                 s += 1;
             }
-            while s < trimmed.len() && bytes[s].is_ascii_whitespace() {
+            while s < trimmed.len() && b[s].is_ascii_whitespace() {
                 s += 1;
             }
             let name_start = s;
             while s < trimmed.len() {
-                let b = bytes[s];
-                if b.is_ascii_whitespace() {
+                let ch = b[s];
+                if ch.is_ascii_whitespace() {
                     break;
                 }
                 s += 1;
             }
             if s > name_start {
                 let name = &trimmed[name_start..s];
-                let col = (line.len() - trimmed.len() + name_start) as u32 + 1;
                 syms.push(Symbol {
                     name: name.to_string(),
                     kind: "macro".to_string(),
                     lnum,
-                    col,
+                    col: base_col + (name_start as u32),
                 });
             }
         }
@@ -578,9 +618,45 @@ fn symbols_vim_naive(text: &str) -> Vec<Symbol> {
     syms
 }
 
+fn is_ident_char(b: u8) -> bool {
+    (b as char).is_ascii_alphanumeric() || b == b'_'
+}
+
 fn node_text(node: tree_sitter::Node, bytes: &[u8]) -> String {
     let s = &bytes[node.start_byte() as usize..node.end_byte() as usize];
     String::from_utf8_lossy(s).to_string()
+}
+
+// 仅用于本地调试：打印 AST
+#[allow(dead_code)]
+fn debug_dump_vim_ast(text: &str) {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter_vim::language();
+    parser.set_language(&lang).unwrap();
+    let tree = parser.parse(text, None).unwrap();
+    let root = tree.root_node();
+
+    fn walk(node: tree_sitter::Node, src: &[u8], depth: usize) {
+        let kind = node.kind();
+        let sp = node.start_position();
+        let ep = node.end_position();
+        eprintln!(
+            "{:indent$}{} [{}:{} - {}:{}]",
+            "",
+            kind,
+            sp.row + 1,
+            sp.column + 1,
+            ep.row + 1,
+            ep.column + 1,
+            indent = depth * 2
+        );
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(child, src, depth + 1);
+        }
+    }
+
+    walk(root, text.as_bytes(), 0);
 }
 
 fn map_capture_to_group(name: &str) -> &'static str {

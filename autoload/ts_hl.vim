@@ -29,7 +29,15 @@ const s_groups = [
 # =============== 工具 ===============
 def Log(msg: string)
   if get(g:, 'ts_hl_debug', 0)
-    echom '[ts-hl] ' .. msg
+    var lf = get(g:, 'ts_hl_log_file', '')
+    if type(lf) == v:t_string && lf !=# ''
+      try
+        call writefile(['[ts-hl] ' .. msg], lf, 'a')
+      catch
+      endtry
+    else
+      echom '[ts-hl] ' .. msg
+    endif
   endif
 enddef
 
@@ -211,7 +219,7 @@ def EnsureDaemon(): bool
       out_mode: 'nl',
       out_cb: (ch, l) => OnDaemonEvent(l),
       err_mode: 'nl',
-      err_cb: (ch, l) => 0,
+      err_cb: (ch, l) => Log('daemon stderr: ' .. l),
       exit_cb: (ch, code) => {
         s_running = false
         s_job = v:null
