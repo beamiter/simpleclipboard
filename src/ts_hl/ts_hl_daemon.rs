@@ -9,9 +9,17 @@ mod queries;
 #[serde(tag = "type")]
 enum Request {
     #[serde(rename = "highlight")]
-    Highlight { buf: i64, lang: String, text: String },
+    Highlight {
+        buf: i64,
+        lang: String,
+        text: String,
+    },
     #[serde(rename = "symbols")]
-    Symbols { buf: i64, lang: String, text: String },
+    Symbols {
+        buf: i64,
+        lang: String,
+        text: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -58,18 +66,33 @@ fn main() -> Result<()> {
         let req = match serde_json::from_str::<Request>(&line) {
             Ok(r) => r,
             Err(e) => {
-                send(&mut out, &Event::Error { message: format!("invalid request: {e}") })?;
+                send(
+                    &mut out,
+                    &Event::Error {
+                        message: format!("invalid request: {e}"),
+                    },
+                )?;
                 continue;
             }
         };
         match req {
             Request::Highlight { buf, lang, text } => match run_highlight(&lang, &text) {
                 Ok(spans) => send(&mut out, &Event::Highlights { buf, spans })?,
-                Err(e) => send(&mut out, &Event::Error { message: e.to_string() })?,
+                Err(e) => send(
+                    &mut out,
+                    &Event::Error {
+                        message: e.to_string(),
+                    },
+                )?,
             },
             Request::Symbols { buf, lang, text } => match run_symbols(&lang, &text) {
                 Ok(symbols) => send(&mut out, &Event::Symbols { buf, symbols })?,
-                Err(e) => send(&mut out, &Event::Error { message: e.to_string() })?,
+                Err(e) => send(
+                    &mut out,
+                    &Event::Error {
+                        message: e.to_string(),
+                    },
+                )?,
             },
         }
     }
@@ -86,6 +109,17 @@ fn send(out: &mut std::io::Stdout, ev: &Event) -> Result<()> {
 }
 
 fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
+    if lang == "vim" {
+        // 优先尝试 tree-sitter-vim 查询；失败则回退到简单解析
+        if let Ok(spans) =
+            run_ts_query_highlight(tree_sitter_vim::language(), queries::VIM_QUERY, text)
+        {
+            return Ok(spans);
+        } else {
+            return Ok(highlight_vim_naive(text));
+        }
+    }
+
     let mut parser = tree_sitter::Parser::new();
 
     let (language, query_src) = match lang {
@@ -97,7 +131,9 @@ fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
     };
     parser.set_language(&language.into())?;
 
-    let tree = parser.parse(text, None).ok_or_else(|| anyhow!("parse failed"))?;
+    let tree = parser
+        .parse(text, None)
+        .ok_or_else(|| anyhow!("parse failed"))?;
     let root = tree.root_node();
 
     let query = tree_sitter::Query::new(&language.into(), query_src)?;
@@ -129,6 +165,16 @@ fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
 }
 
 fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
+    if lang == "vim" {
+        if let Ok(symbols) =
+            run_ts_query_symbols(tree_sitter_vim::language(), queries::VIM_SYM_QUERY, text)
+        {
+            return Ok(symbols);
+        } else {
+            return Ok(symbols_vim_naive(text));
+        }
+    }
+
     let mut parser = tree_sitter::Parser::new();
 
     let (language, query_src) = match lang {
@@ -140,7 +186,9 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
     };
     parser.set_language(&language.into())?;
 
-    let tree = parser.parse(text, None).ok_or_else(|| anyhow!("parse failed"))?;
+    let tree = parser
+        .parse(text, None)
+        .ok_or_else(|| anyhow!("parse failed"))?;
     let root = tree.root_node();
 
     let query = tree_sitter::Query::new(&language.into(), query_src)?;
@@ -177,6 +225,362 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
     // 按位置排序，便于阅读
     symbols.sort_by_key(|s| (s.lnum, s.col));
     Ok(symbols)
+}
+
+fn run_ts_query_highlight(
+    language: tree_sitter::Language,
+    query_src: &str,
+    text: &str,
+) -> Result<Vec<Span>> {
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language.clone().into())?;
+    let tree = parser
+        .parse(text, None)
+        .ok_or_else(|| anyhow!("parse failed"))?;
+    let root = tree.root_node();
+    let query = tree_sitter::Query::new(&language.into(), query_src)?;
+    let mut cursor = tree_sitter::QueryCursor::new();
+
+    let mut spans = Vec::new();
+    let mut it = cursor.captures(&query, root, text.as_bytes());
+    while let Some((m, cap_ix)) = it.next() {
+        let cap = m.captures[*cap_ix];
+        let node = cap.node;
+        if node.start_byte() >= node.end_byte() {
+            continue;
+        }
+        let cname = query.capture_names()[cap.index as usize];
+        let group = map_capture_to_group(cname).to_string();
+        let sp = node.start_position();
+        let ep = node.end_position();
+        spans.push(Span {
+            lnum: sp.row as u32 + 1,
+            col: sp.column as u32 + 1,
+            end_lnum: ep.row as u32 + 1,
+            end_col: ep.column as u32 + 1,
+            group,
+        });
+    }
+    Ok(spans)
+}
+
+fn run_ts_query_symbols(
+    language: tree_sitter::Language,
+    query_src: &str,
+    text: &str,
+) -> Result<Vec<Symbol>> {
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language.clone().into())?;
+    let tree = parser
+        .parse(text, None)
+        .ok_or_else(|| anyhow!("parse failed"))?;
+    let root = tree.root_node();
+    let query = tree_sitter::Query::new(&language.into(), query_src)?;
+    let mut cursor = tree_sitter::QueryCursor::new();
+
+    let mut symbols = Vec::new();
+    let bytes = text.as_bytes();
+    let mut it = cursor.captures(&query, root, bytes);
+    while let Some((m, cap_ix)) = it.next() {
+        let cap = m.captures[*cap_ix];
+        let node = cap.node;
+        if node.start_byte() >= node.end_byte() {
+            continue;
+        }
+        let cname = query.capture_names()[cap.index as usize];
+        let kind = map_symbol_capture(cname);
+        if kind.is_empty() {
+            continue;
+        }
+        let name = node_text(node, bytes);
+        let sp = node.start_position();
+        symbols.push(Symbol {
+            name,
+            kind: kind.to_string(),
+            lnum: sp.row as u32 + 1,
+            col: sp.column as u32 + 1,
+        });
+    }
+    symbols.sort_by_key(|s| (s.lnum, s.col));
+    Ok(symbols)
+}
+
+// ===== Vim 的回退解析（不依赖 tree-sitter），保证可用 =====
+
+fn highlight_vim_naive(text: &str) -> Vec<Span> {
+    let mut spans = Vec::with_capacity(512);
+    for (i, line) in text.lines().enumerate() {
+        let lnum = i as u32 + 1;
+        let bytes = line.as_bytes();
+
+        // 1) 注释：行首可选空白后紧跟 "
+        if let Some(non_ws_ix) = line.find(|c: char| !c.is_whitespace()) {
+            if line[non_ws_ix..].starts_with('"') {
+                spans.push(Span {
+                    lnum,
+                    col: (non_ws_ix as u32) + 1,
+                    end_lnum: lnum,
+                    end_col: (line.len() as u32) + 1,
+                    group: "TSComment".to_string(),
+                });
+                continue; // 整行注释；后续忽略
+            }
+        }
+
+        // 2) 字符串：简单匹配单引号包裹（不处理转义）
+        let mut idx = 0usize;
+        while let Some(s) = line[idx..].find('\'') {
+            let start = idx + s;
+            if let Some(e) = line[start + 1..].find('\'') {
+                let end = start + 1 + e + 1;
+                spans.push(Span {
+                    lnum,
+                    col: (start as u32) + 1,
+                    end_lnum: lnum,
+                    end_col: (end as u32) + 1,
+                    group: "TSString".to_string(),
+                });
+                idx = end;
+            } else {
+                break;
+            }
+        }
+
+        // 3) 关键字（词边界）和运算符：粗略匹配
+        let keywords = [
+            "let",
+            "function",
+            "endfunction",
+            "return",
+            "if",
+            "endif",
+            "elseif",
+            "else",
+            "for",
+            "endfor",
+            "while",
+            "endwhile",
+            "try",
+            "catch",
+            "finally",
+            "endtry",
+            "set",
+            "autocmd",
+            "augroup",
+            "end",
+            "command",
+            "lua",
+            "map",
+            "noremap",
+            "nnoremap",
+            "inoremap",
+            "vnoremap",
+            "tnoremap",
+        ];
+        for kw in keywords.iter() {
+            // 查找非字母边界上的 kw
+            let mut pos = 0usize;
+            while let Some(p) = line[pos..].find(kw) {
+                let s = pos + p;
+                let b1 = s.checked_sub(1).map(|i| line.as_bytes()[i]).unwrap_or(b' ');
+                let b2 = line.as_bytes().get(s + kw.len()).copied().unwrap_or(b' ');
+                let is_boundary = !is_ident_char(b1) && !is_ident_char(b2);
+                if is_boundary {
+                    spans.push(Span {
+                        lnum,
+                        col: (s as u32) + 1,
+                        end_lnum: lnum,
+                        end_col: (s as u32) + (kw.len() as u32) + 1,
+                        group: "TSKeyword".to_string(),
+                    });
+                }
+                pos = s + kw.len();
+            }
+        }
+
+        // 4) 数字：连续数字
+        let mut j = 0usize;
+        while j < bytes.len() {
+            if bytes[j].is_ascii_digit() {
+                let k = j
+                    + 1
+                    + line[j + 1..]
+                        .find(|c: char| !c.is_ascii_digit())
+                        .unwrap_or(0);
+                spans.push(Span {
+                    lnum,
+                    col: (j as u32) + 1,
+                    end_lnum: lnum,
+                    end_col: (k as u32) + 1,
+                    group: "TSNumber".to_string(),
+                });
+                j = k;
+            } else {
+                j += 1;
+            }
+        }
+
+        // 5) 括号/分隔符/简单运算符
+        let puncts = ['(', ')', '{', '}', '[', ']', ',', ';', '.', '='];
+        for (ci, ch) in line.chars().enumerate() {
+            if puncts.contains(&ch) {
+                let grp = match ch {
+                    '(' | ')' | '{' | '}' | '[' | ']' => "TSPunctBracket",
+                    ',' | ';' | '.' => "TSPunctDelimiter",
+                    '=' => "TSOperator",
+                    _ => "TSOperator",
+                };
+                spans.push(Span {
+                    lnum,
+                    col: (ci as u32) + 1,
+                    end_lnum: lnum,
+                    end_col: (ci as u32) + 2,
+                    group: grp.to_string(),
+                });
+            }
+        }
+
+        // 6) 简单变量：let 左侧变量名
+        if let Some(pos) = line.find("let") {
+            // 仅在 let 后面的情况
+            let after = &line[pos + 3..];
+            if let Some(name_start_rel) = after.find(|c: char| !c.is_whitespace()) {
+                let name_start = pos + 3 + name_start_rel;
+                // 到等号或空白结束
+                let name_end = name_start
+                    + after[name_start_rel..]
+                        .find(|c: char| c.is_whitespace() || c == '=')
+                        .unwrap_or(after.len() - name_start_rel);
+                if name_end > name_start {
+                    spans.push(Span {
+                        lnum,
+                        col: (name_start as u32) + 1,
+                        end_lnum: lnum,
+                        end_col: (name_end as u32) + 1,
+                        group: "TSVariable".to_string(),
+                    });
+                }
+            }
+        }
+
+        // 7) 函数名：function 或 function! 后紧跟的名字
+        if let Some(fn_pos) = line.find("function") {
+            let mut s = fn_pos + "function".len();
+            // 跳过 ! 和空白
+            while s < line.len()
+                && (line.as_bytes()[s] == b'!' || line.as_bytes()[s].is_ascii_whitespace())
+            {
+                s += 1;
+            }
+            let name_start = s;
+            while s < line.len() {
+                let b = line.as_bytes()[s];
+                if b.is_ascii_whitespace() || b == b'(' {
+                    break;
+                }
+                s += 1;
+            }
+            if s > name_start {
+                spans.push(Span {
+                    lnum,
+                    col: (name_start as u32) + 1,
+                    end_lnum: lnum,
+                    end_col: (s as u32) + 1,
+                    group: "TSFunction".to_string(),
+                });
+            }
+        }
+    }
+    spans
+}
+
+fn is_ident_char(b: u8) -> bool {
+    (b as char).is_ascii_alphanumeric() || b == b'_'
+}
+
+fn symbols_vim_naive(text: &str) -> Vec<Symbol> {
+    let mut syms = Vec::with_capacity(64);
+    for (i, line) in text.lines().enumerate() {
+        let lnum = i as u32 + 1;
+        let trimmed = line.trim_start();
+        // function / function!
+        if trimmed.starts_with("function") {
+            let mut s = "function".len();
+            let bytes = trimmed.as_bytes();
+            while s < trimmed.len() && (bytes[s] == b'!' || bytes[s].is_ascii_whitespace()) {
+                s += 1;
+            }
+            let name_start = s;
+            while s < trimmed.len() {
+                let b = bytes[s];
+                if b.is_ascii_whitespace() || b == b'(' {
+                    break;
+                }
+                s += 1;
+            }
+            if s > name_start {
+                let name = &trimmed[name_start..s];
+                // 列号基于原行
+                let col = (line.len() - trimmed.len() + name_start) as u32 + 1;
+                syms.push(Symbol {
+                    name: name.to_string(),
+                    kind: "function".to_string(),
+                    lnum,
+                    col,
+                });
+            }
+        }
+        // augroup 名字
+        else if trimmed.starts_with("augroup") {
+            let rest = &trimmed["augroup".len()..].trim_start();
+            if !rest.is_empty() {
+                let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+                let name = &rest[..end];
+                let col = (line.len() - trimmed.len()
+                    + "augroup".len()
+                    + (trimmed["augroup".len()..].len() - rest.len()))
+                    as u32
+                    + 1;
+                syms.push(Symbol {
+                    name: name.to_string(),
+                    kind: "namespace".to_string(),
+                    lnum,
+                    col,
+                });
+            }
+        }
+        // command 名字
+        else if trimmed.starts_with("command") {
+            let mut s = "command".len();
+            let bytes = trimmed.as_bytes();
+            if s < trimmed.len() && bytes[s] == b'!' {
+                s += 1;
+            }
+            while s < trimmed.len() && bytes[s].is_ascii_whitespace() {
+                s += 1;
+            }
+            let name_start = s;
+            while s < trimmed.len() {
+                let b = bytes[s];
+                if b.is_ascii_whitespace() {
+                    break;
+                }
+                s += 1;
+            }
+            if s > name_start {
+                let name = &trimmed[name_start..s];
+                let col = (line.len() - trimmed.len() + name_start) as u32 + 1;
+                syms.push(Symbol {
+                    name: name.to_string(),
+                    kind: "macro".to_string(),
+                    lnum,
+                    col,
+                });
+            }
+        }
+    }
+    syms.sort_by_key(|s| (s.lnum, s.col));
+    syms
 }
 
 fn node_text(node: tree_sitter::Node, bytes: &[u8]) -> String {

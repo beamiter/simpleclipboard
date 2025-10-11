@@ -43,6 +43,8 @@ def DetectLang(buf: number): string
     return 'c'
   elseif ft ==# 'cpp' || ft ==# 'cc'
     return 'cpp'
+  elseif ft ==# 'vim' || ft ==# 'vimrc'
+    return 'vim'
   else
     return ''
   endif
@@ -50,7 +52,10 @@ enddef
 
 def IsSupportedLang(buf: number): bool
   var ft = getbufvar(buf, '&filetype')
-  var supported = ['rust', 'javascript', 'javascriptreact', 'jsx', 'c', 'cpp', 'cc']
+  var supported = [
+    'rust', 'javascript', 'javascriptreact', 'jsx', 'c', 'cpp', 'cc',
+    'vim', 'vimrc'
+  ]
   return index(supported, ft) >= 0
 enddef
 
@@ -341,7 +346,6 @@ export def Enable()
 
   # 对当前缓冲立即请求一次
   call ts_hl#OnBufEvent(bufnr())
-  echo '[ts-hl] enabled'
 enddef
 
 export def Disable()

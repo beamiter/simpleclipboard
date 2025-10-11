@@ -13,7 +13,8 @@ g:ts_hl_daemon_path = get(g:, 'ts_hl_daemon_path', '')
 g:ts_hl_debounce = get(g:, 'ts_hl_debounce', 120)
 
 # 自动启用的文件类型列表（为空则禁用自动启用）
-g:ts_hl_auto_enable_filetypes = get(g:, 'ts_hl_auto_enable_filetypes', ['rust', 'c', 'cpp', 'javascript'])
+g:ts_hl_auto_enable_filetypes = get(g:, 'ts_hl_auto_enable_filetypes',
+  ['rust', 'c', 'cpp', 'javascript', 'vim'])
 
 # 当没有活跃缓冲区时是否自动停止 daemon（1=是, 0=否）
 g:ts_hl_auto_stop = get(g:, 'ts_hl_auto_stop', 1)
