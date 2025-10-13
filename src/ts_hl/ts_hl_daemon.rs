@@ -13,6 +13,10 @@ enum Request {
         buf: i64,
         lang: String,
         text: String,
+        #[serde(default)]
+        lstart: Option<u32>, // 可选：可见范围开始行(1-based)
+        #[serde(default)]
+        lend: Option<u32>,   // 可选：可见范围结束行(1-based)
     },
     #[serde(rename = "symbols")]
     Symbols {
@@ -88,15 +92,18 @@ fn main() -> Result<()> {
             }
         };
         match req {
-            Request::Highlight { buf, lang, text } => match run_highlight(&lang, &text) {
-                Ok(spans) => send(&mut out, &Event::Highlights { buf, spans })?,
-                Err(e) => send(
-                    &mut out,
-                    &Event::Error {
-                        message: e.to_string(),
-                    },
-                )?,
-            },
+            Request::Highlight { buf, lang, text, lstart, lend } => {
+                let lrange = lstart.zip(lend);
+                match run_highlight(&lang, &text, lrange) {
+                    Ok(spans) => send(&mut out, &Event::Highlights { buf, spans })?,
+                    Err(e) => send(
+                        &mut out,
+                        &Event::Error {
+                            message: e.to_string(),
+                        },
+                    )?,
+                }
+            }
             Request::Symbols { buf, lang, text } => match run_symbols(&lang, &text) {
                 Ok(symbols) => send(&mut out, &Event::Symbols { buf, symbols })?,
                 Err(e) => send(
@@ -124,12 +131,20 @@ fn send(out: &mut std::io::Stdout, ev: &Event) -> Result<()> {
     Ok(())
 }
 
-fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
+// 支持按可选的行范围过滤（有重叠的才返回）
+fn run_highlight(lang: &str, text: &str, lrange: Option<(u32, u32)>) -> Result<Vec<Span>> {
     if lang == "vim" {
-        if let Ok(spans) = run_ts_query_highlight(text) {
+        if let Ok(mut spans) = run_ts_query_highlight(text) {
+            if let Some((ls, le)) = lrange {
+                spans.retain(|sp| !(sp.end_lnum < ls || sp.lnum > le));
+            }
             return Ok(spans);
         } else {
-            return Ok(highlight_vim_naive(text));
+            let mut spans = highlight_vim_naive(text);
+            if let Some((ls, le)) = lrange {
+                spans.retain(|sp| !(sp.end_lnum < ls || sp.lnum > le));
+            }
+            return Ok(spans);
         }
     }
 
@@ -151,7 +166,7 @@ fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
     let query = tree_sitter::Query::new(&language.into(), query_src)?;
     let mut cursor = tree_sitter::QueryCursor::new();
 
-    let mut spans = Vec::with_capacity(2048);
+    let mut spans = Vec::with_capacity(4096);
     let mut it = cursor.captures(&query, root, text.as_bytes());
     while let Some((m, cap_ix)) = it.next() {
         let cap = m.captures[*cap_ix];
@@ -159,11 +174,19 @@ fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
         if node.start_byte() >= node.end_byte() {
             continue;
         }
-        let cname = query.capture_names()[cap.index as usize];
-        let group = map_capture_to_group(cname).to_string();
-
         let sp = node.start_position();
         let ep = node.end_position();
+
+        if let Some((ls, le)) = lrange {
+            let nl1 = sp.row as u32 + 1;
+            let nl2 = ep.row as u32 + 1;
+            if nl2 < ls || nl1 > le {
+                continue;
+            }
+        }
+
+        let cname = query.capture_names()[cap.index as usize];
+        let group = map_capture_to_group(cname).to_string();
         spans.push(Span {
             lnum: sp.row as u32 + 1,
             col: sp.column as u32 + 1,
@@ -213,8 +236,7 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
     let mut symbols = Vec::with_capacity(256);
     let bytes = text.as_bytes();
 
-    // 去重集合，包含容器信息
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     let mut seen = HashSet::<(
         String,
         String,
@@ -225,8 +247,7 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
         Option<u32>,
         Option<u32>,
     )>::new();
-    // 用于 function vs method 优先保留 method
-    let mut seen_at = std::collections::HashMap::<(u32, u32), String>::new();
+    let mut seen_at = HashMap::<(u32, u32), String>::new();
 
     let mut it = cursor.captures(&query, root, bytes);
     while let Some((m, cap_ix)) = it.next() {
@@ -246,11 +267,9 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
         let lnum = sp.row as u32 + 1;
         let col = sp.column as u32 + 1;
 
-        // 归属容器（含位置）
         let (mut ckind, mut cname_opt, mut clnum, mut ccol) = (None, None, None, None);
         if lang == "rust" {
             match kind.as_str() {
-                // 字段：优先归属到最近的枚举变体，否则归属 struct，再否则归属 mod
                 "field" => {
                     if let Some(vinfo) = variant_info(node, bytes) {
                         ckind = Some("variant".to_string());
@@ -269,7 +288,6 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
                         ccol = Some(minfo.2);
                     }
                 }
-                // 变体归属到枚举（父容器）
                 "variant" => {
                     if let Some(einfo) = enum_info(node, bytes) {
                         ckind = Some("enum".to_string());
@@ -278,7 +296,6 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
                         ccol = Some(einfo.2);
                     }
                 }
-                // 方法归属到类型（impl 的类型名）
                 "method" => {
                     if let Some(tinfo) = impl_type_info(node, bytes) {
                         ckind = Some("type".to_string());
@@ -287,7 +304,6 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
                         ccol = Some(tinfo.2);
                     }
                 }
-                // 函数：内嵌函数归属到外层函数，否则归属 mod
                 "function" => {
                     if let Some(finfo) = outer_fn_info(node, bytes) {
                         ckind = Some("function".to_string());
@@ -301,7 +317,6 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
                         ccol = Some(minfo.2);
                     }
                 }
-                // const 归属到 mod
                 "const" => {
                     if let Some(minfo) = mod_info(node, bytes) {
                         ckind = Some("namespace".to_string());
@@ -314,7 +329,6 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
             }
         }
 
-        // function vs method 去重：同起点优先保留 method
         if let Some(prev) = seen_at.get(&(lnum, col)) {
             if prev == "method" && kind == "function" {
                 continue;
@@ -331,7 +345,6 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
             seen_at.insert((lnum, col), kind.clone());
         }
 
-        // 全量去重：包含容器信息
         let key = (
             kind.clone(),
             name.clone(),

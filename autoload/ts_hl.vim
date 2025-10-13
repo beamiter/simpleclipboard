@@ -3,9 +3,12 @@ vim9script
 # =============== 状态 ===============
 var s_job: any = v:null
 var s_running: bool = false
-var s_req_timer: number = 0
 var s_enabled: bool = false
 var s_active_bufs: dict<bool> = {}
+# 每个缓冲的请求定时器
+var s_req_timers: dict<number> = {}
+# 上次应用的可见范围缓存 {bufnr: [start_lnum, end_lnum]}
+var s_last_ranges: dict<list<number>> = {}
 # =============== 侧边栏状态 ===============
 var s_outline_win: number = 0
 var s_outline_buf: number = 0
@@ -160,20 +163,54 @@ def FindDaemon(): string
   return ''
 enddef
 
+# 计算缓冲区在所有窗口中的联合可见范围，并加上上下边距
+def VisibleRangeForBuf(buf: number): list<number>
+  var lnum_end = len(getbufline(buf, 1, '$'))
+  var wins = win_findbuf(buf)
+  if len(wins) == 0
+    return [1, lnum_end]
+  endif
+  var start = lnum_end
+  var stop  = 1
+  for w in wins
+    var info = getwininfo(w)[0]
+    start = min([start, info.topline])
+    stop  = max([stop, info.botline])
+  endfor
+  var margin = get(g:, 'ts_hl_view_margin', 120)
+  start = max([1, start - margin])
+  stop  = min([lnum_end, stop + margin])
+  return [start, stop]
+enddef
+
 def ApplyHighlights(buf: number, spans: list<dict<any>>)
   if !bufexists(buf)
     return
   endif
-  var lnum_end = len(getbufline(buf, 1, '$'))
-  try
-    call prop_clear(1, lnum_end, {bufnr: buf})
-  catch
-  endtry
+
+  var [vstart, vend] = VisibleRangeForBuf(buf)
+
+  # 清除上一次应用的范围，避免全缓冲区清空
+  if has_key(s_last_ranges, buf)
+    var prev = s_last_ranges[buf]
+    if len(prev) == 2 && prev[1] >= prev[0]
+      try
+        call prop_clear(prev[0], prev[1], {bufnr: buf})
+      catch
+      endtry
+    endif
+  endif
+
+  var applied = 0
+  var max_props = get(g:, 'ts_hl_max_props', 20000)
 
   for s in spans
     var l1 = get(s, 'lnum', 1)
-    var c1 = max([1, get(s, 'col', 1)])
     var l2 = get(s, 'end_lnum', l1)
+    if l2 < vstart || l1 > vend
+      continue
+    endif
+    var c1 = max([1, get(s, 'col', 1)])
     var c2 = max([1, get(s, 'end_col', c1)])
     var tp = get(s, 'group', 'TSVariable')
     if l1 <= 0 || l2 <= 0
@@ -183,7 +220,13 @@ def ApplyHighlights(buf: number, spans: list<dict<any>>)
       call prop_add(l1, c1, {type: tp, bufnr: buf, end_lnum: l2, end_col: c2})
     catch
     endtry
+    applied += 1
+    if applied >= max_props
+      break
+    endif
   endfor
+
+  s_last_ranges[buf] = [vstart, vend]
 enddef
 
 def OnDaemonEvent(line: string)
@@ -269,7 +312,17 @@ def Send(req: dict<any>)
   endtry
 enddef
 
-def ScheduleRequest(buf: number)
+def StopBufTimer(buf: number)
+  if has_key(s_req_timers, buf) && s_req_timers[buf] != 0 && exists('*timer_stop')
+    try
+      call timer_stop(s_req_timers[buf])
+    catch
+    endtry
+    s_req_timers[buf] = 0
+  endif
+enddef
+
+def ScheduleRequest(buf: number, reason: string = 'edit')
   if !s_enabled
     return
   endif
@@ -277,19 +330,14 @@ def ScheduleRequest(buf: number)
     return
   endif
 
-  if s_req_timer != 0 && exists('*timer_stop')
-    try
-      call timer_stop(s_req_timer)
-    catch
-    endtry
-    s_req_timer = 0
-  endif
+  StopBufTimer(buf)
+
+  var ms = reason ==# 'scroll' ? get(g:, 'ts_hl_scroll_debounce', 300) : get(g:, 'ts_hl_debounce', 120)
 
   if exists('*timer_start')
     try
-      var ms = get(g:, 'ts_hl_debounce', 120)
-      s_req_timer = timer_start(ms, (id) => {
-        s_req_timer = 0
+      s_req_timers[buf] = timer_start(ms, (id) => {
+        s_req_timers[buf] = 0
         RequestNow(buf)
       })
     catch
@@ -320,7 +368,8 @@ def AutoEnableForBuffer(buf: number)
     Enable()
   endif
   s_active_bufs[buf] = true
-  RequestNow(buf)
+  # 懒高亮：不要立刻请求，交给调度
+  ScheduleRequest(buf, 'edit')
 enddef
 
 def CheckAndStopDaemon()
@@ -353,10 +402,11 @@ export def Enable()
     autocmd BufEnter,BufWinEnter * call ts_hl#OnBufEvent(bufnr())
     autocmd FileType * call ts_hl#OnBufEvent(bufnr())
     autocmd TextChanged,TextChangedI * call ts_hl#OnBufEvent(bufnr())
+    autocmd CursorMoved,CursorMovedI * call ts_hl#OnScroll(bufnr())
     autocmd BufWinLeave,BufDelete * call ts_hl#OnBufClose(str2nr(expand('<abuf>')))
   augroup END
 
-  call ts_hl#OnBufEvent(bufnr())
+  # 不在此处立刻触发 OnBufEvent，避免重复请求风暴
 enddef
 
 export def Disable()
@@ -367,6 +417,17 @@ export def Disable()
   augroup TsHl
     autocmd!
   augroup END
+
+  # 清理所有缓冲的定时器
+  for [k, tid] in items(s_req_timers)
+    if tid != 0 && exists('*timer_stop')
+      try
+        call timer_stop(tid)
+      catch
+      endtry
+    endif
+  endfor
+  s_req_timers = {}
 
   if s_running && s_job != v:null
     try
@@ -391,14 +452,23 @@ enddef
 
 export def OnBufEvent(buf: number)
   AutoEnableForBuffer(buf)
-  ScheduleRequest(buf)
+  ScheduleRequest(buf, 'edit')
   ScheduleSymbols(buf)
+enddef
+
+export def OnScroll(buf: number)
+  if !bufexists(buf)
+    return
+  endif
+  AutoEnableForBuffer(buf)
+  ScheduleRequest(buf, 'scroll')
 enddef
 
 export def OnBufClose(buf: number)
   if has_key(s_active_bufs, buf)
     s_active_bufs[buf] = false
   endif
+  StopBufTimer(buf)
   if exists('*timer_start')
     timer_start(2000, (id) => CheckAndStopDaemon())
   endif
@@ -952,8 +1022,10 @@ def RequestNow(buf: number)
   endif
   var lines = getbufline(buf, 1, '$')
   var text = join(lines, "\n")
-  Send({type: 'highlight', buf: buf, lang: lang, text: text})
-  Log('Requested highlight for buffer ' .. buf .. ' (' .. lang .. ')')
+
+  var [vstart, vend] = VisibleRangeForBuf(buf)
+  Send({type: 'highlight', buf: buf, lang: lang, text: text, lstart: vstart, lend: vend})
+  Log('Requested highlight for buffer ' .. buf .. ' (' .. lang .. ') range ' .. vstart .. '-' .. vend)
 
   if s_outline_win != 0 && s_outline_src_buf == buf
     Send({type: 'symbols', buf: buf, lang: lang, text: text})

@@ -22,9 +22,14 @@ g:ts_hl_outline_fancy = get(g:, 'ts_hl_outline_fancy', 1)
 g:ts_hl_outline_ascii = get(g:, 'ts_hl_outline_ascii', 0)
 g:ts_hl_outline_show_position = get(g:, 'ts_hl_outline_show_position', 1)
 
-# 新增：Outline 过滤配置
+# Outline 过滤配置
 g:ts_hl_outline_hide_inner_functions = get(g:, 'ts_hl_outline_hide_inner_functions', 1)
 g:ts_hl_outline_exclude_patterns = get(g:, 'ts_hl_outline_exclude_patterns', [])
+
+# =============== 新增：可见范围/懒高亮配置 ===============
+g:ts_hl_view_margin = get(g:, 'ts_hl_view_margin', 120)          # 可见范围上下缓冲行数
+g:ts_hl_scroll_debounce = get(g:, 'ts_hl_scroll_debounce', 300)   # 滚动/移动防抖(ms)
+g:ts_hl_max_props = get(g:, 'ts_hl_max_props', 20000)             # 单次最多 textprop 数
 
 # =============== 命令 ===============
 command! TsHlEnable  call ts_hl#Enable()
