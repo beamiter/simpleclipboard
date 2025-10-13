@@ -277,6 +277,11 @@ def OnDaemonEvent(line: string)
   endif
   if ev.type ==# 'highlights'
     var buf = get(ev, 'buf', 0)
+    # 全局暂停时丢弃高亮结果
+    if IsHighlightSuspended(buf)
+      if has_key(s_inflight_hl, buf) | s_inflight_hl[buf] = false | endif
+      return
+    endif
     var spans = get(ev, 'spans', [])
     ApplyHighlights(buf, spans)
     if has_key(s_inflight_hl, buf) | s_inflight_hl[buf] = false | endif
@@ -357,11 +362,68 @@ def StopBufTimer(buf: number)
   endif
 enddef
 
+# =============== 全局暂停高亮：工具函数 ===============
+def IsHighlightSuspended(buf: number): bool
+  # 全局暂停：只要 outline 窗口开着且配置启用，就暂停所有缓冲高亮
+  return s_outline_win != 0 && get(g:, 'ts_hl_suspend_highlight_on_outline', 0)
+enddef
+
+def ClearPropsForBuf(buf: number)
+  if !bufexists(buf)
+    return
+  endif
+  if getbufvar(buf, '&filetype') ==# 'ts_hl_outline'
+    return
+  endif
+  try
+    if get(g:, 'ts_hl_clear_scope_on_suspend', 'visible') ==# 'buffer'
+      var last = BufLineCount(buf)
+      call prop_clear(1, last, {bufnr: buf})
+    else
+      var [vs, ve] = VisibleRangeForBuf(buf)
+      call prop_clear(vs, ve, {bufnr: buf})
+    endif
+  catch
+  endtry
+enddef
+
+def ClearAllVisiblePropsOnSuspend()
+  var cur = bufnr()
+  if bufexists(cur) | ClearPropsForBuf(cur) | endif
+  for [k, active] in items(s_active_bufs)
+    if active
+      var b = str2nr(k)
+      if bufexists(b)
+        ClearPropsForBuf(b)
+      endif
+    endif
+  endfor
+enddef
+
+def ResumeAllHighlights()
+  for [k, active] in items(s_active_bufs)
+    if active
+      var b = str2nr(k)
+      if bufexists(b)
+        ScheduleRequest(b, 'edit')
+      endif
+    endif
+  endfor
+  var cur = bufnr()
+  if bufexists(cur)
+    ScheduleRequest(cur, 'edit')
+  endif
+enddef
+
 def ScheduleRequest(buf: number, reason: string = 'edit')
   if !s_enabled
     return
   endif
   if !IsSupportedLang(buf)
+    return
+  endif
+  # 全局暂停时不再调度高亮
+  if IsHighlightSuspended(buf)
     return
   endif
 
@@ -1064,6 +1126,12 @@ export def OutlineOpen()
     var width = get(g:, 'ts_hl_outline_width', 32)
     execute 'vertical resize ' .. width
 
+    # 全局暂停：打开时按配置清理各缓冲已绘制 props
+    if get(g:, 'ts_hl_suspend_highlight_on_outline', 0)
+          \ && get(g:, 'ts_hl_clear_props_on_suspend', 1)
+      ClearAllVisiblePropsOnSuspend()
+    endif
+
     OutlineRefresh()
   finally
     if curwin != 0
@@ -1087,6 +1155,11 @@ export def OutlineClose()
   s_outline_linemap = []
   s_outline_src_buf = 0
   echo '[ts-hl] outline closed'
+
+  # 全局暂停 -> 恢复：关闭后主动刷新所有活跃缓冲
+  if get(g:, 'ts_hl_suspend_highlight_on_outline', 0)
+    ResumeAllHighlights()
+  endif
 enddef
 
 export def OutlineToggle()
@@ -1135,6 +1208,11 @@ def RequestNow(buf: number)
   if !EnsureDaemon() | return | endif
   var lang = DetectLang(buf)
   if lang ==# '' || !bufexists(buf) | return | endif
+
+  # 全局暂停时不发送高亮请求
+  if IsHighlightSuspended(buf)
+    return
+  endif
 
   # in-flight 去重：同一 buf 的 highlight 请求未返回前不再发送
   if get(s_inflight_hl, buf, false)

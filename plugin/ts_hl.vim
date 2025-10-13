@@ -23,7 +23,7 @@ g:ts_hl_outline_disable_props = get(g:, 'ts_hl_outline_disable_props', 0)
 g:ts_hl_outline_hide_icon = get(g:, 'ts_hl_outline_hide_icon', 0)
 g:ts_hl_outline_ascii = get(g:, 'ts_hl_outline_ascii', 0)
 g:ts_hl_outline_show_position = get(g:, 'ts_hl_outline_show_position', 1)
-g:ts_hl_outline_max_items = get(g:, 'ts_hl_outline_max_items', 400)
+g:ts_hl_outline_max_items = get(g:, 'ts_hl_outline_max_items', 1000)
 
 # Outline 过滤配置
 g:ts_hl_outline_hide_inner_functions = get(g:, 'ts_hl_outline_hide_inner_functions', 1)
@@ -31,9 +31,17 @@ g:ts_hl_outline_exclude_patterns = get(g:, 'ts_hl_outline_exclude_patterns', [])
 
 # =============== 可见范围/懒高亮配置 ===============
 g:ts_hl_view_margin = get(g:, 'ts_hl_view_margin', 120)            # 高亮用：上下缓冲行数
-g:ts_hl_symbols_view_margin = get(g:, 'ts_hl_symbols_view_margin', 5000)  # 符号用：上下缓冲行数
+g:ts_hl_symbols_view_margin = get(g:, 'ts_hl_symbols_view_margin', 50000)  # 符号用：上下缓冲行数
 g:ts_hl_scroll_debounce = get(g:, 'ts_hl_scroll_debounce', 300)     # 滚动/移动防抖(ms)
 g:ts_hl_max_props = get(g:, 'ts_hl_max_props', 20000)               # 单次最多 textprop 数
+
+# =============== 新增：Outline 打开时全局暂停高亮 ===============
+# 1=启用，0=禁用
+g:ts_hl_suspend_highlight_on_outline = get(g:, 'ts_hl_suspend_highlight_on_outline', 1)
+# 暂停时是否清掉已有的 textprop（默认清理）
+g:ts_hl_clear_props_on_suspend = get(g:, 'ts_hl_clear_props_on_suspend', 1)
+# 清理范围：'visible' 只清可见区（轻），'buffer' 清全缓冲（重）
+g:ts_hl_clear_scope_on_suspend = get(g:, 'ts_hl_clear_scope_on_suspend', 'visible')
 
 # =============== 命令 ===============
 command! TsHlEnable  call ts_hl#Enable()
