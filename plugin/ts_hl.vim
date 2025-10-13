@@ -31,7 +31,7 @@ g:ts_hl_outline_exclude_patterns = get(g:, 'ts_hl_outline_exclude_patterns', [])
 
 # =============== 可见范围/懒高亮配置 ===============
 g:ts_hl_view_margin = get(g:, 'ts_hl_view_margin', 120)            # 高亮用：上下缓冲行数
-g:ts_hl_symbols_view_margin = get(g:, 'ts_hl_symbols_view_margin', 50000)  # 符号用：上下缓冲行数
+g:ts_hl_symbols_view_margin = get(g:, 'ts_hl_symbols_view_margin', 10000)  # 符号用：上下缓冲行数
 g:ts_hl_scroll_debounce = get(g:, 'ts_hl_scroll_debounce', 300)     # 滚动/移动防抖(ms)
 g:ts_hl_max_props = get(g:, 'ts_hl_max_props', 20000)               # 单次最多 textprop 数
 
