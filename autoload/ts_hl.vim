@@ -24,7 +24,8 @@ const s_groups = [
   'TSType', 'TSTypeBuiltin', 'TSNamespace',
   'TSVariable', 'TSVariableParameter', 'TSVariableBuiltin',
   'TSProperty', 'TSField',
-  'TSMacro', 'TSAttribute'
+  'TSMacro', 'TSAttribute',
+  'TSVariant'
   ]
 
 # =============== 工具 ===============
@@ -69,7 +70,7 @@ def IsSupportedLang(buf: number): bool
 enddef
 
 def EnsureHlGroupsAndProps()
-  # 先给这些组一个合理的默认链接/颜色（用户可覆盖）
+  # 默认链接（用户可覆盖）
   highlight default link TSComment Comment
   highlight default link TSString String
   highlight default link TStringRegex String
@@ -94,7 +95,6 @@ def EnsureHlGroupsAndProps()
   highlight default link TSTypeBuiltin Type
   highlight default link TSNamespace Identifier
 
-  # 为了避免"变量全白"，给变量/参数/属性/字段更分明的默认色
   if !hlexists('TSVariable')
     highlight default TSVariable ctermfg=109 guifg=#56b6c2
   else
@@ -119,32 +119,27 @@ def EnsureHlGroupsAndProps()
 
   highlight default link TSMacro Macro
   highlight default link TSAttribute PreProc
+  highlight default link TSVariant Constant
 
   # Outline 专用组
-  if !hlexists('TsHlOutlineGuide')
-    highlight default link TsHlOutlineGuide Comment
+  highlight default link TsHlOutlineGuide Comment
+  highlight default link TsHlOutlinePos LineNr
 
-    if !hlexists('TsHlOutlinePos')
-      highlight default link TsHlOutlinePos LineNr
-    endif
-
-    # 为每个组注册 textprop 类型（已存在则忽略异常）
-    for g in s_groups
-      try
-        call prop_type_add(g, {highlight: g, combine: v:true, priority: 11})
-      catch
-      endtry
-    endfor
-    # Outline 的 textprop 类型
+  # 注册 textprop 类型（总是尝试；已存在忽略）
+  for g in s_groups
     try
-      call prop_type_add('TsHlOutlineGuide', {highlight: 'TsHlOutlineGuide', combine: v:true, priority: 12})
+      call prop_type_add(g, {highlight: g, combine: v:true, priority: 11})
     catch
     endtry
-    try
-      call prop_type_add('TsHlOutlinePos', {highlight: 'TsHlOutlinePos', combine: v:true, priority: 12})
-    catch
-    endtry
-  endif
+  endfor
+  try
+    call prop_type_add('TsHlOutlineGuide', {highlight: 'TsHlOutlineGuide', combine: v:true, priority: 12})
+  catch
+  endtry
+  try
+    call prop_type_add('TsHlOutlinePos', {highlight: 'TsHlOutlinePos', combine: v:true, priority: 12})
+  catch
+  endtry
 enddef
 
 def FindDaemon(): string
@@ -157,7 +152,6 @@ def FindDaemon(): string
     if executable(exe)
       return exe
     endif
-    # Windows 可执行后缀
     var exe2 = dir .. '/lib/ts-hl-daemon.exe'
     if executable(exe2)
       return exe2
@@ -310,31 +304,22 @@ def AutoEnableForBuffer(buf: number)
   if !bufexists(buf)
     return
   endif
-
-  # 检查全局开关
   var auto_enable_ft = get(g:, 'ts_hl_auto_enable_filetypes', [])
   if type(auto_enable_ft) != v:t_list || len(auto_enable_ft) == 0
     return
   endif
-
   var ft = getbufvar(buf, '&filetype')
   if index(auto_enable_ft, ft) < 0
     return
   endif
-
-  # 如果该缓冲区已标记启用，跳过
   if has_key(s_active_bufs, buf) && s_active_bufs[buf]
     return
   endif
-
-  # 自动启用并标记
   if !s_enabled
     Log('Auto-enabling for filetype: ' .. ft)
     Enable()
   endif
   s_active_bufs[buf] = true
-
-  # 立即请求高亮
   RequestNow(buf)
 enddef
 
@@ -346,7 +331,6 @@ def CheckAndStopDaemon()
       break
     endif
   endfor
-
   if !has_active && s_enabled && get(g:, 'ts_hl_auto_stop', 1)
     Log('No active buffers, stopping daemon')
     Disable()
@@ -372,7 +356,6 @@ export def Enable()
     autocmd BufWinLeave,BufDelete * call ts_hl#OnBufClose(str2nr(expand('<abuf>')))
   augroup END
 
-  # 对当前缓冲立即请求一次
   call ts_hl#OnBufEvent(bufnr())
 enddef
 
@@ -385,7 +368,6 @@ export def Disable()
     autocmd!
   augroup END
 
-  # 停止 daemon
   if s_running && s_job != v:null
     try
       call job_stop(s_job, 'term')
@@ -410,7 +392,6 @@ enddef
 export def OnBufEvent(buf: number)
   AutoEnableForBuffer(buf)
   ScheduleRequest(buf)
-  # 如果侧边栏打开，调度符号刷新
   ScheduleSymbols(buf)
 enddef
 
@@ -418,7 +399,6 @@ export def OnBufClose(buf: number)
   if has_key(s_active_bufs, buf)
     s_active_bufs[buf] = false
   endif
-  # 延迟检查，避免频繁启停
   if exists('*timer_start')
     timer_start(2000, (id) => CheckAndStopDaemon())
   endif
@@ -443,13 +423,14 @@ def KindIcon(kind: string): string
     return 'M'
   elseif kind ==# 'property' || kind ==# 'field'
     return 'p'
+  elseif kind ==# 'variant'
+    return 'v'
   else
     return '?'
   endif
 enddef
 
 # =============== Outline UI/Tree 工具 ===============
-# 将 symbol.kind 映射到 TS* 高亮组，用于名称与图标着色
 def KindToTSGroup(kind: string): string
   if kind ==# 'function'
     return 'TSFunction'
@@ -469,6 +450,8 @@ def KindToTSGroup(kind: string): string
     return 'TSProperty'
   elseif kind ==# 'field'
     return 'TSField'
+  elseif kind ==# 'variant'
+    return 'TSVariant'
   else
     return 'TSVariable'
   endif
@@ -490,9 +473,10 @@ def FancyIcon(kind: string): string
     if kind ==# 'macro'        | return '' | endif
     if kind ==# 'property'     | return '' | endif
     if kind ==# 'field'        | return '' | endif
+    if kind ==# 'variant'      | return '' | endif
   endif
-  # ASCII fallback
-  if kind ==# 'function'     | return 'ƒ' | endif
+  # ASCII fallback（纯 ASCII）
+  if kind ==# 'function'     | return 'f' | endif
   if kind ==# 'method'       | return 'm' | endif
   if kind ==# 'type'         | return 'T' | endif
   if kind ==# 'class'        | return 'T' | endif
@@ -504,46 +488,73 @@ def FancyIcon(kind: string): string
   if kind ==# 'macro'        | return 'M' | endif
   if kind ==# 'property'     | return 'p' | endif
   if kind ==# 'field'        | return 'p' | endif
+  if kind ==# 'variant'      | return 'v' | endif
   return '?'
 enddef
 
-# 基于列缩进 + 顺序 的简易树构建
+# 基于“容器归属”的树构建
 # 节点结构: {name, kind, lnum, col, idx, children: []}
-def BuildTreeByIndent(syms: list<dict<any>>): list<dict<any>>
-  var containers = ['namespace', 'class', 'struct', 'enum', 'type']
+def BuildTreeByContainer(syms: list<dict<any>>): list<dict<any>>
   var roots: list<dict<any>> = []
-  var stack: list<dict<any>> = []
+  var containers: dict<any> = {}
+  var container_kinds = ['namespace', 'class', 'struct', 'enum', 'type']
 
+  # 先把容器自身加入（保留位置与 idx，便于跳转到容器定义）
   for i in range(len(syms))
     var s = syms[i]
+    var kind = get(s, 'kind', '')
+    if index(container_kinds, kind) >= 0
+      var name = get(s, 'name', '')
+      var node = {
+        name: name,
+        kind: kind,
+        lnum: get(s, 'lnum', 1),
+        col:  get(s, 'col', 1),
+        idx:  i,
+        children: []
+      }
+      var k = kind .. '::' .. name
+      containers[k] = node
+      roots->add(node)
+    endif
+  endfor
+
+  # 其他符号挂到容器下或顶层
+  for i in range(len(syms))
+    var s = syms[i]
+    var kind = get(s, 'kind', '')
+    if index(container_kinds, kind) >= 0
+      continue
+    endif
     var node = {
       name: get(s, 'name', ''),
-      kind: get(s, 'kind', 'variable'),
+      kind: kind,
       lnum: get(s, 'lnum', 1),
       col:  get(s, 'col', 1),
       idx:  i,
       children: []
     }
-
-    # 根据列缩进弹栈：新符号列 <= 栈顶列，则回到更上层
-    while len(stack) > 0 && node.col <= stack[-1].col
-      stack->remove(-1)
-    endwhile
-
-    if len(stack) == 0
-      roots->add(node)
+    var ck = get(s, 'container_kind', '')
+    var cn = get(s, 'container_name', '')
+    if type(ck) == v:t_string && type(cn) == v:t_string && ck !=# '' && cn !=# ''
+      var k = ck .. '::' .. cn
+      if has_key(containers, k)
+        containers[k].children->add(node)
+      else
+        # 容器未在符号集中出现时，创建一个占位容器
+        var stub = {name: cn, kind: ck, lnum: 1, col: 1, idx: -1, children: [node]}
+        containers[k] = stub
+        roots->add(stub)
+      endif
     else
-      stack[-1].children->add(node)
-    endif
-
-    if index(containers, node.kind) >= 0
-      stack->add(node)
+      roots->add(node)
     endif
   endfor
+
   return roots
 enddef
 
-# 生成树前缀（│├└─）
+# 树前缀（│├└─）
 def BuildTreePrefix(ancestor_last: list<bool>, is_last: bool): string
   var use_ascii = get(g:, 'ts_hl_outline_ascii', 0)
   var s_vert = use_ascii ? '|' : '│'
@@ -561,8 +572,6 @@ def BuildTreePrefix(ancestor_last: list<bool>, is_last: bool): string
 enddef
 
 # 渲染树为行，并计算每段的“字节列”区间（1-based）
-# 返回: {lines, linemap, meta}
-# meta[i] = {prefix_len, icon_col, icon_w, name_start, name_end, pos_start, pos_end, kind}
 def RenderTree(nodes: list<dict<any>>, show_pos: bool): dict<any>
   var lines: list<string> = []
   var linemap: list<number> = []
@@ -575,33 +584,32 @@ def RenderTree(nodes: list<dict<any>>, show_pos: bool): dict<any>
       var prefix = BuildTreePrefix(ancestors, last)
       var icon = FancyIcon(n.kind)
       var name = n.name
-      var pos_str = show_pos ? (' (' .. n.lnum .. ':' .. n.col .. ')') : ''
+      var pos_str = show_pos && n.idx >= 0 ? (' (' .. n.lnum .. ':' .. n.col .. ')') : ''
 
       var line = prefix .. icon .. ' ' .. name .. pos_str
 
-      # 使用 strlen 计算“字节”长度，textprop 需要字节列
       var pref_bytes = strlen(prefix)
       var icon_bytes = strlen(icon)
       var name_bytes = strlen(name)
       var pos_bytes  = strlen(pos_str)
 
       var icon_col   = pref_bytes + 1
-      var name_start = pref_bytes + icon_bytes + 2           # icon + space
+      var name_start = pref_bytes + icon_bytes + 2
       var name_end   = name_start + name_bytes
-      var pos_start  = pos_bytes == 0 ? 0 : name_end         # pos_str 自带开头空格
+      var pos_start  = pos_bytes == 0 ? 0 : name_end
       var pos_end    = pos_bytes == 0 ? 0 : (pos_start + pos_bytes)
 
       lines->add(line)
-      linemap->add(n.idx)
+      linemap->add(n.idx)  # 容器节点为 -1，不可跳转
       meta->add({
-      prefix_len: pref_bytes,
-      icon_col: icon_col,
-      icon_w: icon_bytes,
-      name_start: name_start,
-      name_end: name_end,
-      pos_start: pos_start,
-      pos_end: pos_end,
-      kind: n.kind
+        prefix_len: pref_bytes,
+        icon_col: icon_col,
+        icon_w: icon_bytes,
+        name_start: name_start,
+        name_end: name_end,
+        pos_start: pos_start,
+        pos_end: pos_end,
+        kind: n.kind
       })
 
       if len(n.children) > 0
@@ -633,11 +641,9 @@ def RequestSymbolsNow(buf: number)
 enddef
 
 def ScheduleSymbols(buf: number)
-  # 仅在侧边栏开启且当前 buf 是侧边栏的源 buf 时才调度
   if s_outline_win == 0 || s_outline_src_buf != buf
     return
   endif
-
   if s_sym_timer != 0 && exists('*timer_stop')
     try
       call timer_stop(s_sym_timer)
@@ -645,7 +651,6 @@ def ScheduleSymbols(buf: number)
     endtry
     s_sym_timer = 0
   endif
-
   if exists('*timer_start')
     try
       var ms = get(g:, 'ts_hl_debounce', 120)
@@ -664,7 +669,7 @@ enddef
 def ShowAst(src_buf: number, lines: list<string>)
   var curwin = win_getid()
   try
-    execute 'botright vsplit'
+    execute 'keepalt botright vsplit'
     execute 'enew'
     execute 'file ts-hl-ast'
     setlocal buftype=nofile bufhidden=wipe nobuflisted noswapfile
@@ -700,11 +705,46 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
     return
   endif
 
-  # 缓存原始符号（用于跳转）
-  s_outline_items = syms
+  # 使用局部变量，不要修改只读参数 syms
+  var items: list<dict<any>> = syms
 
-  # 1) 构建树
-  var nodes = BuildTreeByIndent(syms)
+  # 过滤：隐藏内嵌函数（如 dump_ast 里的 walk）
+  var hide_inner = get(g:, 'ts_hl_outline_hide_inner_functions', 1) ? true : false
+  if hide_inner
+    var filtered: list<dict<any>> = []
+    for s in items
+      if get(s, 'container_kind', '') ==# 'function'
+        continue
+      endif
+      filtered->add(s)
+    endfor
+    items = filtered
+  endif
+
+  # 过滤：按名字模式排除
+  var pats = get(g:, 'ts_hl_outline_exclude_patterns', [])
+  if type(pats) == v:t_list && len(pats) > 0
+    var filtered2: list<dict<any>> = []
+    for s in items
+      var skip = false
+      for p in pats
+        if type(p) == v:t_string && p !=# '' && match(get(s, 'name', ''), p) >= 0
+          skip = true
+          break
+        endif
+      endfor
+      if !skip
+        filtered2->add(s)
+      endif
+    endfor
+    items = filtered2
+  endif
+
+  # 缓存符号（用于跳转）
+  s_outline_items = items
+
+  # 1) 构建容器树
+  var nodes = BuildTreeByContainer(items)
 
   # 2) 渲染
   var show_pos = get(g:, 'ts_hl_outline_show_position', 1) ? true : false
@@ -720,14 +760,19 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
         lines = ['<no symbols>']
         s_outline_linemap = [-1]
       endif
-      # 覆盖内容
       call setline(1, lines)
       var last = len(lines)
-      if last > 0
-        call setline(last + 1, [])
+
+      # 删除多余旧行
+      var cur_last = line('$')
+      if cur_last > last
+        try
+          call deletebufline(s_outline_buf, last + 1, '$')
+        catch
+        endtry
       endif
 
-      # 3) 应用 textprop 高亮（树导线、图标/名称、位置列）
+      # 应用 textprop 高亮
       try
         call prop_clear(1, last, {bufnr: s_outline_buf})
       catch
@@ -740,7 +785,6 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
         endif
         var m = out.meta[i]
 
-        # 树导线
         if m.prefix_len > 0
           try
             call prop_add(lnum, 1, {type: 'TsHlOutlineGuide', bufnr: s_outline_buf, end_lnum: lnum, end_col: m.prefix_len + 1})
@@ -748,16 +792,13 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
           endtry
         endif
 
-        # 图标与名称使用 TS 组
         var grp = KindToTSGroup(m.kind)
 
-        # 图标（多字节按字节宽度）
         try
           call prop_add(lnum, m.icon_col, {type: grp, bufnr: s_outline_buf, end_lnum: lnum, end_col: m.icon_col + m.icon_w})
         catch
         endtry
 
-        # 名称
         if m.name_end > m.name_start
           try
             call prop_add(lnum, m.name_start, {type: grp, bufnr: s_outline_buf, end_lnum: lnum, end_col: m.name_end})
@@ -765,7 +806,6 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
           endtry
         endif
 
-        # 位置列
         if m.pos_start > 0 && m.pos_end > m.pos_start
           try
             call prop_add(lnum, m.pos_start, {type: 'TsHlOutlinePos', bufnr: s_outline_buf, end_lnum: lnum, end_col: m.pos_end})
@@ -785,7 +825,6 @@ enddef
 
 # =============== 侧边栏窗口管理 ===============
 export def OutlineOpen()
-  # 侧边栏展示当前窗口的 buffer 符号
   var src = bufnr()
   if !IsSupportedLang(src)
     echo '[ts-hl] outline unsupported for this &filetype'
@@ -797,18 +836,14 @@ export def OutlineOpen()
 
   var curwin = win_getid()
   try
-    # 打开右侧窗口
-    execute 'botright vsplit'
+    execute 'keepalt botright vsplit'
 
-    # 如果已有 buffer，则跳过去，否则新建
     if s_outline_buf != 0 && bufexists(s_outline_buf)
       execute 'buffer ' .. s_outline_buf
     else
       execute 'enew'
       s_outline_buf = bufnr('%')
-      # 命名便于识别
       execute 'file ts-hl-outline'
-      # 设置成 scratch buffer
       setlocal buftype=nofile bufhidden=wipe nobuflisted noswapfile
       setlocal nowrap nonumber norelativenumber signcolumn=no
       setlocal foldcolumn=0
@@ -816,7 +851,7 @@ export def OutlineOpen()
       setlocal filetype=ts_hl_outline
       setlocal nobuflisted
       setlocal conceallevel=0 concealcursor=
-      # 侧边栏快捷键
+      setlocal winfixwidth
       nnoremap <silent><buffer> <CR> :call ts_hl#OutlineJump()<CR>
       nnoremap <silent><buffer> q :call ts_hl#OutlineClose()<CR>
     endif
@@ -824,14 +859,11 @@ export def OutlineOpen()
     s_outline_win = win_getid()
     s_outline_src_buf = src
 
-    # 调整侧边栏宽度
     var width = get(g:, 'ts_hl_outline_width', 32)
     execute 'vertical resize ' .. width
 
-    # 初次刷新
     OutlineRefresh()
   finally
-    # 回到原窗口
     if curwin != 0
       call win_gotoid(curwin)
     endif
@@ -886,7 +918,6 @@ export def OutlineJump()
   var lnum = get(it, 'lnum', 1)
   var col  = get(it, 'col', 1)
 
-  # 找到源 buffer 的窗口
   var wins = win_findbuf(s_outline_src_buf)
   if len(wins) > 0
     call win_gotoid(wins[0])
@@ -914,7 +945,6 @@ def RequestNow(buf: number)
   Send({type: 'highlight', buf: buf, lang: lang, text: text})
   Log('Requested highlight for buffer ' .. buf .. ' (' .. lang .. ')')
 
-  # 如果侧边栏打开且当前 buf 是源 buf，则同时请求 symbols
   if s_outline_win != 0 && s_outline_src_buf == buf
     Send({type: 'symbols', buf: buf, lang: lang, text: text})
     Log('Requested symbols (inline) for buffer ' .. buf .. ' (' .. lang .. ')')

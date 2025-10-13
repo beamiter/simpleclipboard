@@ -11,15 +11,27 @@
 (trait_item  name: (type_identifier) @symbol.type)
 (type_item   name: (type_identifier) @symbol.type)
 
-; const / static
+; const / static (top-level)
 (const_item  name: (identifier) @symbol.const)
 (static_item name: (identifier) @symbol.const)
 
 ; module
 (mod_item name: (identifier) @symbol.namespace)
 
-; macros (invocation site name)
-(macro_invocation macro: (identifier) @symbol.macro)
+; 仅显示“自己定义的宏” (macro_rules!)，不显示调用站点
+(macro_definition name: (identifier) @symbol.macro)
 
 ; fields (struct fields)
 (field_declaration name: (field_identifier) @symbol.field)
+
+; enum variants
+(enum_item
+  (enum_body
+    (enum_variant name: (identifier) @symbol.variant)))
+
+; enum variant named fields（可选，结构式变体里的具名字段）
+(enum_item
+  (enum_body
+    (enum_variant
+      (field_declaration_list
+        (field_declaration name: (field_identifier) @symbol.field)))))

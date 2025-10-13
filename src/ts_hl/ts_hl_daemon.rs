@@ -56,6 +56,9 @@ struct Symbol {
     kind: String,
     lnum: u32,
     col: u32,
+    // 新增：符号归属的容器（可选）
+    container_kind: Option<String>,
+    container_name: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -122,7 +125,6 @@ fn send(out: &mut std::io::Stdout, ev: &Event) -> Result<()> {
 
 fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
     if lang == "vim" {
-        // 优先尝试 tree-sitter-vim 查询；失败则回退到简单解析
         if let Ok(spans) = run_ts_query_highlight(text) {
             return Ok(spans);
         } else {
@@ -131,7 +133,6 @@ fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
     }
 
     let mut parser = tree_sitter::Parser::new();
-
     let (language, query_src) = match lang {
         "rust" => (tree_sitter_rust::LANGUAGE, queries::RUST_QUERY),
         "javascript" => (tree_sitter_javascript::LANGUAGE, queries::JS_QUERY),
@@ -176,9 +177,7 @@ fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
 
 fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
     if lang == "vim" {
-        // TS：命令、组
         let mut symbols = run_ts_query_symbols(text).unwrap_or_default();
-        // 回退：Vim9 函数 def/export def
         let fallback = symbols_vim_naive(text);
         for s in fallback.into_iter().filter(|x| x.kind == "function") {
             let dup = symbols.iter().any(|x| {
@@ -193,7 +192,6 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
     }
 
     let mut parser = tree_sitter::Parser::new();
-
     let (language, query_src) = match lang {
         "rust" => (tree_sitter_rust::LANGUAGE, queries::RUST_SYM_QUERY),
         "javascript" => (tree_sitter_javascript::LANGUAGE, queries::JS_SYM_QUERY),
@@ -213,6 +211,7 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
 
     let mut symbols = Vec::with_capacity(256);
     let bytes = text.as_bytes();
+    let mut seen_at = std::collections::HashMap::<(u32, u32), String>::new();
 
     let mut it = cursor.captures(&query, root, bytes);
     while let Some((m, cap_ix)) = it.next() {
@@ -223,7 +222,6 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
         }
         let cname = query.capture_names()[cap.index as usize];
 
-        // 只处理名字节点的捕获（symbol.*）
         let kind = map_symbol_capture(cname);
         if kind.is_empty() {
             continue;
@@ -231,15 +229,75 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
 
         let name = node_text(node, bytes);
         let sp = node.start_position();
+        let lnum = sp.row as u32 + 1;
+        let col = sp.column as u32 + 1;
+
+        // 归属容器（Rust）
+        let (mut container_kind, mut container_name) = (None, None);
+        if lang == "rust" {
+            match kind {
+                "field" => {
+                    let (ck, cn) = ancestor_struct_name(node, bytes);
+                    container_kind = ck;
+                    container_name = cn;
+                }
+                "method" => {
+                    let (ck, cn) = ancestor_impl_type_name(node, bytes);
+                    container_kind = ck;
+                    container_name = cn;
+                }
+                "variant" => {
+                    let (ck, cn) = ancestor_enum_name(node, bytes);
+                    container_kind = ck;
+                    container_name = cn;
+                }
+                "function" => {
+                    // 内嵌函数归属到外层函数；否则归属到最近的 mod
+                    if let Some((ck, cn)) = ancestor_outer_fn_name(node, bytes) {
+                        container_kind = Some(ck);
+                        container_name = Some(cn);
+                    } else {
+                        let (ck, cn) = ancestor_mod_name(node, bytes);
+                        container_kind = ck;
+                        container_name = cn;
+                    }
+                }
+                "const" => {
+                    let (ck, cn) = ancestor_mod_name(node, bytes);
+                    container_kind = ck;
+                    container_name = cn;
+                }
+                _ => {}
+            }
+        }
+
+        // function vs method 去重：同起点优先保留 method
+        if let Some(prev) = seen_at.get(&(lnum, col)) {
+            if prev == "method" && kind == "function" {
+                continue;
+            }
+            if prev == "function" && kind == "method" {
+                if let Some(pos) = symbols.iter().position(|s: &Symbol| {
+                    s.lnum == lnum && s.col == col && s.kind == "function" && s.name == name
+                }) {
+                    symbols.remove(pos);
+                }
+                seen_at.insert((lnum, col), "method".to_string());
+            }
+        } else {
+            seen_at.insert((lnum, col), kind.to_string());
+        }
+
         symbols.push(Symbol {
             name,
             kind: kind.to_string(),
-            lnum: sp.row as u32 + 1,
-            col: sp.column as u32 + 1,
+            lnum,
+            col,
+            container_kind,
+            container_name,
         });
     }
 
-    // 按位置排序，便于阅读
     symbols.sort_by_key(|s| (s.lnum, s.col));
     Ok(symbols)
 }
@@ -316,6 +374,8 @@ fn run_ts_query_symbols(text: &str) -> Result<Vec<Symbol>> {
             kind: kind.to_string(),
             lnum: sp.row as u32 + 1,
             col: sp.column as u32 + 1,
+            container_kind: None,
+            container_name: None,
         });
     }
     symbols.sort_by_key(|s| (s.lnum, s.col));
@@ -329,7 +389,6 @@ fn highlight_vim_naive(text: &str) -> Vec<Span> {
         let lnum = i as u32 + 1;
         let bytes = line.as_bytes();
 
-        // 1) 注释：行首可选空白后紧跟 "
         if let Some(non_ws_ix) = line.find(|c: char| !c.is_whitespace()) {
             if line[non_ws_ix..].starts_with('"') {
                 spans.push(Span {
@@ -339,11 +398,10 @@ fn highlight_vim_naive(text: &str) -> Vec<Span> {
                     end_col: (line.len() as u32) + 1,
                     group: "TSComment".to_string(),
                 });
-                continue; // 整行注释；后续忽略
+                continue;
             }
         }
 
-        // 2) 字符串：同时处理单引号与双引号（不做转义复杂处理）
         for quote in ['\'', '"'] {
             let mut idx = 0usize;
             while let Some(s) = line[idx..].find(quote) {
@@ -364,9 +422,7 @@ fn highlight_vim_naive(text: &str) -> Vec<Span> {
             }
         }
 
-        // 3) 关键字（Vimscript + Vim9script）
         let keywords = [
-            // 传统
             "function",
             "endfunction",
             "return",
@@ -394,7 +450,6 @@ fn highlight_vim_naive(text: &str) -> Vec<Span> {
             "inoremap",
             "vnoremap",
             "tnoremap",
-            // Vim9
             "vim9script",
             "def",
             "enddef",
@@ -423,7 +478,6 @@ fn highlight_vim_naive(text: &str) -> Vec<Span> {
             }
         }
 
-        // 4) 数字：连续数字
         let mut j = 0usize;
         while j < bytes.len() {
             if bytes[j].is_ascii_digit() {
@@ -445,7 +499,6 @@ fn highlight_vim_naive(text: &str) -> Vec<Span> {
             }
         }
 
-        // 5) 括号/分隔符/简单运算符
         let puncts = [
             '(', ')', '{', '}', '[', ']', ',', ';', '.', '=', '+', '-', '*', '/',
         ];
@@ -467,7 +520,6 @@ fn highlight_vim_naive(text: &str) -> Vec<Span> {
             }
         }
 
-        // 6) Vim9 变量：var/const 名称（粗略）
         for decl_kw in ["var", "const"] {
             if let Some(pos) = line.find(decl_kw) {
                 let after = &line[pos + decl_kw.len()..];
@@ -490,18 +542,15 @@ fn highlight_vim_naive(text: &str) -> Vec<Span> {
             }
         }
 
-        // 7) Vim9 函数名：def 或 export def 后紧跟名字，直到 '('
         let mut def_pos = None;
         if let Some(p) = line.find("def") {
             def_pos = Some(p);
         }
         if let Some(p) = line.find("export def") {
-            // 如果同时有 "export def"，以它为准（更靠前的）
             def_pos = Some(p + "export ".len());
         }
         if let Some(dp) = def_pos {
             let mut s = dp + "def".len();
-            // 跳过空白
             let bytes = line.as_bytes();
             while s < line.len() && bytes[s].is_ascii_whitespace() {
                 s += 1;
@@ -536,7 +585,6 @@ fn symbols_vim_naive(text: &str) -> Vec<Symbol> {
         let base_col = (line.len() - trimmed.len()) as u32 + 1;
         let b = trimmed.as_bytes();
 
-        // Vim9: def / export def
         if trimmed.starts_with("def") || trimmed.starts_with("export def") {
             let mut s: usize;
             if trimmed.starts_with("export def") {
@@ -562,11 +610,11 @@ fn symbols_vim_naive(text: &str) -> Vec<Symbol> {
                     kind: "function".to_string(),
                     lnum,
                     col: base_col + (name_start as u32),
+                    container_kind: None,
+                    container_name: None,
                 });
             }
-        }
-        // 传统：function / function!
-        else if trimmed.starts_with("function") {
+        } else if trimmed.starts_with("function") {
             let mut s = "function".len();
             if s < trimmed.len() && b[s] == b'!' {
                 s += 1;
@@ -589,11 +637,11 @@ fn symbols_vim_naive(text: &str) -> Vec<Symbol> {
                     kind: "function".to_string(),
                     lnum,
                     col: base_col + (name_start as u32),
+                    container_kind: None,
+                    container_name: None,
                 });
             }
-        }
-        // augroup 名字
-        else if trimmed.starts_with("augroup") {
+        } else if trimmed.starts_with("augroup") {
             let rest = &trimmed["augroup".len()..].trim_start();
             if !rest.is_empty() {
                 let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
@@ -604,11 +652,11 @@ fn symbols_vim_naive(text: &str) -> Vec<Symbol> {
                     kind: "namespace".to_string(),
                     lnum,
                     col: base_col + "augroup".len() as u32 + offset_ws as u32,
+                    container_kind: None,
+                    container_name: None,
                 });
             }
-        }
-        // command 名字
-        else if trimmed.starts_with("command") {
+        } else if trimmed.starts_with("command") {
             let mut s = "command".len();
             if s < trimmed.len() && b[s] == b'!' {
                 s += 1;
@@ -631,6 +679,8 @@ fn symbols_vim_naive(text: &str) -> Vec<Symbol> {
                     kind: "macro".to_string(),
                     lnum,
                     col: base_col + (name_start as u32),
+                    container_kind: None,
+                    container_name: None,
                 });
             }
         }
@@ -689,7 +739,6 @@ fn dump_ast(lang: &str, text: &str) -> Result<Vec<String>> {
 
 fn map_capture_to_group(name: &str) -> &'static str {
     match name {
-        // 基础
         "comment" => "TSComment",
         "string" => "TSString",
         "string.regex" => "TStringRegex",
@@ -699,44 +748,37 @@ fn map_capture_to_group(name: &str) -> &'static str {
         "boolean" => "TSBoolean",
         "null" => "TSConstant",
 
-        // 关键字/运算符/标点
         "keyword" => "TSKeyword",
         "keyword.operator" => "TSKeywordOperator",
         "operator" => "TSOperator",
         "punctuation.delimiter" => "TSPunctDelimiter",
         "punctuation.bracket" => "TSPunctBracket",
 
-        // 变量/常量/内置
         "variable" => "TSVariable",
         "variable.parameter" => "TSVariableParameter",
         "variable.builtin" => "TSVariableBuiltin",
         "constant" => "TSConstant",
         "constant.builtin" => "TSConstBuiltin",
 
-        // 成员/属性/字段
         "property" => "TSProperty",
         "field" => "TSField",
 
-        // 函数/方法/内置
         "function" => "TSFunction",
         "method" => "TSMethod",
         "function.builtin" => "TSFunctionBuiltin",
 
-        // 类型/命名空间/宏/属性
         "type" => "TSType",
         "type.builtin" => "TSTypeBuiltin",
         "namespace" => "TSNamespace",
         "macro" => "TSMacro",
         "attribute" => "TSAttribute",
 
-        // 默认兜底
         _ => "TSVariable",
     }
 }
 
 fn map_symbol_capture(name: &str) -> &'static str {
     match name {
-        // 统一使用 name 节点的捕获类别
         "symbol.function" => "function",
         "symbol.method" => "method",
         "symbol.type" => "type",
@@ -749,6 +791,91 @@ fn map_symbol_capture(name: &str) -> &'static str {
         "symbol.macro" => "macro",
         "symbol.property" => "property",
         "symbol.field" => "field",
+        "symbol.variant" => "variant",
         _ => "",
     }
+}
+
+fn ancestor_kind<'a>(mut node: tree_sitter::Node<'a>, want: &str) -> Option<tree_sitter::Node<'a>> {
+    while let Some(parent) = node.parent() {
+        if parent.kind() == want {
+            return Some(parent);
+        }
+        node = parent;
+    }
+    None
+}
+
+fn child_text_by_kind(node: tree_sitter::Node, child_kind: &str, bytes: &[u8]) -> Option<String> {
+    let mut cursor = node.walk();
+    for ch in node.children(&mut cursor) {
+        if ch.kind() == child_kind {
+            return Some(node_text(ch, bytes));
+        }
+    }
+    None
+}
+
+fn ancestor_struct_name(node: tree_sitter::Node, bytes: &[u8]) -> (Option<String>, Option<String>) {
+    if let Some(st) = ancestor_kind(node, "struct_item") {
+        return (
+            Some("struct".to_string()),
+            child_text_by_kind(st, "type_identifier", bytes),
+        );
+    }
+    (None, None)
+}
+
+fn ancestor_enum_name(node: tree_sitter::Node, bytes: &[u8]) -> (Option<String>, Option<String>) {
+    if let Some(en) = ancestor_kind(node, "enum_item") {
+        return (
+            Some("enum".to_string()),
+            child_text_by_kind(en, "type_identifier", bytes),
+        );
+    }
+    (None, None)
+}
+
+fn ancestor_impl_type_name(
+    node: tree_sitter::Node,
+    bytes: &[u8],
+) -> (Option<String>, Option<String>) {
+    if let Some(im) = ancestor_kind(node, "impl_item") {
+        let mut last: Option<String> = None;
+        let mut cursor = im.walk();
+        for ch in im.children(&mut cursor) {
+            if ch.kind() == "type_identifier" || ch.kind() == "identifier" {
+                last = Some(node_text(ch, bytes));
+            }
+        }
+        if last.is_some() {
+            return (Some("type".to_string()), last);
+        }
+    }
+    (None, None)
+}
+
+fn ancestor_mod_name(node: tree_sitter::Node, bytes: &[u8]) -> (Option<String>, Option<String>) {
+    if let Some(md) = ancestor_kind(node, "mod_item") {
+        return (
+            Some("namespace".to_string()),
+            child_text_by_kind(md, "identifier", bytes),
+        );
+    }
+    (None, None)
+}
+
+fn ancestor_outer_fn_name(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, String)> {
+    // 找到最近的外层函数（不包含当前节点自己）
+    let mut cur = node;
+    while let Some(parent) = cur.parent() {
+        if parent.kind() == "function_item" {
+            // 获取该外层函数的名字
+            if let Some(name) = child_text_by_kind(parent, "identifier", bytes) {
+                return Some(("function".to_string(), name));
+            }
+        }
+        cur = parent;
+    }
+    None
 }
