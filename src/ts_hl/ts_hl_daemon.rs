@@ -1,6 +1,9 @@
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
+use std::{
+    io::{BufRead, BufReader, Write},
+    ops,
+};
 use tree_sitter::StreamingIterator;
 
 mod queries;
@@ -16,13 +19,19 @@ enum Request {
         #[serde(default)]
         lstart: Option<u32>, // 可选：可见范围开始行(1-based)
         #[serde(default)]
-        lend: Option<u32>,   // 可选：可见范围结束行(1-based)
+        lend: Option<u32>, // 可选：可见范围结束行(1-based)
     },
     #[serde(rename = "symbols")]
     Symbols {
         buf: i64,
         lang: String,
         text: String,
+        #[serde(default)]
+        lstart: Option<u32>, // 新增：可见范围开始行(1-based)
+        #[serde(default)]
+        lend: Option<u32>, // 新增：可见范围结束行(1-based)
+        #[serde(default)]
+        max_items: Option<usize>, // 新增：最多返回条数
     },
     #[serde(rename = "dump_ast")]
     DumpAst {
@@ -92,7 +101,13 @@ fn main() -> Result<()> {
             }
         };
         match req {
-            Request::Highlight { buf, lang, text, lstart, lend } => {
+            Request::Highlight {
+                buf,
+                lang,
+                text,
+                lstart,
+                lend,
+            } => {
                 let lrange = lstart.zip(lend);
                 match run_highlight(&lang, &text, lrange) {
                     Ok(spans) => send(&mut out, &Event::Highlights { buf, spans })?,
@@ -104,15 +119,25 @@ fn main() -> Result<()> {
                     )?,
                 }
             }
-            Request::Symbols { buf, lang, text } => match run_symbols(&lang, &text) {
-                Ok(symbols) => send(&mut out, &Event::Symbols { buf, symbols })?,
-                Err(e) => send(
-                    &mut out,
-                    &Event::Error {
-                        message: e.to_string(),
-                    },
-                )?,
-            },
+            Request::Symbols {
+                buf,
+                lang,
+                text,
+                lstart,
+                lend,
+                max_items,
+            } => {
+                let lrange = lstart.zip(lend);
+                match run_symbols(&lang, &text, lrange, max_items) {
+                    Ok(symbols) => send(&mut out, &Event::Symbols { buf, symbols })?,
+                    Err(e) => send(
+                        &mut out,
+                        &Event::Error {
+                            message: e.to_string(),
+                        },
+                    )?,
+                }
+            }
             Request::DumpAst { buf, lang, text } => {
                 let lines = dump_ast(&lang, &text)?;
                 send(&mut out, &Event::Ast { buf, lines })?;
@@ -129,6 +154,31 @@ fn send(out: &mut std::io::Stdout, ev: &Event) -> Result<()> {
     out.write_all(b"\n")?;
     out.flush()?;
     Ok(())
+}
+
+// 将行号范围转为字节范围（用于 QueryCursor 限制扫描区间）
+fn line_range_to_byte_range(text: &str, ls: u32, le: u32) -> ops::Range<usize> {
+    // ls/le 为 1-based
+    let mut start: usize = 0;
+    let mut end: usize = text.len();
+    let mut cur_line: u32 = 1;
+    let mut offset: usize = 0;
+
+    for line in text.lines() {
+        if cur_line == ls {
+            start = offset;
+        }
+        offset += line.len() + 1; // 包含 '\n'
+        if cur_line == le {
+            end = offset;
+            break;
+        }
+        cur_line += 1;
+    }
+    if start > end {
+        start = 0;
+    }
+    ops::Range { start, end }
 }
 
 // 支持按可选的行范围过滤（有重叠的才返回）
@@ -166,6 +216,11 @@ fn run_highlight(lang: &str, text: &str, lrange: Option<(u32, u32)>) -> Result<V
     let query = tree_sitter::Query::new(&language.into(), query_src)?;
     let mut cursor = tree_sitter::QueryCursor::new();
 
+    if let Some((ls, le)) = lrange {
+        let b_range = line_range_to_byte_range(text, ls, le);
+        cursor.set_byte_range(b_range);
+    }
+
     let mut spans = Vec::with_capacity(4096);
     let mut it = cursor.captures(&query, root, text.as_bytes());
     while let Some((m, cap_ix)) = it.next() {
@@ -199,10 +254,15 @@ fn run_highlight(lang: &str, text: &str, lrange: Option<(u32, u32)>) -> Result<V
     Ok(spans)
 }
 
-fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
+fn run_symbols(
+    lang: &str,
+    text: &str,
+    lrange: Option<(u32, u32)>,
+    max_items: Option<usize>,
+) -> Result<Vec<Symbol>> {
     if lang == "vim" {
-        let mut symbols = run_ts_query_symbols(text).unwrap_or_default();
-        let fallback = symbols_vim_naive(text);
+        let mut symbols = run_ts_query_symbols(text, lrange, max_items).unwrap_or_default();
+        let fallback = symbols_vim_naive(text, lrange, max_items);
         for s in fallback.into_iter().filter(|x| x.kind == "function") {
             let dup = symbols.iter().any(|x| {
                 x.kind == s.kind && x.name == s.name && x.lnum == s.lnum && x.col == s.col
@@ -233,9 +293,12 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
     let query = tree_sitter::Query::new(&language.into(), query_src)?;
     let mut cursor = tree_sitter::QueryCursor::new();
 
-    let mut symbols = Vec::with_capacity(256);
-    let bytes = text.as_bytes();
+    if let Some((ls, le)) = lrange {
+        let b_range = line_range_to_byte_range(text, ls, le);
+        cursor.set_byte_range(b_range);
+    }
 
+    let limit = max_items.unwrap_or(usize::MAX);
     use std::collections::{HashMap, HashSet};
     let mut seen = HashSet::<(
         String,
@@ -249,8 +312,14 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
     )>::new();
     let mut seen_at = HashMap::<(u32, u32), String>::new();
 
+    let mut symbols = Vec::with_capacity(limit.min(4096));
+    let bytes = text.as_bytes();
+
     let mut it = cursor.captures(&query, root, bytes);
     while let Some((m, cap_ix)) = it.next() {
+        if symbols.len() >= limit {
+            break;
+        }
         let cap = m.captures[*cap_ix];
         let node = cap.node;
         if node.start_byte() >= node.end_byte() {
@@ -266,6 +335,12 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
         let sp = node.start_position();
         let lnum = sp.row as u32 + 1;
         let col = sp.column as u32 + 1;
+
+        if let Some((ls, le)) = lrange {
+            if lnum < ls || lnum > le {
+                continue;
+            }
+        }
 
         let (mut ckind, mut cname_opt, mut clnum, mut ccol) = (None, None, None, None);
         if lang == "rust" {
@@ -413,7 +488,11 @@ fn run_ts_query_highlight(text: &str) -> Result<Vec<Span>> {
     Ok(spans)
 }
 
-fn run_ts_query_symbols(text: &str) -> Result<Vec<Symbol>> {
+fn run_ts_query_symbols(
+    text: &str,
+    lrange: Option<(u32, u32)>,
+    max_items: Option<usize>,
+) -> Result<Vec<Symbol>> {
     let (language, query_src) = (tree_sitter_vim::language(), queries::VIM_SYM_QUERY);
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language)?;
@@ -426,11 +505,20 @@ fn run_ts_query_symbols(text: &str) -> Result<Vec<Symbol>> {
         Err(_) => return Ok(Vec::new()),
     };
     let mut cursor = tree_sitter::QueryCursor::new();
+    if let Some((ls, le)) = lrange {
+        let b_range = line_range_to_byte_range(text, ls, le);
+        cursor.set_byte_range(b_range);
+    }
 
-    let mut symbols = Vec::new();
+    let limit = max_items.unwrap_or(usize::MAX);
+    let mut symbols = Vec::with_capacity(limit.min(256));
     let bytes = text.as_bytes();
     let mut it = cursor.captures(&query, root, bytes);
+
     while let Some((m, cap_ix)) = it.next() {
+        if symbols.len() >= limit {
+            break;
+        }
         let cap = m.captures[*cap_ix];
         let node = cap.node;
         if node.start_byte() >= node.end_byte() {
@@ -443,11 +531,20 @@ fn run_ts_query_symbols(text: &str) -> Result<Vec<Symbol>> {
         }
         let name = node_text(node, bytes);
         let sp = node.start_position();
+        let lnum = sp.row as u32 + 1;
+        let col = sp.column as u32 + 1;
+
+        if let Some((ls, le)) = lrange {
+            if lnum < ls || lnum > le {
+                continue;
+            }
+        }
+
         symbols.push(Symbol {
             name,
             kind: kind.to_string(),
-            lnum: sp.row as u32 + 1,
-            col: sp.column as u32 + 1,
+            lnum,
+            col,
             container_kind: None,
             container_name: None,
             container_lnum: None,
@@ -653,10 +750,24 @@ fn highlight_vim_naive(text: &str) -> Vec<Span> {
     spans
 }
 
-fn symbols_vim_naive(text: &str) -> Vec<Symbol> {
-    let mut syms = Vec::with_capacity(128);
+fn symbols_vim_naive(
+    text: &str,
+    lrange: Option<(u32, u32)>,
+    max_items: Option<usize>,
+) -> Vec<Symbol> {
+    let limit = max_items.unwrap_or(usize::MAX);
+    let mut syms = Vec::with_capacity(limit.min(128));
     for (i, line) in text.lines().enumerate() {
         let lnum = i as u32 + 1;
+        if let Some((ls, le)) = lrange {
+            if lnum < ls || lnum > le {
+                continue;
+            }
+        }
+        if syms.len() >= limit {
+            break;
+        }
+
         let trimmed = line.trim_start();
         let base_col = (line.len() - trimmed.len()) as u32 + 1;
         let b = trimmed.as_bytes();

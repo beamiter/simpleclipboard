@@ -721,8 +721,10 @@ def RequestSymbolsNow(buf: number)
   endif
   var lines = getbufline(buf, 1, '$')
   var text = join(lines, "\n")
-  Send({type: 'symbols', buf: buf, lang: lang, text: text})
-  Log('Requested symbols for buffer ' .. buf .. ' (' .. lang .. ')')
+  var [vstart, vend] = VisibleRangeForBuf(buf)
+  var max_items = get(g:, 'ts_hl_outline_max_items', 300)
+  Send({type: 'symbols', buf: buf, lang: lang, text: text, lstart: vstart, lend: vend, max_items: max_items})
+  Log('Requested symbols for buffer ' .. buf .. ' (' .. lang .. ') range ' .. vstart .. '-' .. vend .. ' max ' .. max_items)
 enddef
 
 def ScheduleSymbols(buf: number)
@@ -883,14 +885,12 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
       endif
     endif
     items = selected
-    # 可选：提示被截断
-    # echom '[ts-hl] outline truncated to ' .. len(items) .. ' items (from ' .. len(syms) .. ')'
   endif
 
   # 缓存符号用于跳转（与渲染一致）
   s_outline_items = items
 
-  # 构建树与渲染（保持你原逻辑）
+  # 构建树与渲染
   var nodes = BuildTreeByContainer(items)
   var show_pos = get(g:, 'ts_hl_outline_show_position', 1) ? true : false
   var out = RenderTree(nodes, show_pos)
@@ -1081,7 +1081,8 @@ def RequestNow(buf: number)
   Log('Requested highlight for buffer ' .. buf .. ' (' .. lang .. ') range ' .. vstart .. '-' .. vend)
 
   if s_outline_win != 0 && s_outline_src_buf == buf
-    Send({type: 'symbols', buf: buf, lang: lang, text: text})
-    Log('Requested symbols (inline) for buffer ' .. buf .. ' (' .. lang .. ')')
+    var max_items = get(g:, 'ts_hl_outline_max_items', 300)
+    Send({type: 'symbols', buf: buf, lang: lang, text: text, lstart: vstart, lend: vend, max_items: max_items})
+    Log('Requested symbols (inline) for buffer ' .. buf .. ' (' .. lang .. ') range ' .. vstart .. '-' .. vend .. ' max ' .. max_items)
   endif
 enddef

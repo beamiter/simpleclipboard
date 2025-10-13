@@ -23,7 +23,7 @@ g:ts_hl_outline_disable_props = get(g:, 'ts_hl_outline_disable_props', 0)
 g:ts_hl_outline_hide_icon = get(g:, 'ts_hl_outline_hide_icon', 0)
 g:ts_hl_outline_ascii = get(g:, 'ts_hl_outline_ascii', 0)
 g:ts_hl_outline_show_position = get(g:, 'ts_hl_outline_show_position', 1)
-g:ts_hl_outline_max_items = get(g:, 'ts_hl_outline_max_items', 10)
+g:ts_hl_outline_max_items = get(g:, 'ts_hl_outline_max_items', 100)
 
 # Outline 过滤配置
 g:ts_hl_outline_hide_inner_functions = get(g:, 'ts_hl_outline_hide_inner_functions', 1)
