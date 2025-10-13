@@ -18,13 +18,15 @@
 ; module
 (mod_item name: (identifier) @symbol.namespace)
 
-; 仅显示“自己定义的宏”（macro_rules!），不显示调用站点
+; only macro definitions (macro_rules!), not call sites
 (macro_definition name: (identifier) @symbol.macro)
 
-; fields (struct fields)
-(field_declaration name: (field_identifier) @symbol.field)
+; struct fields: 仅匹配出现在 struct_item 里的具名字段，避免与枚举变体字段重叠
+(struct_item
+  (field_declaration_list
+    (field_declaration name: (field_identifier) @symbol.field)))
 
-; enum variants（注意此处为 enum_variant_list，而非 enum_body）
+; enum variants
 (enum_item
   (enum_variant_list
     (enum_variant name: (identifier) @symbol.variant)))

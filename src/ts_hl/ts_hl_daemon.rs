@@ -56,9 +56,10 @@ struct Symbol {
     kind: String,
     lnum: u32,
     col: u32,
-    // 新增：符号归属的容器（可选）
     container_kind: Option<String>,
     container_name: Option<String>,
+    container_lnum: Option<u32>,
+    container_col: Option<u32>,
 }
 
 fn main() -> Result<()> {
@@ -175,22 +176,8 @@ fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
     Ok(spans)
 }
 
-fn ancestor_variant_name(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, String)> {
-    let mut cur = node;
-    while let Some(parent) = cur.parent() {
-        if parent.kind() == "enum_variant" {
-            if let Some(name) = child_text_by_kind(parent, "identifier", bytes) {
-                return Some(("variant".to_string(), name));
-            }
-        }
-        cur = parent;
-    }
-    None
-}
-
 fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
     if lang == "vim" {
-        // 原逻辑不变
         let mut symbols = run_ts_query_symbols(text).unwrap_or_default();
         let fallback = symbols_vim_naive(text);
         for s in fallback.into_iter().filter(|x| x.kind == "function") {
@@ -225,6 +212,20 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
 
     let mut symbols = Vec::with_capacity(256);
     let bytes = text.as_bytes();
+
+    // 去重集合，包含容器信息
+    use std::collections::HashSet;
+    let mut seen = HashSet::<(
+        String,
+        String,
+        u32,
+        u32,
+        Option<String>,
+        Option<String>,
+        Option<u32>,
+        Option<u32>,
+    )>::new();
+    // 用于 function vs method 优先保留 method
     let mut seen_at = std::collections::HashMap::<(u32, u32), String>::new();
 
     let mut it = cursor.captures(&query, root, bytes);
@@ -245,52 +246,69 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
         let lnum = sp.row as u32 + 1;
         let col = sp.column as u32 + 1;
 
-        // 归属容器（Rust）
-        let (mut container_kind, mut container_name) = (None, None);
+        // 归属容器（含位置）
+        let (mut ckind, mut cname_opt, mut clnum, mut ccol) = (None, None, None, None);
         if lang == "rust" {
             match kind.as_str() {
+                // 字段：优先归属到最近的枚举变体，否则归属 struct，再否则归属 mod
                 "field" => {
-                    // 优先归属到最近的枚举变体；否则归属到 struct
-                    if let Some((ck, cn)) = ancestor_variant_name(node, bytes) {
-                        container_kind = Some(ck);
-                        container_name = Some(cn);
-                    } else {
-                        let (ck, cn) = ancestor_struct_name(node, bytes);
-                        container_kind = ck;
-                        container_name = cn;
-                    }
-                    // 如果仍没有归属，再尝试 mod
-                    if container_kind.is_none() {
-                        let (ck, cn) = ancestor_mod_name(node, bytes);
-                        container_kind = ck;
-                        container_name = cn;
+                    if let Some(vinfo) = variant_info(node, bytes) {
+                        ckind = Some("variant".to_string());
+                        cname_opt = Some(vinfo.0);
+                        clnum = Some(vinfo.1);
+                        ccol = Some(vinfo.2);
+                    } else if let Some(sinfo) = struct_info(node, bytes) {
+                        ckind = Some("struct".to_string());
+                        cname_opt = Some(sinfo.0);
+                        clnum = Some(sinfo.1);
+                        ccol = Some(sinfo.2);
+                    } else if let Some(minfo) = mod_info(node, bytes) {
+                        ckind = Some("namespace".to_string());
+                        cname_opt = Some(minfo.0);
+                        clnum = Some(minfo.1);
+                        ccol = Some(minfo.2);
                     }
                 }
+                // 变体归属到枚举（父容器）
                 "variant" => {
-                    let (ck, cn) = ancestor_enum_name(node, bytes);
-                    container_kind = ck; // Some("enum")
-                    container_name = cn; // 枚举名
-                }
-                "method" => {
-                    let (ck, cn) = ancestor_impl_type_name(node, bytes);
-                    container_kind = ck; // Some("type")
-                    container_name = cn; // 类型名
-                }
-                "function" => {
-                    // 内嵌函数归属到外层函数；否则归属到最近的 mod
-                    if let Some((ck, cn)) = ancestor_outer_fn_name(node, bytes) {
-                        container_kind = Some(ck); // "function"
-                        container_name = Some(cn); // 外层函数名
-                    } else {
-                        let (ck, cn) = ancestor_mod_name(node, bytes);
-                        container_kind = ck; // Some("namespace")
-                        container_name = cn;
+                    if let Some(einfo) = enum_info(node, bytes) {
+                        ckind = Some("enum".to_string());
+                        cname_opt = Some(einfo.0);
+                        clnum = Some(einfo.1);
+                        ccol = Some(einfo.2);
                     }
                 }
+                // 方法归属到类型（impl 的类型名）
+                "method" => {
+                    if let Some(tinfo) = impl_type_info(node, bytes) {
+                        ckind = Some("type".to_string());
+                        cname_opt = Some(tinfo.0);
+                        clnum = Some(tinfo.1);
+                        ccol = Some(tinfo.2);
+                    }
+                }
+                // 函数：内嵌函数归属到外层函数，否则归属 mod
+                "function" => {
+                    if let Some(finfo) = outer_fn_info(node, bytes) {
+                        ckind = Some("function".to_string());
+                        cname_opt = Some(finfo.0);
+                        clnum = Some(finfo.1);
+                        ccol = Some(finfo.2);
+                    } else if let Some(minfo) = mod_info(node, bytes) {
+                        ckind = Some("namespace".to_string());
+                        cname_opt = Some(minfo.0);
+                        clnum = Some(minfo.1);
+                        ccol = Some(minfo.2);
+                    }
+                }
+                // const 归属到 mod
                 "const" => {
-                    let (ck, cn) = ancestor_mod_name(node, bytes);
-                    container_kind = ck;
-                    container_name = cn;
+                    if let Some(minfo) = mod_info(node, bytes) {
+                        ckind = Some("namespace".to_string());
+                        cname_opt = Some(minfo.0);
+                        clnum = Some(minfo.1);
+                        ccol = Some(minfo.2);
+                    }
                 }
                 _ => {}
             }
@@ -313,13 +331,31 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
             seen_at.insert((lnum, col), kind.clone());
         }
 
+        // 全量去重：包含容器信息
+        let key = (
+            kind.clone(),
+            name.clone(),
+            lnum,
+            col,
+            ckind.clone(),
+            cname_opt.clone(),
+            clnum,
+            ccol,
+        );
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.insert(key);
+
         symbols.push(Symbol {
             name,
             kind,
             lnum,
             col,
-            container_kind,
-            container_name,
+            container_kind: ckind,
+            container_name: cname_opt,
+            container_lnum: clnum,
+            container_col: ccol,
         });
     }
 
@@ -401,6 +437,8 @@ fn run_ts_query_symbols(text: &str) -> Result<Vec<Symbol>> {
             col: sp.column as u32 + 1,
             container_kind: None,
             container_name: None,
+            container_lnum: None,
+            container_col: None,
         });
     }
     symbols.sort_by_key(|s| (s.lnum, s.col));
@@ -637,6 +675,8 @@ fn symbols_vim_naive(text: &str) -> Vec<Symbol> {
                     col: base_col + (name_start as u32),
                     container_kind: None,
                     container_name: None,
+                    container_lnum: None,
+                    container_col: None,
                 });
             }
         } else if trimmed.starts_with("function") {
@@ -664,6 +704,8 @@ fn symbols_vim_naive(text: &str) -> Vec<Symbol> {
                     col: base_col + (name_start as u32),
                     container_kind: None,
                     container_name: None,
+                    container_lnum: None,
+                    container_col: None,
                 });
             }
         } else if trimmed.starts_with("augroup") {
@@ -679,6 +721,8 @@ fn symbols_vim_naive(text: &str) -> Vec<Symbol> {
                     col: base_col + "augroup".len() as u32 + offset_ws as u32,
                     container_kind: None,
                     container_name: None,
+                    container_lnum: None,
+                    container_col: None,
                 });
             }
         } else if trimmed.starts_with("command") {
@@ -706,6 +750,8 @@ fn symbols_vim_naive(text: &str) -> Vec<Symbol> {
                     col: base_col + (name_start as u32),
                     container_kind: None,
                     container_name: None,
+                    container_lnum: None,
+                    container_col: None,
                 });
             }
         }
@@ -841,63 +887,91 @@ fn child_text_by_kind(node: tree_sitter::Node, child_kind: &str, bytes: &[u8]) -
     None
 }
 
-fn ancestor_struct_name(node: tree_sitter::Node, bytes: &[u8]) -> (Option<String>, Option<String>) {
+fn child_pos_by_kind(node: tree_sitter::Node, child_kind: &str) -> Option<(u32, u32)> {
+    let mut cursor = node.walk();
+    for ch in node.children(&mut cursor) {
+        if ch.kind() == child_kind {
+            let sp = ch.start_position();
+            return Some((sp.row as u32 + 1, sp.column as u32 + 1));
+        }
+    }
+    None
+}
+
+fn struct_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u32)> {
     if let Some(st) = ancestor_kind(node, "struct_item") {
-        return (
-            Some("struct".to_string()),
-            child_text_by_kind(st, "type_identifier", bytes),
-        );
+        if let Some(name) = child_text_by_kind(st, "type_identifier", bytes) {
+            if let Some((ln, co)) = child_pos_by_kind(st, "type_identifier") {
+                return Some((name, ln, co));
+            }
+        }
     }
-    (None, None)
+    None
 }
 
-fn ancestor_enum_name(node: tree_sitter::Node, bytes: &[u8]) -> (Option<String>, Option<String>) {
+fn enum_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u32)> {
     if let Some(en) = ancestor_kind(node, "enum_item") {
-        return (
-            Some("enum".to_string()),
-            child_text_by_kind(en, "type_identifier", bytes),
-        );
+        if let Some(name) = child_text_by_kind(en, "type_identifier", bytes) {
+            if let Some((ln, co)) = child_pos_by_kind(en, "type_identifier") {
+                return Some((name, ln, co));
+            }
+        }
     }
-    (None, None)
+    None
 }
 
-fn ancestor_impl_type_name(
-    node: tree_sitter::Node,
-    bytes: &[u8],
-) -> (Option<String>, Option<String>) {
+fn variant_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u32)> {
+    let mut cur = node;
+    while let Some(parent) = cur.parent() {
+        if parent.kind() == "enum_variant" {
+            if let Some(name) = child_text_by_kind(parent, "identifier", bytes) {
+                if let Some((ln, co)) = child_pos_by_kind(parent, "identifier") {
+                    return Some((name, ln, co));
+                }
+            }
+        }
+        cur = parent;
+    }
+    None
+}
+
+fn impl_type_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u32)> {
     if let Some(im) = ancestor_kind(node, "impl_item") {
-        let mut last: Option<String> = None;
+        let mut last: Option<(String, u32, u32)> = None;
         let mut cursor = im.walk();
         for ch in im.children(&mut cursor) {
             if ch.kind() == "type_identifier" || ch.kind() == "identifier" {
-                last = Some(node_text(ch, bytes));
+                let name = node_text(ch, bytes);
+                let sp = ch.start_position();
+                last = Some((name, sp.row as u32 + 1, sp.column as u32 + 1));
             }
         }
-        if last.is_some() {
-            return (Some("type".to_string()), last);
+        if let Some(x) = last {
+            return Some(x);
         }
     }
-    (None, None)
+    None
 }
 
-fn ancestor_mod_name(node: tree_sitter::Node, bytes: &[u8]) -> (Option<String>, Option<String>) {
+fn mod_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u32)> {
     if let Some(md) = ancestor_kind(node, "mod_item") {
-        return (
-            Some("namespace".to_string()),
-            child_text_by_kind(md, "identifier", bytes),
-        );
+        if let Some(name) = child_text_by_kind(md, "identifier", bytes) {
+            if let Some((ln, co)) = child_pos_by_kind(md, "identifier") {
+                return Some((name, ln, co));
+            }
+        }
     }
-    (None, None)
+    None
 }
 
-fn ancestor_outer_fn_name(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, String)> {
-    // 找到最近的外层函数（不包含当前节点自己）
+fn outer_fn_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u32)> {
     let mut cur = node;
     while let Some(parent) = cur.parent() {
         if parent.kind() == "function_item" {
-            // 获取该外层函数的名字
             if let Some(name) = child_text_by_kind(parent, "identifier", bytes) {
-                return Some(("function".to_string(), name));
+                if let Some((ln, co)) = child_pos_by_kind(parent, "identifier") {
+                    return Some((name, ln, co));
+                }
             }
         }
         cur = parent;
