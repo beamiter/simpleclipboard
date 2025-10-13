@@ -454,6 +454,29 @@ enddef
 
 export def OnBufEvent(buf: number)
   AutoEnableForBuffer(buf)
+  if s_outline_win != 0 && buf != s_outline_buf && getbufvar(buf, '&filetype') !=# 'ts_hl_outline'
+    if IsSupportedLang(buf)
+      s_outline_src_buf = buf
+      ScheduleSymbols(buf)
+    else
+      if s_outline_buf != 0 && bufexists(s_outline_buf)
+        var curwin = win_getid()
+        try
+          if win_gotoid(s_outline_win)
+            setlocal modifiable
+            try | call prop_clear(1, line('$'), {bufnr: s_outline_buf}) | catch | endtry
+            call setline(1, ['<outline unsupported for this filetype>'])
+            setlocal nomodifiable
+          endif
+        finally
+          if curwin != 0
+            call win_gotoid(curwin)
+          endif
+        endtry
+      endif
+    endif
+  endif
+
   ScheduleRequest(buf, 'edit')
   ScheduleSymbols(buf)
 enddef
