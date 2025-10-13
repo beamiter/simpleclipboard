@@ -18,20 +18,20 @@
 ; module
 (mod_item name: (identifier) @symbol.namespace)
 
-; 仅显示“自己定义的宏” (macro_rules!)，不显示调用站点
+; 仅显示“自己定义的宏”（macro_rules!），不显示调用站点
 (macro_definition name: (identifier) @symbol.macro)
 
 ; fields (struct fields)
 (field_declaration name: (field_identifier) @symbol.field)
 
-; enum variants
+; enum variants（注意此处为 enum_variant_list，而非 enum_body）
 (enum_item
-  (enum_body
+  (enum_variant_list
     (enum_variant name: (identifier) @symbol.variant)))
 
-; enum variant named fields（可选，结构式变体里的具名字段）
+; enum variant named fields（结构式变体里的具名字段）
 (enum_item
-  (enum_body
+  (enum_variant_list
     (enum_variant
       (field_declaration_list
         (field_declaration name: (field_identifier) @symbol.field)))))

@@ -497,57 +497,62 @@ enddef
 def BuildTreeByContainer(syms: list<dict<any>>): list<dict<any>>
   var roots: list<dict<any>> = []
   var containers: dict<any> = {}
-  var container_kinds = ['namespace', 'class', 'struct', 'enum', 'type']
+  # 允许这些类型作为容器（可承载子节点）
+  var container_kinds = ['namespace', 'class', 'struct', 'enum', 'type', 'variant', 'function']
 
-  # 先把容器自身加入（保留位置与 idx，便于跳转到容器定义）
+  def EnsureContainer(k: string, n: string): dict<any>
+    var key = k .. '::' .. n
+    if has_key(containers, key)
+      return containers[key]
+    endif
+    var stub = {name: n, kind: k, lnum: 1, col: 1, idx: -1, children: []}
+    containers[key] = stub
+    roots->add(stub)
+    return stub
+  enddef
+
   for i in range(len(syms))
     var s = syms[i]
-    var kind = get(s, 'kind', '')
-    if index(container_kinds, kind) >= 0
-      var name = get(s, 'name', '')
-      var node = {
-        name: name,
-        kind: kind,
-        lnum: get(s, 'lnum', 1),
-        col:  get(s, 'col', 1),
-        idx:  i,
-        children: []
-      }
-      var k = kind .. '::' .. name
-      containers[k] = node
-      roots->add(node)
-    endif
-  endfor
+    var name = get(s, 'name', '')
+    var kind = get(s, 'kind', 'variable')
+    var lnum = get(s, 'lnum', 1)
+    var col  = get(s, 'col', 1)
+    var ck   = get(s, 'container_kind', '')
+    var cn   = get(s, 'container_name', '')
 
-  # 其他符号挂到容器下或顶层
-  for i in range(len(syms))
-    var s = syms[i]
-    var kind = get(s, 'kind', '')
-    if index(container_kinds, kind) >= 0
-      continue
-    endif
-    var node = {
-      name: get(s, 'name', ''),
-      kind: kind,
-      lnum: get(s, 'lnum', 1),
-      col:  get(s, 'col', 1),
-      idx:  i,
-      children: []
-    }
-    var ck = get(s, 'container_kind', '')
-    var cn = get(s, 'container_name', '')
-    if type(ck) == v:t_string && type(cn) == v:t_string && ck !=# '' && cn !=# ''
-      var k = ck .. '::' .. cn
-      if has_key(containers, k)
-        containers[k].children->add(node)
+    var node = {name: name, kind: kind, lnum: lnum, col: col, idx: i, children: []}
+    var is_container = index(container_kinds, kind) >= 0
+
+    if type(ck) == v:t_string && ck !=# '' && type(cn) == v:t_string && cn !=# ''
+      # 挂到父容器
+      var parent_key = ck .. '::' .. cn
+      var parent: dict<any>
+      if has_key(containers, parent_key)
+        parent = containers[parent_key]
       else
-        # 容器未在符号集中出现时，创建一个占位容器
-        var stub = {name: cn, kind: ck, lnum: 1, col: 1, idx: -1, children: [node]}
-        containers[k] = stub
-        roots->add(stub)
+        parent = {name: cn, kind: ck, lnum: 1, col: 1, idx: -1, children: []}
+        containers[parent_key] = parent
+        roots->add(parent)
+      endif
+      parent.children->add(node)
+      # 如果自身也是容器，登记到容器表，但不放到根（避免重复）
+      if is_container
+        var self_key = kind .. '::' .. name
+        if !has_key(containers, self_key)
+          containers[self_key] = node
+        endif
       endif
     else
-      roots->add(node)
+      # 无父容器：直接作为根或新建容器根
+      if is_container
+        var self_key = kind .. '::' .. name
+        if !has_key(containers, self_key)
+          containers[self_key] = node
+        endif
+        roots->add(node)
+      else
+        roots->add(node)
+      endif
     endif
   endfor
 

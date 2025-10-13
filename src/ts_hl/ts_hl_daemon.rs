@@ -175,8 +175,22 @@ fn run_highlight(lang: &str, text: &str) -> Result<Vec<Span>> {
     Ok(spans)
 }
 
+fn ancestor_variant_name(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, String)> {
+    let mut cur = node;
+    while let Some(parent) = cur.parent() {
+        if parent.kind() == "enum_variant" {
+            if let Some(name) = child_text_by_kind(parent, "identifier", bytes) {
+                return Some(("variant".to_string(), name));
+            }
+        }
+        cur = parent;
+    }
+    None
+}
+
 fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
     if lang == "vim" {
+        // 原逻辑不变
         let mut symbols = run_ts_query_symbols(text).unwrap_or_default();
         let fallback = symbols_vim_naive(text);
         for s in fallback.into_iter().filter(|x| x.kind == "function") {
@@ -221,8 +235,7 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
             continue;
         }
         let cname = query.capture_names()[cap.index as usize];
-
-        let kind = map_symbol_capture(cname);
+        let kind = map_symbol_capture(cname).to_string();
         if kind.is_empty() {
             continue;
         }
@@ -235,30 +248,42 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
         // 归属容器（Rust）
         let (mut container_kind, mut container_name) = (None, None);
         if lang == "rust" {
-            match kind {
+            match kind.as_str() {
                 "field" => {
-                    let (ck, cn) = ancestor_struct_name(node, bytes);
-                    container_kind = ck;
-                    container_name = cn;
-                }
-                "method" => {
-                    let (ck, cn) = ancestor_impl_type_name(node, bytes);
-                    container_kind = ck;
-                    container_name = cn;
+                    // 优先归属到最近的枚举变体；否则归属到 struct
+                    if let Some((ck, cn)) = ancestor_variant_name(node, bytes) {
+                        container_kind = Some(ck);
+                        container_name = Some(cn);
+                    } else {
+                        let (ck, cn) = ancestor_struct_name(node, bytes);
+                        container_kind = ck;
+                        container_name = cn;
+                    }
+                    // 如果仍没有归属，再尝试 mod
+                    if container_kind.is_none() {
+                        let (ck, cn) = ancestor_mod_name(node, bytes);
+                        container_kind = ck;
+                        container_name = cn;
+                    }
                 }
                 "variant" => {
                     let (ck, cn) = ancestor_enum_name(node, bytes);
-                    container_kind = ck;
-                    container_name = cn;
+                    container_kind = ck; // Some("enum")
+                    container_name = cn; // 枚举名
+                }
+                "method" => {
+                    let (ck, cn) = ancestor_impl_type_name(node, bytes);
+                    container_kind = ck; // Some("type")
+                    container_name = cn; // 类型名
                 }
                 "function" => {
                     // 内嵌函数归属到外层函数；否则归属到最近的 mod
                     if let Some((ck, cn)) = ancestor_outer_fn_name(node, bytes) {
-                        container_kind = Some(ck);
-                        container_name = Some(cn);
+                        container_kind = Some(ck); // "function"
+                        container_name = Some(cn); // 外层函数名
                     } else {
                         let (ck, cn) = ancestor_mod_name(node, bytes);
-                        container_kind = ck;
+                        container_kind = ck; // Some("namespace")
                         container_name = cn;
                     }
                 }
@@ -285,12 +310,12 @@ fn run_symbols(lang: &str, text: &str) -> Result<Vec<Symbol>> {
                 seen_at.insert((lnum, col), "method".to_string());
             }
         } else {
-            seen_at.insert((lnum, col), kind.to_string());
+            seen_at.insert((lnum, col), kind.clone());
         }
 
         symbols.push(Symbol {
             name,
-            kind: kind.to_string(),
+            kind,
             lnum,
             col,
             container_kind,
