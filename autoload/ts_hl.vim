@@ -29,7 +29,7 @@ const s_groups = [
   'TSProperty', 'TSField',
   'TSMacro', 'TSAttribute',
   'TSVariant'
-  ]
+]
 
 # =============== 工具 ===============
 def Log(msg: string)
@@ -68,7 +68,7 @@ def IsSupportedLang(buf: number): bool
   var supported = [
     'rust', 'javascript', 'javascriptreact', 'jsx', 'c', 'cpp', 'cc',
     'vim', 'vimrc'
-    ]
+  ]
   return index(supported, ft) >= 0
 enddef
 
@@ -529,6 +529,11 @@ enddef
 
 # 可配置 fancy 图标（默认启用），ASCII fallback
 def FancyIcon(kind: string): string
+  # 新增：允许彻底隐藏图标（不显示任何符号）
+  if get(g:, 'ts_hl_outline_hide_icon', 0)
+    return ''
+  endif
+
   var fancy = get(g:, 'ts_hl_outline_fancy', 1)
   if fancy
     if kind ==# 'function'     | return '󰡱' | endif
@@ -559,7 +564,7 @@ def FancyIcon(kind: string): string
   if kind ==# 'property'     | return 'p' | endif
   if kind ==# 'field'        | return 'p' | endif
   if kind ==# 'variant'      | return 'v' | endif
-  return '?'
+  return ''
 enddef
 
 # 基于“容器归属”的树构建
@@ -852,47 +857,57 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
         endtry
       endif
 
-      # 应用 textprop 高亮
-      try
-        call prop_clear(1, last, {bufnr: s_outline_buf})
-      catch
-      endtry
-
-      for i in range(len(lines))
-        var lnum = i + 1
-        if len(out.meta) <= i
-          continue
-        endif
-        var m = out.meta[i]
-
-        if m.prefix_len > 0
-          try
-            call prop_add(lnum, 1, {type: 'TsHlOutlineGuide', bufnr: s_outline_buf, end_lnum: lnum, end_col: m.prefix_len + 1})
-          catch
-          endtry
-        endif
-
-        var grp = KindToTSGroup(m.kind)
-
+      # 新增：允许禁用 Outline 的所有 textprop 高亮（仅保留纯文本）
+      var disable_props = get(g:, 'ts_hl_outline_disable_props', 0) ? true : false
+      if disable_props
+        # 清理旧的 props，避免残留色块
         try
-          call prop_add(lnum, m.icon_col, {type: grp, bufnr: s_outline_buf, end_lnum: lnum, end_col: m.icon_col + m.icon_w})
+          call prop_clear(1, last, {bufnr: s_outline_buf})
+        catch
+        endtry
+      else
+        # 原来的高亮逻辑（保留）
+        try
+          call prop_clear(1, last, {bufnr: s_outline_buf})
         catch
         endtry
 
-        if m.name_end > m.name_start
-          try
-            call prop_add(lnum, m.name_start, {type: grp, bufnr: s_outline_buf, end_lnum: lnum, end_col: m.name_end})
-          catch
-          endtry
-        endif
+        for i in range(len(lines))
+          var lnum = i + 1
+          if len(out.meta) <= i
+            continue
+          endif
+          var m = out.meta[i]
 
-        if m.pos_start > 0 && m.pos_end > m.pos_start
+          if m.prefix_len > 0
+            try
+              call prop_add(lnum, 1, {type: 'TsHlOutlineGuide', bufnr: s_outline_buf, end_lnum: lnum, end_col: m.prefix_len + 1})
+            catch
+            endtry
+          endif
+
+          var grp = KindToTSGroup(m.kind)
+
           try
-            call prop_add(lnum, m.pos_start, {type: 'TsHlOutlinePos', bufnr: s_outline_buf, end_lnum: lnum, end_col: m.pos_end})
+            call prop_add(lnum, m.icon_col, {type: grp, bufnr: s_outline_buf, end_lnum: lnum, end_col: m.icon_col + m.icon_w})
           catch
           endtry
-        endif
-      endfor
+
+          if m.name_end > m.name_start
+            try
+              call prop_add(lnum, m.name_start, {type: grp, bufnr: s_outline_buf, end_lnum: lnum, end_col: m.name_end})
+            catch
+            endtry
+          endif
+
+          if m.pos_start > 0 && m.pos_end > m.pos_start
+            try
+              call prop_add(lnum, m.pos_start, {type: 'TsHlOutlinePos', bufnr: s_outline_buf, end_lnum: lnum, end_col: m.pos_end})
+            catch
+            endtry
+          endif
+        endfor
+      endif
 
       setlocal nomodifiable
     endif

@@ -18,7 +18,9 @@ g:ts_hl_log_file = get(g:, 'ts_hl_log_file', '/tmp/ts-hl.log')
 g:ts_hl_outline_width = get(g:, 'ts_hl_outline_width', 32)
 
 # Outline UI 配置
-g:ts_hl_outline_fancy = get(g:, 'ts_hl_outline_fancy', 1)
+g:ts_hl_outline_fancy = get(g:, 'ts_hl_outline_fancy', 0)
+g:ts_hl_outline_disable_props = get(g:, 'ts_hl_outline_disable_props', 1)
+g:ts_hl_outline_hide_icon = get(g:, 'ts_hl_outline_hide_icon', 1)
 g:ts_hl_outline_ascii = get(g:, 'ts_hl_outline_ascii', 0)
 g:ts_hl_outline_show_position = get(g:, 'ts_hl_outline_show_position', 1)
 
