@@ -16,6 +16,8 @@ var s_outline_src_buf: number = 0
 var s_outline_items: list<dict<any>> = []
 var s_outline_linemap: list<number> = []  # 每一可见行对应 s_outline_items 的下标，-1 表示不可跳转
 var s_sym_timer: number = 0
+var s_inflight_syms: dict<bool> = {}
+var s_inflight_hl: dict<bool> = {}
 
 # 待用的 TS 高亮组 -> Vim 高亮组 默认链接
 const s_groups = [
@@ -160,9 +162,34 @@ def FindDaemon(): string
   return ''
 enddef
 
+def BufLineCount(buf: number): number
+  var info = getbufinfo(buf)
+  if type(info) == v:t_list && len(info) > 0 && has_key(info[0], 'linecount')
+    return info[0].linecount
+  endif
+  # 兜底：极端情况下再用慢方法
+  return len(getbufline(buf, 1, '$'))
+enddef
+
+def VisibleViewportRangeForBuf(buf: number): list<number>
+  var lnum_end = BufLineCount(buf)
+  var wins = win_findbuf(buf)
+  if len(wins) == 0
+    return [1, lnum_end]
+  endif
+  var start = lnum_end
+  var stop  = 1
+  for w in wins
+    var info = getwininfo(w)[0]
+    start = min([start, info.topline])
+    stop  = max([stop, info.botline])
+  endfor
+  return [start, stop]
+enddef
+
 # 计算缓冲区在所有窗口中的联合可见范围，并加上上下边距（通用）
 def VisibleRangeForBufWithMargin(buf: number, margin: number): list<number>
-  var lnum_end = len(getbufline(buf, 1, '$'))
+  var lnum_end = BufLineCount(buf)
   var wins = win_findbuf(buf)
   if len(wins) == 0
     return [1, lnum_end]
@@ -252,10 +279,12 @@ def OnDaemonEvent(line: string)
     var buf = get(ev, 'buf', 0)
     var spans = get(ev, 'spans', [])
     ApplyHighlights(buf, spans)
+    if has_key(s_inflight_hl, buf) | s_inflight_hl[buf] = false | endif
   elseif ev.type ==# 'symbols'
     var buf = get(ev, 'buf', 0)
     var syms = get(ev, 'symbols', [])
     ApplySymbols(buf, syms)
+    if has_key(s_inflight_syms, buf) | s_inflight_syms[buf] = false | endif
   elseif ev.type ==# 'ast'
     var buf = get(ev, 'buf', 0)
     var lines = get(ev, 'lines', [])
@@ -721,22 +750,22 @@ enddef
 
 # =============== 符号请求 ===============
 def RequestSymbolsNow(buf: number)
-  if !EnsureDaemon()
-    return
-  endif
+  if !EnsureDaemon() | return | endif
   var lang = DetectLang(buf)
-  if lang ==# ''
+  if lang ==# '' || !bufexists(buf) | return | endif
+
+  # in-flight 去重：同一 buf 的 symbols 请求未返回前不再发送
+  if get(s_inflight_syms, buf, false)
     return
   endif
-  if !bufexists(buf)
-    return
-  endif
+  s_inflight_syms[buf] = true
+
   var lines = getbufline(buf, 1, '$')
   var text = join(lines, "\n")
   var [vstart, vend] = VisibleRangeForBufSymbols(buf)
   var max_items = get(g:, 'ts_hl_outline_max_items', 300)
   Send({type: 'symbols', buf: buf, lang: lang, text: text, lstart: vstart, lend: vend, max_items: max_items})
-  Log('Requested symbols for buffer ' .. buf .. ' (' .. lang .. ') range ' .. vstart .. '-' .. vend .. ' max ' .. max_items)
+  Log('Requested symbols for buffer ' .. buf .. ' ...')
 enddef
 
 def ScheduleSymbols(buf: number)
@@ -859,39 +888,76 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
 
   var max_items = get(g:, 'ts_hl_outline_max_items', 300)
   if len(items) > max_items
-    var [vstart, vend] = VisibleRangeForBufSymbols(s_outline_src_buf)
-    var near: list<dict<any>> = []
-    var rest: list<dict<any>> = []
+    # 使用真实视口（无边距），避免 near 覆盖全文件
+    var [vstart, vend] = VisibleViewportRangeForBuf(s_outline_src_buf)
+    var total = BufLineCount(s_outline_src_buf)
+    # 用整数中心的两倍，避免浮点
+    var center2 = vstart + vend
+
+    # 拆成视口内/上方/下方
+    var near:  list<dict<any>> = []
+    var above: list<dict<any>> = []
+    var below: list<dict<any>> = []
     for s in items
       var l = get(s, 'lnum', 1)
       if l >= vstart && l <= vend
-        near->add(s)
+        call add(near, s)
+      elseif l < vstart
+        call add(above, s)
       else
-        rest->add(s)
+        call add(below, s)
       endif
     endfor
 
-    var selected: list<dict<any>> = near[ : max_items - 1]
-    if len(selected) < max_items
-      var pref_kinds = ['namespace', 'type', 'struct', 'enum', 'class', 'trait', 'function', 'method', 'macro', 'const']
-      var rest_pref: list<dict<any>> = []
-      var rest_other: list<dict<any>> = []
-      for s in rest
-        if index(pref_kinds, get(s, 'kind', '')) >= 0
-          rest_pref->add(s)
-        else
-          rest_other->add(s)
+    # 上方：从近到远（大->小），下方：从近到远（小->大）
+    call sort(above, (a, b) => get(b, 'lnum', 0) - get(a, 'lnum', 0))
+    call sort(below, (a, b) => get(a, 'lnum', 0) - get(b, 'lnum', 0))
+
+    # 初始选择：视口内
+    var selected = near[ : max_items - 1]
+    var need = max_items - len(selected)
+    if need > 0
+      # 判断更靠近底部还是顶部，靠底部时优先补上方（即当前屏上方、但接近尾部的符号）
+      var bias_above_first = (total - vend) < (vstart - 1)
+      if bias_above_first
+        if len(above) > 0
+          selected += above[ : min([need, len(above)]) - 1]
+          need = max_items - len(selected)
         endif
-      endfor
-      var need = max_items - len(selected)
-      if need > 0
-        selected += rest_pref[ : need - 1]
-        need = max_items - len(selected)
-        if need > 0
-          selected += rest_other[ : need - 1]
+        if need > 0 && len(below) > 0
+          selected += below[ : min([need, len(below)]) - 1]
+          need = max_items - len(selected)
+        endif
+      else
+        if len(below) > 0
+          selected += below[ : min([need, len(below)]) - 1]
+          need = max_items - len(selected)
+        endif
+        if need > 0 && len(above) > 0
+          selected += above[ : min([need, len(above)]) - 1]
+          need = max_items - len(selected)
         endif
       endif
     endif
+
+    # 若还不够：按离视口中心的“整数距离”补齐
+    if len(selected) < max_items
+      var rest: list<dict<any>> = []
+      for s in items
+        if index(selected, s) < 0
+          rest->add(s)
+        endif
+      endfor
+      # 距离度量：dist = |2*lnum - center2|
+      rest->sort((a, b) => {
+        var la = get(a, 'lnum', 0)
+        var lb = get(b, 'lnum', 0)
+        return abs(la * 2 - center2) - abs(lb * 2 - center2)
+      })
+      var gap = max_items - len(selected)
+      selected += rest[ : min([gap, len(rest)]) - 1]
+    endif
+
     items = selected
   endif
 
@@ -1035,7 +1101,7 @@ export def OutlineRefresh()
   if s_outline_src_buf == 0 || !bufexists(s_outline_src_buf)
     return
   endif
-  RequestSymbolsNow(s_outline_src_buf)
+  ScheduleSymbols(s_outline_src_buf)
 enddef
 
 export def OutlineJump()
@@ -1064,29 +1130,22 @@ export def OutlineJump()
   normal! zv
 enddef
 
-# =============== 修改：请求调度 ===============
+# =============== 请求调度 ===============
 def RequestNow(buf: number)
-  if !EnsureDaemon()
-    return
-  endif
+  if !EnsureDaemon() | return | endif
   var lang = DetectLang(buf)
-  if lang ==# ''
+  if lang ==# '' || !bufexists(buf) | return | endif
+
+  # in-flight 去重：同一 buf 的 highlight 请求未返回前不再发送
+  if get(s_inflight_hl, buf, false)
     return
   endif
-  if !bufexists(buf)
-    return
-  endif
+  s_inflight_hl[buf] = true
+
   var lines = getbufline(buf, 1, '$')
   var text = join(lines, "\n")
 
   var [hstart, hend] = VisibleRangeForBuf(buf)
   Send({type: 'highlight', buf: buf, lang: lang, text: text, lstart: hstart, lend: hend})
-  Log('Requested highlight for buffer ' .. buf .. ' (' .. lang .. ') range ' .. hstart .. '-' .. hend)
-
-  if s_outline_win != 0 && s_outline_src_buf == buf
-    var [sstart, send] = VisibleRangeForBufSymbols(buf)
-    var max_items = get(g:, 'ts_hl_outline_max_items', 300)
-    Send({type: 'symbols', buf: buf, lang: lang, text: text, lstart: sstart, lend: send, max_items: max_items})
-    Log('Requested symbols (inline) for buffer ' .. buf .. ' (' .. lang .. ') range ' .. sstart .. '-' .. send .. ' max ' .. max_items)
-  endif
+  Log('Requested highlight for buffer ' .. buf .. ' ...')
 enddef

@@ -12,10 +12,10 @@ g:ts_hl_auto_enable_filetypes = get(g:, 'ts_hl_auto_enable_filetypes',
   ['rust', 'c', 'cpp', 'javascript', 'vim'])
 g:ts_hl_auto_stop = get(g:, 'ts_hl_auto_stop', 1)
 
-g:ts_hl_debug = get(g:, 'ts_hl_debug', 1)
+g:ts_hl_debug = get(g:, 'ts_hl_debug', 0)
 g:ts_hl_log_file = get(g:, 'ts_hl_log_file', '/tmp/ts-hl.log')
 
-g:ts_hl_outline_width = get(g:, 'ts_hl_outline_width', 32)
+g:ts_hl_outline_width = get(g:, 'ts_hl_outline_width', 40)
 
 # Outline UI 配置
 g:ts_hl_outline_fancy = get(g:, 'ts_hl_outline_fancy', 1)
@@ -23,7 +23,7 @@ g:ts_hl_outline_disable_props = get(g:, 'ts_hl_outline_disable_props', 0)
 g:ts_hl_outline_hide_icon = get(g:, 'ts_hl_outline_hide_icon', 0)
 g:ts_hl_outline_ascii = get(g:, 'ts_hl_outline_ascii', 0)
 g:ts_hl_outline_show_position = get(g:, 'ts_hl_outline_show_position', 1)
-g:ts_hl_outline_max_items = get(g:, 'ts_hl_outline_max_items', 100)
+g:ts_hl_outline_max_items = get(g:, 'ts_hl_outline_max_items', 400)
 
 # Outline 过滤配置
 g:ts_hl_outline_hide_inner_functions = get(g:, 'ts_hl_outline_hide_inner_functions', 1)
@@ -31,7 +31,7 @@ g:ts_hl_outline_exclude_patterns = get(g:, 'ts_hl_outline_exclude_patterns', [])
 
 # =============== 可见范围/懒高亮配置 ===============
 g:ts_hl_view_margin = get(g:, 'ts_hl_view_margin', 120)            # 高亮用：上下缓冲行数
-g:ts_hl_symbols_view_margin = get(g:, 'ts_hl_symbols_view_margin', 500)  # 符号用：上下缓冲行数
+g:ts_hl_symbols_view_margin = get(g:, 'ts_hl_symbols_view_margin', 5000)  # 符号用：上下缓冲行数
 g:ts_hl_scroll_debounce = get(g:, 'ts_hl_scroll_debounce', 300)     # 滚动/移动防抖(ms)
 g:ts_hl_max_props = get(g:, 'ts_hl_max_props', 20000)               # 单次最多 textprop 数
 
