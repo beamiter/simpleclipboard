@@ -73,7 +73,6 @@ def IsSupportedLang(buf: number): bool
 enddef
 
 def EnsureHlGroupsAndProps()
-  # 默认链接（用户可覆盖）
   highlight default link TSComment Comment
   highlight default link TSString String
   highlight default link TStringRegex String
@@ -124,11 +123,9 @@ def EnsureHlGroupsAndProps()
   highlight default link TSAttribute PreProc
   highlight default link TSVariant Constant
 
-  # Outline 专用组
   highlight default link TsHlOutlineGuide Comment
   highlight default link TsHlOutlinePos LineNr
 
-  # 注册 textprop 类型（总是尝试；已存在忽略）
   for g in s_groups
     try
       call prop_type_add(g, {highlight: g, combine: v:true, priority: 11})
@@ -163,8 +160,8 @@ def FindDaemon(): string
   return ''
 enddef
 
-# 计算缓冲区在所有窗口中的联合可见范围，并加上上下边距
-def VisibleRangeForBuf(buf: number): list<number>
+# 计算缓冲区在所有窗口中的联合可见范围，并加上上下边距（通用）
+def VisibleRangeForBufWithMargin(buf: number, margin: number): list<number>
   var lnum_end = len(getbufline(buf, 1, '$'))
   var wins = win_findbuf(buf)
   if len(wins) == 0
@@ -177,20 +174,29 @@ def VisibleRangeForBuf(buf: number): list<number>
     start = min([start, info.topline])
     stop  = max([stop, info.botline])
   endfor
-  var margin = get(g:, 'ts_hl_view_margin', 120)
   start = max([1, start - margin])
   stop  = min([lnum_end, stop + margin])
   return [start, stop]
+enddef
+
+# 高亮用（默认 120）
+def VisibleRangeForBuf(buf: number): list<number>
+  var margin = get(g:, 'ts_hl_view_margin', 120)
+  return VisibleRangeForBufWithMargin(buf, margin)
+enddef
+
+# 符号用（默认 500）
+def VisibleRangeForBufSymbols(buf: number): list<number>
+  var margin = get(g:, 'ts_hl_symbols_view_margin', 500)
+  return VisibleRangeForBufWithMargin(buf, margin)
 enddef
 
 def ApplyHighlights(buf: number, spans: list<dict<any>>)
   if !bufexists(buf)
     return
   endif
-
   var [vstart, vend] = VisibleRangeForBuf(buf)
 
-  # 清除上一次应用的范围，避免全缓冲区清空
   if has_key(s_last_ranges, buf)
     var prev = s_last_ranges[buf]
     if len(prev) == 2 && prev[1] >= prev[0]
@@ -368,7 +374,6 @@ def AutoEnableForBuffer(buf: number)
     Enable()
   endif
   s_active_bufs[buf] = true
-  # 懒高亮：不要立刻请求，交给调度
   ScheduleRequest(buf, 'edit')
 enddef
 
@@ -405,8 +410,6 @@ export def Enable()
     autocmd CursorMoved,CursorMovedI * call ts_hl#OnScroll(bufnr())
     autocmd BufWinLeave,BufDelete * call ts_hl#OnBufClose(str2nr(expand('<abuf>')))
   augroup END
-
-  # 不在此处立刻触发 OnBufEvent，避免重复请求风暴
 enddef
 
 export def Disable()
@@ -418,7 +421,6 @@ export def Disable()
     autocmd!
   augroup END
 
-  # 清理所有缓冲的定时器
   for [k, tid] in items(s_req_timers)
     if tid != 0 && exists('*timer_stop')
       try
@@ -527,9 +529,7 @@ def KindToTSGroup(kind: string): string
   endif
 enddef
 
-# 可配置 fancy 图标（默认启用），ASCII fallback
 def FancyIcon(kind: string): string
-  # 新增：允许彻底隐藏图标（不显示任何符号）
   if get(g:, 'ts_hl_outline_hide_icon', 0)
     return ''
   endif
@@ -550,7 +550,6 @@ def FancyIcon(kind: string): string
     if kind ==# 'field'        | return '' | endif
     if kind ==# 'variant'      | return '' | endif
   endif
-  # ASCII fallback（纯 ASCII）
   if kind ==# 'function'     | return 'f' | endif
   if kind ==# 'method'       | return 'm' | endif
   if kind ==# 'type'         | return 'T' | endif
@@ -567,22 +566,17 @@ def FancyIcon(kind: string): string
   return ''
 enddef
 
-# 基于“容器归属”的树构建
-# 节点结构: {name, kind, lnum, col, idx, children: []}
 def BuildTreeByContainer(syms: list<dict<any>>): list<dict<any>>
   var roots: list<dict<any>> = []
   var containers: dict<any> = {}
-  # 允许这些类型作为容器（可承载子节点）
   var container_kinds = ['namespace', 'class', 'struct', 'enum', 'type', 'variant', 'function']
 
   def ContainerKey(k: string, n: string, ln: number, co: number): string
-    # 位置可选；未知位置用 0:0
     var l = ln > 0 ? ln : 0
     var c = co > 0 ? co : 0
     return k .. '::' .. n .. '@' .. l .. ':' .. c
   enddef
 
-  # 第一遍：把所有容器自身加入（保留位置与 idx）
   for i in range(len(syms))
     var s = syms[i]
     var kind = get(s, 'kind', '')
@@ -597,12 +591,10 @@ def BuildTreeByContainer(syms: list<dict<any>>): list<dict<any>>
     endif
   endfor
 
-  # 第二遍：将子符号挂到对应容器
   for i in range(len(syms))
     var s = syms[i]
     var kind = get(s, 'kind', '')
     var is_container = index(container_kinds, kind) >= 0
-    # 容器自身已经加入
     if is_container
       continue
     endif
@@ -626,7 +618,6 @@ def BuildTreeByContainer(syms: list<dict<any>>): list<dict<any>>
       if has_key(containers, pkey)
         containers[pkey].children->add(node)
       else
-        # 容器符号不在列表中（例如没有捕获到），创建占位容器，使用位置帮助区分
         var parent = {name: cn, kind: ck, lnum: cl, col: cc, idx: -1, children: [node]}
         containers[pkey] = parent
         roots->add(parent)
@@ -639,7 +630,6 @@ def BuildTreeByContainer(syms: list<dict<any>>): list<dict<any>>
   return roots
 enddef
 
-# 树前缀（│├└─）
 def BuildTreePrefix(ancestor_last: list<bool>, is_last: bool): string
   var use_ascii = get(g:, 'ts_hl_outline_ascii', 0)
   var s_vert = use_ascii ? '|' : '│'
@@ -656,7 +646,6 @@ def BuildTreePrefix(ancestor_last: list<bool>, is_last: bool): string
   return pref
 enddef
 
-# 渲染树为行，并计算每段的“字节列”区间（1-based）
 def RenderTree(nodes: list<dict<any>>, show_pos: bool): dict<any>
   var lines: list<string> = []
   var linemap: list<number> = []
@@ -685,7 +674,7 @@ def RenderTree(nodes: list<dict<any>>, show_pos: bool): dict<any>
       var pos_end    = pos_bytes == 0 ? 0 : (pos_start + pos_bytes)
 
       lines->add(line)
-      linemap->add(n.idx)  # 容器节点为 -1，不可跳转
+      linemap->add(n.idx)
       meta->add({
       prefix_len: pref_bytes,
       icon_col: icon_col,
@@ -721,7 +710,7 @@ def RequestSymbolsNow(buf: number)
   endif
   var lines = getbufline(buf, 1, '$')
   var text = join(lines, "\n")
-  var [vstart, vend] = VisibleRangeForBuf(buf)
+  var [vstart, vend] = VisibleRangeForBufSymbols(buf)
   var max_items = get(g:, 'ts_hl_outline_max_items', 300)
   Send({type: 'symbols', buf: buf, lang: lang, text: text, lstart: vstart, lend: vend, max_items: max_items})
   Log('Requested symbols for buffer ' .. buf .. ' (' .. lang .. ') range ' .. vstart .. '-' .. vend .. ' max ' .. max_items)
@@ -794,7 +783,6 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
 
   var items: list<dict<any>> = syms
 
-  # 隐藏内嵌函数
   var hide_inner = get(g:, 'ts_hl_outline_hide_inner_functions', 1) ? true : false
   if hide_inner
     var filtered: list<dict<any>> = []
@@ -807,7 +795,6 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
     items = filtered
   endif
 
-  # 按名字模式排除
   var pats = get(g:, 'ts_hl_outline_exclude_patterns', [])
   if type(pats) == v:t_list && len(pats) > 0
     var filtered2: list<dict<any>> = []
@@ -826,7 +813,6 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
     items = filtered2
   endif
 
-  # 可选：大幅减负，隐藏字段/变体（推荐）
   if get(g:, 'ts_hl_outline_hide_fields', 1)
     var tmp: list<dict<any>> = []
     for s in items
@@ -848,10 +834,9 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
     items = tmp2
   endif
 
-  # 截断：最多 N 项，优先保留“可视范围内的符号”和“重要种类”
   var max_items = get(g:, 'ts_hl_outline_max_items', 300)
   if len(items) > max_items
-    var [vstart, vend] = VisibleRangeForBuf(s_outline_src_buf)
+    var [vstart, vend] = VisibleRangeForBufSymbols(s_outline_src_buf)
     var near: list<dict<any>> = []
     var rest: list<dict<any>> = []
     for s in items
@@ -887,10 +872,8 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
     items = selected
   endif
 
-  # 缓存符号用于跳转（与渲染一致）
   s_outline_items = items
 
-  # 构建树与渲染
   var nodes = BuildTreeByContainer(items)
   var show_pos = get(g:, 'ts_hl_outline_show_position', 1) ? true : false
   var out = RenderTree(nodes, show_pos)
@@ -908,7 +891,6 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
       call setline(1, lines)
       var last = len(lines)
 
-      # 删除多余旧行
       var cur_last = line('$')
       if cur_last > last
         try
@@ -917,14 +899,12 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
         endtry
       endif
 
-      # 根据开关：禁用 props（建议禁用）
       var disable_props = get(g:, 'ts_hl_outline_disable_props', 1) ? true : false
       try
         call prop_clear(1, last, {bufnr: s_outline_buf})
       catch
       endtry
       if !disable_props
-        # 保留原有加色逻辑（如需）
         for i in range(len(lines))
           var lnum = i + 1
           if len(out.meta) <= i
@@ -1076,13 +1056,14 @@ def RequestNow(buf: number)
   var lines = getbufline(buf, 1, '$')
   var text = join(lines, "\n")
 
-  var [vstart, vend] = VisibleRangeForBuf(buf)
-  Send({type: 'highlight', buf: buf, lang: lang, text: text, lstart: vstart, lend: vend})
-  Log('Requested highlight for buffer ' .. buf .. ' (' .. lang .. ') range ' .. vstart .. '-' .. vend)
+  var [hstart, hend] = VisibleRangeForBuf(buf)
+  Send({type: 'highlight', buf: buf, lang: lang, text: text, lstart: hstart, lend: hend})
+  Log('Requested highlight for buffer ' .. buf .. ' (' .. lang .. ') range ' .. hstart .. '-' .. hend)
 
   if s_outline_win != 0 && s_outline_src_buf == buf
+    var [sstart, send] = VisibleRangeForBufSymbols(buf)
     var max_items = get(g:, 'ts_hl_outline_max_items', 300)
-    Send({type: 'symbols', buf: buf, lang: lang, text: text, lstart: vstart, lend: vend, max_items: max_items})
-    Log('Requested symbols (inline) for buffer ' .. buf .. ' (' .. lang .. ') range ' .. vstart .. '-' .. vend .. ' max ' .. max_items)
+    Send({type: 'symbols', buf: buf, lang: lang, text: text, lstart: sstart, lend: send, max_items: max_items})
+    Log('Requested symbols (inline) for buffer ' .. buf .. ' (' .. lang .. ') range ' .. sstart .. '-' .. send .. ' max ' .. max_items)
   endif
 enddef

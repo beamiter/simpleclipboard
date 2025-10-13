@@ -1,9 +1,7 @@
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
-use std::{
-    io::{BufRead, BufReader, Write},
-    ops,
-};
+use std::io::{BufRead, BufReader, Write};
+use std::ops;
 use tree_sitter::StreamingIterator;
 
 mod queries;
@@ -27,11 +25,11 @@ enum Request {
         lang: String,
         text: String,
         #[serde(default)]
-        lstart: Option<u32>, // 新增：可见范围开始行(1-based)
+        lstart: Option<u32>, // 可选：可见范围开始行(1-based)，由客户端传入（通常为更大 margin）
         #[serde(default)]
-        lend: Option<u32>, // 新增：可见范围结束行(1-based)
+        lend: Option<u32>, // 可选：可见范围结束行(1-based)
         #[serde(default)]
-        max_items: Option<usize>, // 新增：最多返回条数
+        max_items: Option<usize>, // 可选：最多返回条数
     },
     #[serde(rename = "dump_ast")]
     DumpAst {
