@@ -12,17 +12,18 @@ g:ts_hl_auto_enable_filetypes = get(g:, 'ts_hl_auto_enable_filetypes',
   ['rust', 'c', 'cpp', 'javascript', 'vim'])
 g:ts_hl_auto_stop = get(g:, 'ts_hl_auto_stop', 1)
 
-g:ts_hl_debug = get(g:, 'ts_hl_debug', 0)
+g:ts_hl_debug = get(g:, 'ts_hl_debug', 1)
 g:ts_hl_log_file = get(g:, 'ts_hl_log_file', '/tmp/ts-hl.log')
 
 g:ts_hl_outline_width = get(g:, 'ts_hl_outline_width', 32)
 
 # Outline UI 配置
-g:ts_hl_outline_fancy = get(g:, 'ts_hl_outline_fancy', 0)
-g:ts_hl_outline_disable_props = get(g:, 'ts_hl_outline_disable_props', 1)
-g:ts_hl_outline_hide_icon = get(g:, 'ts_hl_outline_hide_icon', 1)
+g:ts_hl_outline_fancy = get(g:, 'ts_hl_outline_fancy', 1)
+g:ts_hl_outline_disable_props = get(g:, 'ts_hl_outline_disable_props', 0)
+g:ts_hl_outline_hide_icon = get(g:, 'ts_hl_outline_hide_icon', 0)
 g:ts_hl_outline_ascii = get(g:, 'ts_hl_outline_ascii', 0)
 g:ts_hl_outline_show_position = get(g:, 'ts_hl_outline_show_position', 1)
+g:ts_hl_outline_max_items = get(g:, 'ts_hl_outline_max_items', 10)
 
 # Outline 过滤配置
 g:ts_hl_outline_hide_inner_functions = get(g:, 'ts_hl_outline_hide_inner_functions', 1)

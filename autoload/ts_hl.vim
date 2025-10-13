@@ -29,7 +29,7 @@ const s_groups = [
   'TSProperty', 'TSField',
   'TSMacro', 'TSAttribute',
   'TSVariant'
-]
+  ]
 
 # =============== 工具 ===============
 def Log(msg: string)
@@ -68,7 +68,7 @@ def IsSupportedLang(buf: number): bool
   var supported = [
     'rust', 'javascript', 'javascriptreact', 'jsx', 'c', 'cpp', 'cc',
     'vim', 'vimrc'
-  ]
+    ]
   return index(supported, ft) >= 0
 enddef
 
@@ -281,8 +281,8 @@ def EnsureDaemon(): bool
         s_running = false
         s_job = v:null
         Log('Daemon exited with code ' .. code)
-      },
-      stoponexit: 'term'
+    },
+    stoponexit: 'term'
     })
   catch
     s_job = v:null
@@ -687,14 +687,14 @@ def RenderTree(nodes: list<dict<any>>, show_pos: bool): dict<any>
       lines->add(line)
       linemap->add(n.idx)  # 容器节点为 -1，不可跳转
       meta->add({
-        prefix_len: pref_bytes,
-        icon_col: icon_col,
-        icon_w: icon_bytes,
-        name_start: name_start,
-        name_end: name_end,
-        pos_start: pos_start,
-        pos_end: pos_end,
-        kind: n.kind
+      prefix_len: pref_bytes,
+      icon_col: icon_col,
+      icon_w: icon_bytes,
+      name_start: name_start,
+      name_end: name_end,
+      pos_start: pos_start,
+      pos_end: pos_end,
+      kind: n.kind
       })
 
       if len(n.children) > 0
@@ -790,10 +790,9 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
     return
   endif
 
-  # 使用局部变量，不要修改只读参数 syms
   var items: list<dict<any>> = syms
 
-  # 过滤：隐藏内嵌函数（如 dump_ast 里的 walk）
+  # 隐藏内嵌函数
   var hide_inner = get(g:, 'ts_hl_outline_hide_inner_functions', 1) ? true : false
   if hide_inner
     var filtered: list<dict<any>> = []
@@ -806,7 +805,7 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
     items = filtered
   endif
 
-  # 过滤：按名字模式排除
+  # 按名字模式排除
   var pats = get(g:, 'ts_hl_outline_exclude_patterns', [])
   if type(pats) == v:t_list && len(pats) > 0
     var filtered2: list<dict<any>> = []
@@ -825,13 +824,74 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
     items = filtered2
   endif
 
-  # 缓存符号（用于跳转）
+  # 可选：大幅减负，隐藏字段/变体（推荐）
+  if get(g:, 'ts_hl_outline_hide_fields', 1)
+    var tmp: list<dict<any>> = []
+    for s in items
+      if get(s, 'kind', '') ==# 'field'
+        continue
+      endif
+      tmp->add(s)
+    endfor
+    items = tmp
+  endif
+  if get(g:, 'ts_hl_outline_hide_variants', 1)
+    var tmp2: list<dict<any>> = []
+    for s in items
+      if get(s, 'kind', '') ==# 'variant'
+        continue
+      endif
+      tmp2->add(s)
+    endfor
+    items = tmp2
+  endif
+
+  # 截断：最多 N 项，优先保留“可视范围内的符号”和“重要种类”
+  var max_items = get(g:, 'ts_hl_outline_max_items', 300)
+  if len(items) > max_items
+    var [vstart, vend] = VisibleRangeForBuf(s_outline_src_buf)
+    var near: list<dict<any>> = []
+    var rest: list<dict<any>> = []
+    for s in items
+      var l = get(s, 'lnum', 1)
+      if l >= vstart && l <= vend
+        near->add(s)
+      else
+        rest->add(s)
+      endif
+    endfor
+
+    var selected: list<dict<any>> = near[ : max_items - 1]
+    if len(selected) < max_items
+      var pref_kinds = ['namespace', 'type', 'struct', 'enum', 'class', 'trait', 'function', 'method', 'macro', 'const']
+      var rest_pref: list<dict<any>> = []
+      var rest_other: list<dict<any>> = []
+      for s in rest
+        if index(pref_kinds, get(s, 'kind', '')) >= 0
+          rest_pref->add(s)
+        else
+          rest_other->add(s)
+        endif
+      endfor
+      var need = max_items - len(selected)
+      if need > 0
+        selected += rest_pref[ : need - 1]
+        need = max_items - len(selected)
+        if need > 0
+          selected += rest_other[ : need - 1]
+        endif
+      endif
+    endif
+    items = selected
+    # 可选：提示被截断
+    # echom '[ts-hl] outline truncated to ' .. len(items) .. ' items (from ' .. len(syms) .. ')'
+  endif
+
+  # 缓存符号用于跳转（与渲染一致）
   s_outline_items = items
 
-  # 1) 构建容器树
+  # 构建树与渲染（保持你原逻辑）
   var nodes = BuildTreeByContainer(items)
-
-  # 2) 渲染
   var show_pos = get(g:, 'ts_hl_outline_show_position', 1) ? true : false
   var out = RenderTree(nodes, show_pos)
   var lines = out.lines
@@ -857,54 +917,32 @@ def ApplySymbols(buf: number, syms: list<dict<any>>)
         endtry
       endif
 
-      # 新增：允许禁用 Outline 的所有 textprop 高亮（仅保留纯文本）
-      var disable_props = get(g:, 'ts_hl_outline_disable_props', 0) ? true : false
-      if disable_props
-        # 清理旧的 props，避免残留色块
-        try
-          call prop_clear(1, last, {bufnr: s_outline_buf})
-        catch
-        endtry
-      else
-        # 原来的高亮逻辑（保留）
-        try
-          call prop_clear(1, last, {bufnr: s_outline_buf})
-        catch
-        endtry
-
+      # 根据开关：禁用 props（建议禁用）
+      var disable_props = get(g:, 'ts_hl_outline_disable_props', 1) ? true : false
+      try
+        call prop_clear(1, last, {bufnr: s_outline_buf})
+      catch
+      endtry
+      if !disable_props
+        # 保留原有加色逻辑（如需）
         for i in range(len(lines))
           var lnum = i + 1
           if len(out.meta) <= i
             continue
           endif
           var m = out.meta[i]
-
           if m.prefix_len > 0
-            try
-              call prop_add(lnum, 1, {type: 'TsHlOutlineGuide', bufnr: s_outline_buf, end_lnum: lnum, end_col: m.prefix_len + 1})
-            catch
-            endtry
+            try | call prop_add(lnum, 1, {type: 'TsHlOutlineGuide', bufnr: s_outline_buf, end_lnum: lnum, end_col: m.prefix_len + 1}) | catch | endtry
           endif
-
           var grp = KindToTSGroup(m.kind)
-
-          try
-            call prop_add(lnum, m.icon_col, {type: grp, bufnr: s_outline_buf, end_lnum: lnum, end_col: m.icon_col + m.icon_w})
-          catch
-          endtry
-
-          if m.name_end > m.name_start
-            try
-              call prop_add(lnum, m.name_start, {type: grp, bufnr: s_outline_buf, end_lnum: lnum, end_col: m.name_end})
-            catch
-            endtry
+          if m.icon_w > 0
+            try | call prop_add(lnum, m.icon_col, {type: grp, bufnr: s_outline_buf, end_lnum: lnum, end_col: m.icon_col + m.icon_w}) | catch | endtry
           endif
-
+          if m.name_end > m.name_start
+            try | call prop_add(lnum, m.name_start, {type: grp, bufnr: s_outline_buf, end_lnum: lnum, end_col: m.name_end}) | catch | endtry
+          endif
           if m.pos_start > 0 && m.pos_end > m.pos_start
-            try
-              call prop_add(lnum, m.pos_start, {type: 'TsHlOutlinePos', bufnr: s_outline_buf, end_lnum: lnum, end_col: m.pos_end})
-            catch
-            endtry
+            try | call prop_add(lnum, m.pos_start, {type: 'TsHlOutlinePos', bufnr: s_outline_buf, end_lnum: lnum, end_col: m.pos_end}) | catch | endtry
           endif
         endfor
       endif
