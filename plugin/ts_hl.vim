@@ -27,6 +27,8 @@ g:ts_hl_outline_max_items = get(g:, 'ts_hl_outline_max_items', 1000)
 
 # Outline 过滤配置
 g:ts_hl_outline_hide_inner_functions = get(g:, 'ts_hl_outline_hide_inner_functions', 1)
+g:ts_hl_outline_hide_fields = get(g:, 'ts_hl_outline_hide_fields', 0)
+g:ts_hl_outline_hide_variants = get(g:, 'ts_hl_outline_hide_variants', 0)
 g:ts_hl_outline_exclude_patterns = get(g:, 'ts_hl_outline_exclude_patterns', [])
 
 # =============== 可见范围/懒高亮配置 ===============
