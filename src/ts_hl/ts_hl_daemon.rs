@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::ops;
 use tree_sitter::StreamingIterator;
@@ -9,34 +10,34 @@ mod queries;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum Request {
+    #[serde(rename = "set_text")]
+    SetText {
+        buf: i64,
+        lang: String,
+        text: String,
+    },
     #[serde(rename = "highlight")]
     Highlight {
         buf: i64,
         lang: String,
-        text: String,
         #[serde(default)]
-        lstart: Option<u32>, // 可选：可见范围开始行(1-based)
+        lstart: Option<u32>,
         #[serde(default)]
-        lend: Option<u32>, // 可选：可见范围结束行(1-based)
+        lend: Option<u32>,
     },
     #[serde(rename = "symbols")]
     Symbols {
         buf: i64,
         lang: String,
-        text: String,
         #[serde(default)]
-        lstart: Option<u32>, // 可选：可见范围开始行(1-based)，由客户端传入（通常为更大 margin）
+        lstart: Option<u32>,
         #[serde(default)]
-        lend: Option<u32>, // 可选：可见范围结束行(1-based)
+        lend: Option<u32>,
         #[serde(default)]
-        max_items: Option<usize>, // 可选：最多返回条数
+        max_items: Option<usize>,
     },
     #[serde(rename = "dump_ast")]
-    DumpAst {
-        buf: i64,
-        lang: String,
-        text: String,
-    },
+    DumpAst { buf: i64, lang: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -48,8 +49,14 @@ enum Event {
     Symbols { buf: i64, symbols: Vec<Symbol> },
     #[serde(rename = "ast")]
     Ast { buf: i64, lines: Vec<String> },
+    #[serde(rename = "ok")]
+    Ok { buf: i64, op: String },
     #[serde(rename = "error")]
-    Error { message: String },
+    Error {
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        buf: Option<i64>,
+    },
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -73,10 +80,125 @@ struct Symbol {
     container_col: Option<u32>,
 }
 
+// 缓存：每个 buf 保存 lang/text/tree
+struct BufCache {
+    lang: String,
+    text: String,
+    tree: tree_sitter::Tree,
+    language: tree_sitter::Language,
+}
+
+struct Server {
+    // 缓存：buf -> BufCache
+    cache: HashMap<i64, BufCache>,
+    // 复用 parser（按语言）
+    parsers: HashMap<String, tree_sitter::Parser>,
+}
+
+impl Server {
+    fn new() -> Self {
+        Server {
+            cache: HashMap::new(),
+            parsers: HashMap::new(),
+        }
+    }
+
+    fn language_and_queries(
+        &self,
+        lang: &str,
+    ) -> Result<(tree_sitter::Language, &'static str, &'static str)> {
+        let (language, hl_query, sym_query) = match lang {
+            "rust" => (
+                tree_sitter_rust::LANGUAGE.into(),
+                queries::RUST_QUERY,
+                queries::RUST_SYM_QUERY,
+            ),
+            "javascript" => (
+                tree_sitter_javascript::LANGUAGE.into(),
+                queries::JS_QUERY,
+                queries::JS_SYM_QUERY,
+            ),
+            "c" => (
+                tree_sitter_c::LANGUAGE.into(),
+                queries::C_QUERY,
+                queries::C_SYM_QUERY,
+            ),
+            "cpp" => (
+                tree_sitter_cpp::LANGUAGE.into(),
+                queries::CPP_QUERY,
+                queries::CPP_SYM_QUERY,
+            ),
+            "vim" => (
+                tree_sitter_vim::language(),
+                queries::VIM_QUERY,
+                queries::VIM_SYM_QUERY,
+            ),
+            _ => return Err(anyhow!("unsupported language: {lang}")),
+        };
+        Ok((language, hl_query, sym_query))
+    }
+
+    fn parser_for(
+        &mut self,
+        lang: &str,
+        language: tree_sitter::Language,
+    ) -> Result<&mut tree_sitter::Parser> {
+        use std::collections::hash_map::Entry;
+        Ok(match self.parsers.entry(lang.to_string()) {
+            Entry::Occupied(e) => {
+                let p = e.into_mut();
+                // 确保语言设置正确
+                p.set_language(&language)?;
+                p
+            }
+            Entry::Vacant(v) => {
+                let mut p = tree_sitter::Parser::new();
+                p.set_language(&language)?;
+                v.insert(p)
+            }
+        })
+    }
+
+    fn set_text(&mut self, buf: i64, lang: &str, text: String) -> Result<()> {
+        let (language, _, _) = self.language_and_queries(lang)?;
+        let p = self.parser_for(lang, language.clone())?;
+        // 这里为简单起见不做增量编辑，直接全量 parse
+        let tree = p
+            .parse(&text, None)
+            .ok_or_else(|| anyhow!("parse failed"))?;
+        self.cache.insert(
+            buf,
+            BufCache {
+                lang: lang.to_string(),
+                text,
+                tree,
+                language,
+            },
+        );
+        Ok(())
+    }
+
+    fn get_cache(&self, buf: i64, lang: &str) -> Result<&BufCache> {
+        let c = self
+            .cache
+            .get(&buf)
+            .ok_or_else(|| anyhow!("buffer not cached: {buf}"))?;
+        if c.lang != lang {
+            return Err(anyhow!(
+                "lang mismatch for buf {buf}: cached={}, req={}",
+                c.lang,
+                lang
+            ));
+        }
+        Ok(c)
+    }
+}
+
 fn main() -> Result<()> {
     let stdin = std::io::stdin();
     let mut lines = BufReader::new(stdin).lines();
     let mut out = std::io::stdout();
+    let mut server = Server::new();
 
     while let Some(line) = lines.next() {
         let line = match line {
@@ -93,26 +215,43 @@ fn main() -> Result<()> {
                     &mut out,
                     &Event::Error {
                         message: format!("invalid request: {e}"),
+                        buf: None,
                     },
                 )?;
                 continue;
             }
         };
         match req {
+            Request::SetText { buf, lang, text } => match server.set_text(buf, &lang, text) {
+                Ok(()) => send(
+                    &mut out,
+                    &Event::Ok {
+                        buf,
+                        op: "set_text".to_string(),
+                    },
+                )?,
+                Err(e) => send(
+                    &mut out,
+                    &Event::Error {
+                        message: e.to_string(),
+                        buf: Some(buf),
+                    },
+                )?,
+            },
             Request::Highlight {
                 buf,
                 lang,
-                text,
                 lstart,
                 lend,
             } => {
                 let lrange = lstart.zip(lend);
-                match run_highlight(&lang, &text, lrange) {
+                match run_highlight_cached(&mut server, buf, &lang, lrange) {
                     Ok(spans) => send(&mut out, &Event::Highlights { buf, spans })?,
                     Err(e) => send(
                         &mut out,
                         &Event::Error {
                             message: e.to_string(),
+                            buf: Some(buf),
                         },
                     )?,
                 }
@@ -120,29 +259,34 @@ fn main() -> Result<()> {
             Request::Symbols {
                 buf,
                 lang,
-                text,
                 lstart,
                 lend,
                 max_items,
             } => {
                 let lrange = lstart.zip(lend);
-                match run_symbols(&lang, &text, lrange, max_items) {
+                match run_symbols_cached(&mut server, buf, &lang, lrange, max_items) {
                     Ok(symbols) => send(&mut out, &Event::Symbols { buf, symbols })?,
                     Err(e) => send(
                         &mut out,
                         &Event::Error {
                             message: e.to_string(),
+                            buf: Some(buf),
                         },
                     )?,
                 }
             }
-            Request::DumpAst { buf, lang, text } => {
-                let lines = dump_ast(&lang, &text)?;
-                send(&mut out, &Event::Ast { buf, lines })?;
-            }
+            Request::DumpAst { buf, lang } => match dump_ast_cached(&mut server, buf, &lang) {
+                Ok(lines) => send(&mut out, &Event::Ast { buf, lines })?,
+                Err(e) => send(
+                    &mut out,
+                    &Event::Error {
+                        message: e.to_string(),
+                        buf: Some(buf),
+                    },
+                )?,
+            },
         }
     }
-
     Ok(())
 }
 
@@ -179,48 +323,27 @@ fn line_range_to_byte_range(text: &str, ls: u32, le: u32) -> ops::Range<usize> {
     ops::Range { start, end }
 }
 
-// 支持按可选的行范围过滤（有重叠的才返回）
-fn run_highlight(lang: &str, text: &str, lrange: Option<(u32, u32)>) -> Result<Vec<Span>> {
-    if lang == "vim" {
-        if let Ok(mut spans) = run_ts_query_highlight(text) {
-            if let Some((ls, le)) = lrange {
-                spans.retain(|sp| !(sp.end_lnum < ls || sp.lnum > le));
-            }
-            return Ok(spans);
-        } else {
-            let mut spans = highlight_vim_naive(text);
-            if let Some((ls, le)) = lrange {
-                spans.retain(|sp| !(sp.end_lnum < ls || sp.lnum > le));
-            }
-            return Ok(spans);
-        }
-    }
-
-    let mut parser = tree_sitter::Parser::new();
-    let (language, query_src) = match lang {
-        "rust" => (tree_sitter_rust::LANGUAGE, queries::RUST_QUERY),
-        "javascript" => (tree_sitter_javascript::LANGUAGE, queries::JS_QUERY),
-        "c" => (tree_sitter_c::LANGUAGE, queries::C_QUERY),
-        "cpp" => (tree_sitter_cpp::LANGUAGE, queries::CPP_QUERY),
-        _ => return Err(anyhow!("unsupported language: {lang}")),
-    };
-    parser.set_language(&language.into())?;
-
-    let tree = parser
-        .parse(text, None)
-        .ok_or_else(|| anyhow!("parse failed"))?;
-    let root = tree.root_node();
-
-    let query = tree_sitter::Query::new(&language.into(), query_src)?;
+// 复用缓存的 Tree + bytes 做高亮
+fn run_highlight_cached(
+    server: &mut Server,
+    buf: i64,
+    lang: &str,
+    lrange: Option<(u32, u32)>,
+) -> Result<Vec<Span>> {
+    let cache = server.get_cache(buf, lang)?;
+    let (_, hl_query_src, _) = server.language_and_queries(&cache.lang)?;
+    let bytes = cache.text.as_bytes();
+    let root = cache.tree.root_node();
+    let query = tree_sitter::Query::new(&cache.language, hl_query_src)?;
     let mut cursor = tree_sitter::QueryCursor::new();
 
     if let Some((ls, le)) = lrange {
-        let b_range = line_range_to_byte_range(text, ls, le);
+        let b_range = line_range_to_byte_range(&cache.text, ls, le);
         cursor.set_byte_range(b_range);
     }
 
     let mut spans = Vec::with_capacity(4096);
-    let mut it = cursor.captures(&query, root, text.as_bytes());
+    let mut it = cursor.captures(&query, root, bytes);
     while let Some((m, cap_ix)) = it.next() {
         let cap = m.captures[*cap_ix];
         let node = cap.node;
@@ -252,47 +375,23 @@ fn run_highlight(lang: &str, text: &str, lrange: Option<(u32, u32)>) -> Result<V
     Ok(spans)
 }
 
-fn run_symbols(
+// 复用缓存 Tree + bytes 做符号
+fn run_symbols_cached(
+    server: &mut Server,
+    buf: i64,
     lang: &str,
-    text: &str,
     lrange: Option<(u32, u32)>,
     max_items: Option<usize>,
 ) -> Result<Vec<Symbol>> {
-    if lang == "vim" {
-        let mut symbols = run_ts_query_symbols(text, lrange, max_items).unwrap_or_default();
-        let fallback = symbols_vim_naive(text, lrange, max_items);
-        for s in fallback.into_iter().filter(|x| x.kind == "function") {
-            let dup = symbols.iter().any(|x| {
-                x.kind == s.kind && x.name == s.name && x.lnum == s.lnum && x.col == s.col
-            });
-            if !dup {
-                symbols.push(s);
-            }
-        }
-        symbols.sort_by_key(|s| (s.lnum, s.col));
-        return Ok(symbols);
-    }
-
-    let mut parser = tree_sitter::Parser::new();
-    let (language, query_src) = match lang {
-        "rust" => (tree_sitter_rust::LANGUAGE, queries::RUST_SYM_QUERY),
-        "javascript" => (tree_sitter_javascript::LANGUAGE, queries::JS_SYM_QUERY),
-        "c" => (tree_sitter_c::LANGUAGE, queries::C_SYM_QUERY),
-        "cpp" => (tree_sitter_cpp::LANGUAGE, queries::CPP_SYM_QUERY),
-        _ => return Err(anyhow!("unsupported language: {lang}")),
-    };
-    parser.set_language(&language.into())?;
-
-    let tree = parser
-        .parse(text, None)
-        .ok_or_else(|| anyhow!("parse failed"))?;
-    let root = tree.root_node();
-
-    let query = tree_sitter::Query::new(&language.into(), query_src)?;
+    let cache = server.get_cache(buf, lang)?;
+    let (_, _, sym_query_src) = server.language_and_queries(&cache.lang)?;
+    let bytes = cache.text.as_bytes();
+    let root = cache.tree.root_node();
+    let query = tree_sitter::Query::new(&cache.language, sym_query_src)?;
     let mut cursor = tree_sitter::QueryCursor::new();
 
     if let Some((ls, le)) = lrange {
-        let b_range = line_range_to_byte_range(text, ls, le);
+        let b_range = line_range_to_byte_range(&cache.text, ls, le);
         cursor.set_byte_range(b_range);
     }
 
@@ -311,8 +410,6 @@ fn run_symbols(
     let mut seen_at = HashMap::<(u32, u32), String>::new();
 
     let mut symbols = Vec::with_capacity(limit.min(4096));
-    let bytes = text.as_bytes();
-
     let mut it = cursor.captures(&query, root, bytes);
     while let Some((m, cap_ix)) = it.next() {
         if symbols.len() >= limit {
@@ -341,7 +438,7 @@ fn run_symbols(
         }
 
         let (mut ckind, mut cname_opt, mut clnum, mut ccol) = (None, None, None, None);
-        if lang == "rust" {
+        if cache.lang == "rust" {
             match kind.as_str() {
                 "field" => {
                     if let Some(vinfo) = variant_info(node, bytes) {
@@ -449,463 +546,9 @@ fn run_symbols(
     Ok(symbols)
 }
 
-fn run_ts_query_highlight(text: &str) -> Result<Vec<Span>> {
-    let (language, query_src) = (tree_sitter_vim::language(), queries::VIM_QUERY);
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language)?;
-    let tree = parser
-        .parse(text, None)
-        .ok_or_else(|| anyhow!("parse failed"))?;
-    let root = tree.root_node();
-    let query = match tree_sitter::Query::new(&language, query_src) {
-        Ok(q) => q,
-        Err(_) => return Ok(Vec::new()),
-    };
-    let mut cursor = tree_sitter::QueryCursor::new();
-
-    let mut spans = Vec::new();
-    let mut it = cursor.captures(&query, root, text.as_bytes());
-    while let Some((m, cap_ix)) = it.next() {
-        let cap = m.captures[*cap_ix];
-        let node = cap.node;
-        if node.start_byte() >= node.end_byte() {
-            continue;
-        }
-        let cname = query.capture_names()[cap.index as usize];
-        let group = map_capture_to_group(cname).to_string();
-        let sp = node.start_position();
-        let ep = node.end_position();
-        spans.push(Span {
-            lnum: sp.row as u32 + 1,
-            col: sp.column as u32 + 1,
-            end_lnum: ep.row as u32 + 1,
-            end_col: ep.column as u32 + 1,
-            group,
-        });
-    }
-    Ok(spans)
-}
-
-fn run_ts_query_symbols(
-    text: &str,
-    lrange: Option<(u32, u32)>,
-    max_items: Option<usize>,
-) -> Result<Vec<Symbol>> {
-    let (language, query_src) = (tree_sitter_vim::language(), queries::VIM_SYM_QUERY);
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language)?;
-    let tree = parser
-        .parse(text, None)
-        .ok_or_else(|| anyhow!("parse failed"))?;
-    let root = tree.root_node();
-    let query = match tree_sitter::Query::new(&language, query_src) {
-        Ok(q) => q,
-        Err(_) => return Ok(Vec::new()),
-    };
-    let mut cursor = tree_sitter::QueryCursor::new();
-    if let Some((ls, le)) = lrange {
-        let b_range = line_range_to_byte_range(text, ls, le);
-        cursor.set_byte_range(b_range);
-    }
-
-    let limit = max_items.unwrap_or(usize::MAX);
-    let mut symbols = Vec::with_capacity(limit.min(256));
-    let bytes = text.as_bytes();
-    let mut it = cursor.captures(&query, root, bytes);
-
-    while let Some((m, cap_ix)) = it.next() {
-        if symbols.len() >= limit {
-            break;
-        }
-        let cap = m.captures[*cap_ix];
-        let node = cap.node;
-        if node.start_byte() >= node.end_byte() {
-            continue;
-        }
-        let cname = query.capture_names()[cap.index as usize];
-        let kind = map_symbol_capture(cname);
-        if kind.is_empty() {
-            continue;
-        }
-        let name = node_text(node, bytes);
-        let sp = node.start_position();
-        let lnum = sp.row as u32 + 1;
-        let col = sp.column as u32 + 1;
-
-        if let Some((ls, le)) = lrange {
-            if lnum < ls || lnum > le {
-                continue;
-            }
-        }
-
-        symbols.push(Symbol {
-            name,
-            kind: kind.to_string(),
-            lnum,
-            col,
-            container_kind: None,
-            container_name: None,
-            container_lnum: None,
-            container_col: None,
-        });
-    }
-    symbols.sort_by_key(|s| (s.lnum, s.col));
-    Ok(symbols)
-}
-
-// ===== Vim 的回退解析（不依赖 tree-sitter），保证可用 =====
-fn highlight_vim_naive(text: &str) -> Vec<Span> {
-    let mut spans = Vec::with_capacity(512);
-    for (i, line) in text.lines().enumerate() {
-        let lnum = i as u32 + 1;
-        let bytes = line.as_bytes();
-
-        if let Some(non_ws_ix) = line.find(|c: char| !c.is_whitespace()) {
-            if line[non_ws_ix..].starts_with('"') {
-                spans.push(Span {
-                    lnum,
-                    col: (non_ws_ix as u32) + 1,
-                    end_lnum: lnum,
-                    end_col: (line.len() as u32) + 1,
-                    group: "TSComment".to_string(),
-                });
-                continue;
-            }
-        }
-
-        for quote in ['\'', '"'] {
-            let mut idx = 0usize;
-            while let Some(s) = line[idx..].find(quote) {
-                let start = idx + s;
-                if let Some(e) = line[start + 1..].find(quote) {
-                    let end = start + 1 + e + 1;
-                    spans.push(Span {
-                        lnum,
-                        col: (start as u32) + 1,
-                        end_lnum: lnum,
-                        end_col: (end as u32) + 1,
-                        group: "TSString".to_string(),
-                    });
-                    idx = end;
-                } else {
-                    break;
-                }
-            }
-        }
-
-        let keywords = [
-            "function",
-            "endfunction",
-            "return",
-            "if",
-            "endif",
-            "elseif",
-            "else",
-            "for",
-            "endfor",
-            "while",
-            "endwhile",
-            "try",
-            "catch",
-            "finally",
-            "endtry",
-            "set",
-            "autocmd",
-            "augroup",
-            "end",
-            "command",
-            "lua",
-            "map",
-            "noremap",
-            "nnoremap",
-            "inoremap",
-            "vnoremap",
-            "tnoremap",
-            "vim9script",
-            "def",
-            "enddef",
-            "var",
-            "const",
-            "import",
-            "export",
-        ];
-        for kw in keywords.iter() {
-            let mut pos = 0usize;
-            while let Some(p) = line[pos..].find(kw) {
-                let s = pos + p;
-                let b1 = s.checked_sub(1).map(|i| bytes[i]).unwrap_or(b' ');
-                let b2 = bytes.get(s + kw.len()).copied().unwrap_or(b' ');
-                let is_boundary = !is_ident_char(b1) && !is_ident_char(b2);
-                if is_boundary {
-                    spans.push(Span {
-                        lnum,
-                        col: (s as u32) + 1,
-                        end_lnum: lnum,
-                        end_col: (s as u32) + (kw.len() as u32) + 1,
-                        group: "TSKeyword".to_string(),
-                    });
-                }
-                pos = s + kw.len();
-            }
-        }
-
-        let mut j = 0usize;
-        while j < bytes.len() {
-            if bytes[j].is_ascii_digit() {
-                let k = j
-                    + 1
-                    + line[j + 1..]
-                        .find(|c: char| !c.is_ascii_digit())
-                        .unwrap_or(0);
-                spans.push(Span {
-                    lnum,
-                    col: (j as u32) + 1,
-                    end_lnum: lnum,
-                    end_col: (k as u32) + 1,
-                    group: "TSNumber".to_string(),
-                });
-                j = k;
-            } else {
-                j += 1;
-            }
-        }
-
-        let puncts = [
-            '(', ')', '{', '}', '[', ']', ',', ';', '.', '=', '+', '-', '*', '/',
-        ];
-        for (ci, ch) in line.chars().enumerate() {
-            if puncts.contains(&ch) {
-                let grp = match ch {
-                    '(' | ')' | '{' | '}' | '[' | ']' => "TSPunctBracket",
-                    ',' | ';' | '.' => "TSPunctDelimiter",
-                    '=' | '+' | '-' | '*' | '/' => "TSOperator",
-                    _ => "TSOperator",
-                };
-                spans.push(Span {
-                    lnum,
-                    col: (ci as u32) + 1,
-                    end_lnum: lnum,
-                    end_col: (ci as u32) + 2,
-                    group: grp.to_string(),
-                });
-            }
-        }
-
-        for decl_kw in ["var", "const"] {
-            if let Some(pos) = line.find(decl_kw) {
-                let after = &line[pos + decl_kw.len()..];
-                if let Some(name_start_rel) = after.find(|c: char| !c.is_whitespace()) {
-                    let name_start = pos + decl_kw.len() + name_start_rel;
-                    let name_end = name_start
-                        + after[name_start_rel..]
-                            .find(|c: char| c.is_whitespace() || c == '=')
-                            .unwrap_or(after.len() - name_start_rel);
-                    if name_end > name_start {
-                        spans.push(Span {
-                            lnum,
-                            col: (name_start as u32) + 1,
-                            end_lnum: lnum,
-                            end_col: (name_end as u32) + 1,
-                            group: "TSVariable".to_string(),
-                        });
-                    }
-                }
-            }
-        }
-
-        let mut def_pos = None;
-        if let Some(p) = line.find("def") {
-            def_pos = Some(p);
-        }
-        if let Some(p) = line.find("export def") {
-            def_pos = Some(p + "export ".len());
-        }
-        if let Some(dp) = def_pos {
-            let mut s = dp + "def".len();
-            let bytes = line.as_bytes();
-            while s < line.len() && bytes[s].is_ascii_whitespace() {
-                s += 1;
-            }
-            let name_start = s;
-            while s < line.len() {
-                let b = bytes[s];
-                if b.is_ascii_whitespace() || b == b'(' {
-                    break;
-                }
-                s += 1;
-            }
-            if s > name_start {
-                spans.push(Span {
-                    lnum,
-                    col: (name_start as u32) + 1,
-                    end_lnum: lnum,
-                    end_col: (s as u32) + 1,
-                    group: "TSFunction".to_string(),
-                });
-            }
-        }
-    }
-    spans
-}
-
-fn symbols_vim_naive(
-    text: &str,
-    lrange: Option<(u32, u32)>,
-    max_items: Option<usize>,
-) -> Vec<Symbol> {
-    let limit = max_items.unwrap_or(usize::MAX);
-    let mut syms = Vec::with_capacity(limit.min(128));
-    for (i, line) in text.lines().enumerate() {
-        let lnum = i as u32 + 1;
-        if let Some((ls, le)) = lrange {
-            if lnum < ls || lnum > le {
-                continue;
-            }
-        }
-        if syms.len() >= limit {
-            break;
-        }
-
-        let trimmed = line.trim_start();
-        let base_col = (line.len() - trimmed.len()) as u32 + 1;
-        let b = trimmed.as_bytes();
-
-        if trimmed.starts_with("def") || trimmed.starts_with("export def") {
-            let mut s: usize;
-            if trimmed.starts_with("export def") {
-                s = "export def".len();
-            } else {
-                s = "def".len();
-            }
-            while s < trimmed.len() && b[s].is_ascii_whitespace() {
-                s += 1;
-            }
-            let name_start = s;
-            while s < trimmed.len() {
-                let ch = b[s];
-                if ch.is_ascii_whitespace() || ch == b'(' {
-                    break;
-                }
-                s += 1;
-            }
-            if s > name_start {
-                let name = &trimmed[name_start..s];
-                syms.push(Symbol {
-                    name: name.to_string(),
-                    kind: "function".to_string(),
-                    lnum,
-                    col: base_col + (name_start as u32),
-                    container_kind: None,
-                    container_name: None,
-                    container_lnum: None,
-                    container_col: None,
-                });
-            }
-        } else if trimmed.starts_with("function") {
-            let mut s = "function".len();
-            if s < trimmed.len() && b[s] == b'!' {
-                s += 1;
-            }
-            while s < trimmed.len() && b[s].is_ascii_whitespace() {
-                s += 1;
-            }
-            let name_start = s;
-            while s < trimmed.len() {
-                let ch = b[s];
-                if ch.is_ascii_whitespace() || ch == b'(' {
-                    break;
-                }
-                s += 1;
-            }
-            if s > name_start {
-                let name = &trimmed[name_start..s];
-                syms.push(Symbol {
-                    name: name.to_string(),
-                    kind: "function".to_string(),
-                    lnum,
-                    col: base_col + (name_start as u32),
-                    container_kind: None,
-                    container_name: None,
-                    container_lnum: None,
-                    container_col: None,
-                });
-            }
-        } else if trimmed.starts_with("augroup") {
-            let rest = &trimmed["augroup".len()..].trim_start();
-            if !rest.is_empty() {
-                let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-                let name = &rest[..end];
-                let offset_ws = trimmed["augroup".len()..].len() - rest.len();
-                syms.push(Symbol {
-                    name: name.to_string(),
-                    kind: "namespace".to_string(),
-                    lnum,
-                    col: base_col + "augroup".len() as u32 + offset_ws as u32,
-                    container_kind: None,
-                    container_name: None,
-                    container_lnum: None,
-                    container_col: None,
-                });
-            }
-        } else if trimmed.starts_with("command") {
-            let mut s = "command".len();
-            if s < trimmed.len() && b[s] == b'!' {
-                s += 1;
-            }
-            while s < trimmed.len() && b[s].is_ascii_whitespace() {
-                s += 1;
-            }
-            let name_start = s;
-            while s < trimmed.len() {
-                let ch = b[s];
-                if ch.is_ascii_whitespace() {
-                    break;
-                }
-                s += 1;
-            }
-            if s > name_start {
-                let name = &trimmed[name_start..s];
-                syms.push(Symbol {
-                    name: name.to_string(),
-                    kind: "macro".to_string(),
-                    lnum,
-                    col: base_col + (name_start as u32),
-                    container_kind: None,
-                    container_name: None,
-                    container_lnum: None,
-                    container_col: None,
-                });
-            }
-        }
-    }
-    syms.sort_by_key(|s| (s.lnum, s.col));
-    syms
-}
-
-fn is_ident_char(b: u8) -> bool {
-    (b as char).is_ascii_alphanumeric() || b == b'_'
-}
-
-fn node_text(node: tree_sitter::Node, bytes: &[u8]) -> String {
-    let s = &bytes[node.start_byte() as usize..node.end_byte() as usize];
-    String::from_utf8_lossy(s).to_string()
-}
-
-fn dump_ast(lang: &str, text: &str) -> Result<Vec<String>> {
-    let mut parser = tree_sitter::Parser::new();
-    let language = match lang {
-        "vim" => tree_sitter_vim::language(),
-        "rust" => tree_sitter_rust::LANGUAGE.into(),
-        "javascript" => tree_sitter_javascript::LANGUAGE.into(),
-        "c" => tree_sitter_c::LANGUAGE.into(),
-        "cpp" => tree_sitter_cpp::LANGUAGE.into(),
-        _ => return Err(anyhow!("unsupported language: {lang}")),
-    };
-    parser.set_language(&language)?;
-    let tree = parser
-        .parse(text, None)
-        .ok_or_else(|| anyhow!("parse failed"))?;
-    let root = tree.root_node();
+fn dump_ast_cached(server: &mut Server, buf: i64, lang: &str) -> Result<Vec<String>> {
+    let cache = server.get_cache(buf, lang)?;
+    let root = cache.tree.root_node();
 
     let mut lines = Vec::new();
     fn walk(node: tree_sitter::Node, depth: usize, out: &mut Vec<String>) {
@@ -989,6 +632,17 @@ fn map_symbol_capture(name: &str) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
+fn is_ident_char(b: u8) -> bool {
+    (b as char).is_ascii_alphanumeric() || b == b'_'
+}
+
+fn node_text(node: tree_sitter::Node, bytes: &[u8]) -> String {
+    let s = &bytes[node.start_byte() as usize..node.end_byte() as usize];
+    String::from_utf8_lossy(s).to_string()
+}
+
+// ---- Rust-specific helpers (保持不变) ----
 fn ancestor_kind<'a>(mut node: tree_sitter::Node<'a>, want: &str) -> Option<tree_sitter::Node<'a>> {
     while let Some(parent) = node.parent() {
         if parent.kind() == want {
@@ -998,7 +652,6 @@ fn ancestor_kind<'a>(mut node: tree_sitter::Node<'a>, want: &str) -> Option<tree
     }
     None
 }
-
 fn child_text_by_kind(node: tree_sitter::Node, child_kind: &str, bytes: &[u8]) -> Option<String> {
     let mut cursor = node.walk();
     for ch in node.children(&mut cursor) {
@@ -1008,7 +661,6 @@ fn child_text_by_kind(node: tree_sitter::Node, child_kind: &str, bytes: &[u8]) -
     }
     None
 }
-
 fn child_pos_by_kind(node: tree_sitter::Node, child_kind: &str) -> Option<(u32, u32)> {
     let mut cursor = node.walk();
     for ch in node.children(&mut cursor) {
@@ -1019,7 +671,6 @@ fn child_pos_by_kind(node: tree_sitter::Node, child_kind: &str) -> Option<(u32, 
     }
     None
 }
-
 fn struct_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u32)> {
     if let Some(st) = ancestor_kind(node, "struct_item") {
         if let Some(name) = child_text_by_kind(st, "type_identifier", bytes) {
@@ -1030,7 +681,6 @@ fn struct_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u3
     }
     None
 }
-
 fn enum_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u32)> {
     if let Some(en) = ancestor_kind(node, "enum_item") {
         if let Some(name) = child_text_by_kind(en, "type_identifier", bytes) {
@@ -1041,7 +691,6 @@ fn enum_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u32)
     }
     None
 }
-
 fn variant_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u32)> {
     let mut cur = node;
     while let Some(parent) = cur.parent() {
@@ -1056,7 +705,6 @@ fn variant_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u
     }
     None
 }
-
 fn impl_type_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u32)> {
     if let Some(im) = ancestor_kind(node, "impl_item") {
         let mut last: Option<(String, u32, u32)> = None;
@@ -1074,7 +722,6 @@ fn impl_type_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32,
     }
     None
 }
-
 fn mod_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u32)> {
     if let Some(md) = ancestor_kind(node, "mod_item") {
         if let Some(name) = child_text_by_kind(md, "identifier", bytes) {
@@ -1085,7 +732,6 @@ fn mod_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u32)>
     }
     None
 }
-
 fn outer_fn_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, u32)> {
     let mut cur = node;
     while let Some(parent) = cur.parent() {

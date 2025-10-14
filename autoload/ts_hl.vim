@@ -7,6 +7,12 @@ var s_enabled: bool = false
 var s_active_bufs: dict<bool> = {}
 # 每个缓冲的请求定时器
 var s_req_timers: dict<number> = {}
+# 缓冲文本同步定时器（set_text）
+var s_sync_timers: dict<number> = {}
+# 正在同步（等待 daemon ok）
+var s_inflight_sync: dict<bool> = {}
+# 已发送的 changedtick（避免重复 set_text）
+var s_sent_changedtick: dict<number> = {}
 # 上次应用的可见范围缓存 {bufnr: [start_lnum, end_lnum]}
 var s_last_ranges: dict<list<number>> = {}
 # =============== 侧边栏状态 ===============
@@ -167,7 +173,6 @@ def BufLineCount(buf: number): number
   if type(info) == v:t_list && len(info) > 0 && has_key(info[0], 'linecount')
     return info[0].linecount
   endif
-  # 兜底：极端情况下再用慢方法
   return len(getbufline(buf, 1, '$'))
 enddef
 
@@ -187,7 +192,6 @@ def VisibleViewportRangeForBuf(buf: number): list<number>
   return [start, stop]
 enddef
 
-# 计算缓冲区在所有窗口中的联合可见范围，并加上上下边距（通用）
 def VisibleRangeForBufWithMargin(buf: number, margin: number): list<number>
   var lnum_end = BufLineCount(buf)
   var wins = win_findbuf(buf)
@@ -206,13 +210,11 @@ def VisibleRangeForBufWithMargin(buf: number, margin: number): list<number>
   return [start, stop]
 enddef
 
-# 高亮用（默认 120）
 def VisibleRangeForBuf(buf: number): list<number>
   var margin = get(g:, 'ts_hl_view_margin', 120)
   return VisibleRangeForBufWithMargin(buf, margin)
 enddef
 
-# 符号用（默认 500）
 def VisibleRangeForBufSymbols(buf: number): list<number>
   var margin = get(g:, 'ts_hl_symbols_view_margin', 500)
   return VisibleRangeForBufWithMargin(buf, margin)
@@ -223,7 +225,6 @@ def ApplyHighlights(buf: number, spans: list<dict<any>>)
     return
   endif
   var [vstart, vend] = VisibleRangeForBuf(buf)
-
   if has_key(s_last_ranges, buf)
     var prev = s_last_ranges[buf]
     if len(prev) == 2 && prev[1] >= prev[0]
@@ -258,7 +259,6 @@ def ApplyHighlights(buf: number, spans: list<dict<any>>)
       break
     endif
   endfor
-
   s_last_ranges[buf] = [vstart, vend]
 enddef
 
@@ -277,7 +277,6 @@ def OnDaemonEvent(line: string)
   endif
   if ev.type ==# 'highlights'
     var buf = get(ev, 'buf', 0)
-    # 全局暂停时丢弃高亮结果
     if IsHighlightSuspended(buf)
       if has_key(s_inflight_hl, buf) | s_inflight_hl[buf] = false | endif
       return
@@ -294,8 +293,30 @@ def OnDaemonEvent(line: string)
     var buf = get(ev, 'buf', 0)
     var lines = get(ev, 'lines', [])
     ShowAst(buf, lines)
+  elseif ev.type ==# 'ok'
+    var buf = get(ev, 'buf', 0)
+    var op  = get(ev, 'op', '')
+    if op ==# 'set_text'
+      if has_key(s_inflight_sync, buf) | s_inflight_sync[buf] = false | endif
+      # 记录最新 changedtick 已同步
+      var ct = GetChangedTick(buf)
+      s_sent_changedtick[buf] = ct
+      # 收到 OK 后触发当前缓冲的请求
+      if !IsHighlightSuspended(buf)
+        ScheduleRequest(buf, 'edit')
+      endif
+      ScheduleSymbols(buf)
+    endif
   elseif ev.type ==# 'error'
+    var buf = get(ev, 'buf', 0)
     echom '[ts-hl] error: ' .. get(ev, 'message', '')
+    # 遇到错误时重置 in-flight，尝试同步文本并重试
+    if buf > 0
+      if has_key(s_inflight_syms, buf) | s_inflight_syms[buf] = false | endif
+      if has_key(s_inflight_hl, buf)  | s_inflight_hl[buf]  = false | endif
+      s_inflight_sync[buf] = false
+      ScheduleSync(buf)
+    endif
   endif
 enddef
 
@@ -362,9 +383,18 @@ def StopBufTimer(buf: number)
   endif
 enddef
 
+def StopSyncTimer(buf: number)
+  if has_key(s_sync_timers, buf) && s_sync_timers[buf] != 0 && exists('*timer_stop')
+    try
+      call timer_stop(s_sync_timers[buf])
+    catch
+    endtry
+    s_sync_timers[buf] = 0
+  endif
+enddef
+
 # =============== 全局暂停高亮：工具函数 ===============
 def IsHighlightSuspended(buf: number): bool
-  # 全局暂停：只要 outline 窗口开着且配置启用，就暂停所有缓冲高亮
   return s_outline_win != 0 && get(g:, 'ts_hl_suspend_highlight_on_outline', 0)
 enddef
 
@@ -415,6 +445,59 @@ def ResumeAllHighlights()
   endif
 enddef
 
+def GetChangedTick(buf: number): number
+  var info = getbufinfo(buf)
+  if type(info) == v:t_list && len(info) > 0 && has_key(info[0], 'changedtick')
+    return info[0].changedtick
+  endif
+  return 0
+enddef
+
+def SyncBufferNow(buf: number)
+  if !EnsureDaemon() | return | endif
+  if !bufexists(buf) | return | endif
+  var lang = DetectLang(buf)
+  if lang ==# '' | return | endif
+
+  var ct = GetChangedTick(buf)
+  var last_ct = get(s_sent_changedtick, buf, 0)
+  if last_ct == ct && get(s_inflight_sync, buf, false)
+    return
+  endif
+
+  var lines = getbufline(buf, 1, '$')
+  var text = join(lines, "\n")
+  s_inflight_sync[buf] = true
+  Send({type: 'set_text', buf: buf, lang: lang, text: text})
+  Log('Sent set_text for buffer ' .. buf .. ' (changedtick=' .. ct .. ')')
+enddef
+
+def ScheduleSync(buf: number)
+  if !bufexists(buf) | return | endif
+  if !IsSupportedLang(buf) | return | endif
+
+  var ct = GetChangedTick(buf)
+  var last_ct = get(s_sent_changedtick, buf, 0)
+  if ct == last_ct && !get(s_inflight_sync, buf, false)
+    return
+  endif
+
+  StopSyncTimer(buf)
+  var ms = get(g:, 'ts_hl_debounce', 120)
+  if exists('*timer_start')
+    try
+      s_sync_timers[buf] = timer_start(ms, (id) => {
+        s_sync_timers[buf] = 0
+        SyncBufferNow(buf)
+      })
+    catch
+      SyncBufferNow(buf)
+    endtry
+  else
+    SyncBufferNow(buf)
+  endif
+enddef
+
 def ScheduleRequest(buf: number, reason: string = 'edit')
   if !s_enabled
     return
@@ -422,13 +505,19 @@ def ScheduleRequest(buf: number, reason: string = 'edit')
   if !IsSupportedLang(buf)
     return
   endif
-  # 全局暂停时不再调度高亮
   if IsHighlightSuspended(buf)
     return
   endif
 
-  StopBufTimer(buf)
+  # 未同步/正在同步时，先同步文本，跳过这次高亮
+  var ct = GetChangedTick(buf)
+  var last_ct = get(s_sent_changedtick, buf, 0)
+  if ct != last_ct || get(s_inflight_sync, buf, false)
+    ScheduleSync(buf)
+    return
+  endif
 
+  StopBufTimer(buf)
   var ms = reason ==# 'scroll' ? get(g:, 'ts_hl_scroll_debounce', 300) : get(g:, 'ts_hl_debounce', 120)
 
   if exists('*timer_start')
@@ -465,6 +554,8 @@ def AutoEnableForBuffer(buf: number)
     Enable()
   endif
   s_active_bufs[buf] = true
+  # 初次进入立即同步
+  ScheduleSync(buf)
   ScheduleRequest(buf, 'edit')
 enddef
 
@@ -514,13 +605,19 @@ export def Disable()
 
   for [k, tid] in items(s_req_timers)
     if tid != 0 && exists('*timer_stop')
-      try
-        call timer_stop(tid)
-      catch
-      endtry
+      try | call timer_stop(tid) | catch | endtry
     endif
   endfor
   s_req_timers = {}
+
+  for [k, tid] in items(s_sync_timers)
+    if tid != 0 && exists('*timer_stop')
+      try | call timer_stop(tid) | catch | endtry
+    endif
+  endfor
+  s_sync_timers = {}
+  s_inflight_sync = {}
+  s_sent_changedtick = {}
 
   if s_running && s_job != v:null
     try
@@ -545,6 +642,9 @@ enddef
 
 export def OnBufEvent(buf: number)
   AutoEnableForBuffer(buf)
+  # 先保证文本同步
+  ScheduleSync(buf)
+
   if s_outline_win != 0 && buf != s_outline_buf && getbufvar(buf, '&filetype') !=# 'ts_hl_outline'
     if IsSupportedLang(buf)
       s_outline_src_buf = buf
@@ -585,99 +685,10 @@ export def OnBufClose(buf: number)
     s_active_bufs[buf] = false
   endif
   StopBufTimer(buf)
+  StopSyncTimer(buf)
   if exists('*timer_start')
     timer_start(2000, (id) => CheckAndStopDaemon())
   endif
-enddef
-
-def KindIcon(kind: string): string
-  if kind ==# 'function'
-    return 'ƒ'
-  elseif kind ==# 'method'
-    return 'm'
-  elseif kind ==# 'type' || kind ==# 'struct' || kind ==# 'class'
-    return 'T'
-  elseif kind ==# 'enum'
-    return 'E'
-  elseif kind ==# 'namespace'
-    return 'N'
-  elseif kind ==# 'variable'
-    return 'v'
-  elseif kind ==# 'const'
-    return 'C'
-  elseif kind ==# 'macro'
-    return 'M'
-  elseif kind ==# 'property' || kind ==# 'field'
-    return 'p'
-  elseif kind ==# 'variant'
-    return 'v'
-  else
-    return '?'
-  endif
-enddef
-
-# =============== Outline UI/Tree 工具 ===============
-def KindToTSGroup(kind: string): string
-  if kind ==# 'function'
-    return 'TSFunction'
-  elseif kind ==# 'method'
-    return 'TSMethod'
-  elseif kind ==# 'type' || kind ==# 'class' || kind ==# 'struct' || kind ==# 'enum'
-    return 'TSType'
-  elseif kind ==# 'namespace'
-    return 'TSNamespace'
-  elseif kind ==# 'variable'
-    return 'TSVariable'
-  elseif kind ==# 'const'
-    return 'TSConstBuiltin'
-  elseif kind ==# 'macro'
-    return 'TSMacro'
-  elseif kind ==# 'property'
-    return 'TSProperty'
-  elseif kind ==# 'field'
-    return 'TSField'
-  elseif kind ==# 'variant'
-    return 'TSVariant'
-  else
-    return 'TSVariable'
-  endif
-enddef
-
-def FancyIcon(kind: string): string
-  if get(g:, 'ts_hl_outline_hide_icon', 0)
-    return ''
-  endif
-
-  var fancy = get(g:, 'ts_hl_outline_fancy', 1)
-  if fancy
-    if kind ==# 'function'     | return '󰡱' | endif
-    if kind ==# 'method'       | return '󰆧' | endif
-    if kind ==# 'type'         | return '' | endif
-    if kind ==# 'class'        | return '' | endif
-    if kind ==# 'struct'       | return '' | endif
-    if kind ==# 'enum'         | return '' | endif
-    if kind ==# 'namespace'    | return '' | endif
-    if kind ==# 'variable'     | return '' | endif
-    if kind ==# 'const'        | return '' | endif
-    if kind ==# 'macro'        | return '' | endif
-    if kind ==# 'property'     | return '' | endif
-    if kind ==# 'field'        | return '' | endif
-    if kind ==# 'variant'      | return '' | endif
-  endif
-  if kind ==# 'function'     | return 'f' | endif
-  if kind ==# 'method'       | return 'm' | endif
-  if kind ==# 'type'         | return 'T' | endif
-  if kind ==# 'class'        | return 'T' | endif
-  if kind ==# 'struct'       | return 'T' | endif
-  if kind ==# 'enum'         | return 'E' | endif
-  if kind ==# 'namespace'    | return 'N' | endif
-  if kind ==# 'variable'     | return 'v' | endif
-  if kind ==# 'const'        | return 'C' | endif
-  if kind ==# 'macro'        | return 'M' | endif
-  if kind ==# 'property'     | return 'p' | endif
-  if kind ==# 'field'        | return 'p' | endif
-  if kind ==# 'variant'      | return 'v' | endif
-  return ''
 enddef
 
 def BuildTreeByContainer(syms: list<dict<any>>): list<dict<any>>
@@ -810,24 +821,118 @@ def RenderTree(nodes: list<dict<any>>, show_pos: bool): dict<any>
   return {lines: lines, linemap: linemap, meta: meta}
 enddef
 
+def KindToTSGroup(kind: string): string
+  if kind ==# 'function'
+    return 'TSFunction'
+  elseif kind ==# 'method'
+    return 'TSMethod'
+  elseif kind ==# 'type' || kind ==# 'class' || kind ==# 'struct' || kind ==# 'enum'
+    return 'TSType'
+  elseif kind ==# 'namespace'
+    return 'TSNamespace'
+  elseif kind ==# 'variable'
+    return 'TSVariable'
+  elseif kind ==# 'const'
+    return 'TSConstBuiltin'
+  elseif kind ==# 'macro'
+    return 'TSMacro'
+  elseif kind ==# 'property'
+    return 'TSProperty'
+  elseif kind ==# 'field'
+    return 'TSField'
+  elseif kind ==# 'variant'
+    return 'TSVariant'
+  else
+    return 'TSVariable'
+  endif
+enddef
+
+def KindIcon(kind: string): string
+  if kind ==# 'function'
+    return 'ƒ'
+  elseif kind ==# 'method'
+    return 'm'
+  elseif kind ==# 'type' || kind ==# 'struct' || kind ==# 'class'
+    return 'T'
+  elseif kind ==# 'enum'
+    return 'E'
+  elseif kind ==# 'namespace'
+    return 'N'
+  elseif kind ==# 'variable'
+    return 'v'
+  elseif kind ==# 'const'
+    return 'C'
+  elseif kind ==# 'macro'
+    return 'M'
+  elseif kind ==# 'property' || kind ==# 'field'
+    return 'p'
+  elseif kind ==# 'variant'
+    return 'v'
+  else
+    return '?'
+  endif
+enddef
+
+def FancyIcon(kind: string): string
+  if get(g:, 'ts_hl_outline_hide_icon', 0)
+    return ''
+  endif
+
+  var fancy = get(g:, 'ts_hl_outline_fancy', 1)
+  if fancy
+    if kind ==# 'function'     | return '󰡱' | endif
+    if kind ==# 'method'       | return '󰆧' | endif
+    if kind ==# 'type'         | return '' | endif
+    if kind ==# 'class'        | return '' | endif
+    if kind ==# 'struct'       | return '' | endif
+    if kind ==# 'enum'         | return '' | endif
+    if kind ==# 'namespace'    | return '' | endif
+    if kind ==# 'variable'     | return '' | endif
+    if kind ==# 'const'        | return '' | endif
+    if kind ==# 'macro'        | return '' | endif
+    if kind ==# 'property'     | return '' | endif
+    if kind ==# 'field'        | return '' | endif
+    if kind ==# 'variant'      | return '' | endif
+  endif
+  if kind ==# 'function'     | return 'f' | endif
+  if kind ==# 'method'       | return 'm' | endif
+  if kind ==# 'type'         | return 'T' | endif
+  if kind ==# 'class'        | return 'T' | endif
+  if kind ==# 'struct'       | return 'T' | endif
+  if kind ==# 'enum'         | return 'E' | endif
+  if kind ==# 'namespace'    | return 'N' | endif
+  if kind ==# 'variable'     | return 'v' | endif
+  if kind ==# 'const'        | return 'C' | endif
+  if kind ==# 'macro'        | return 'M' | endif
+  if kind ==# 'property'     | return 'p' | endif
+  if kind ==# 'field'        | return 'p' | endif
+  if kind ==# 'variant'      | return 'v' | endif
+  return ''
+enddef
+
 # =============== 符号请求 ===============
 def RequestSymbolsNow(buf: number)
   if !EnsureDaemon() | return | endif
   var lang = DetectLang(buf)
   if lang ==# '' || !bufexists(buf) | return | endif
 
-  # in-flight 去重：同一 buf 的 symbols 请求未返回前不再发送
+  # 未同步/正在同步时先同步
+  var ct = GetChangedTick(buf)
+  var last_ct = get(s_sent_changedtick, buf, 0)
+  if ct != last_ct || get(s_inflight_sync, buf, false)
+    ScheduleSync(buf)
+    return
+  endif
+
   if get(s_inflight_syms, buf, false)
     return
   endif
   s_inflight_syms[buf] = true
 
-  var lines = getbufline(buf, 1, '$')
-  var text = join(lines, "\n")
   var [vstart, vend] = VisibleRangeForBufSymbols(buf)
   var max_items = get(g:, 'ts_hl_outline_max_items', 300)
-  Send({type: 'symbols', buf: buf, lang: lang, text: text, lstart: vstart, lend: vend, max_items: max_items})
-  Log('Requested symbols for buffer ' .. buf .. ' ...')
+  Send({type: 'symbols', buf: buf, lang: lang, lstart: vstart, lend: vend, max_items: max_items})
+  Log('Requested symbols (range-only) for buffer ' .. buf .. ' ...')
 enddef
 
 def ScheduleSymbols(buf: number)
@@ -872,6 +977,7 @@ def ShowAst(src_buf: number, lines: list<string>)
   endtry
 enddef
 
+# DumpAST 使用缓存
 export def DumpAST()
   var buf = bufnr()
   if !bufexists(buf)
@@ -882,8 +988,9 @@ export def DumpAST()
     echo '[ts-hl] unsupported filetype for AST'
     return
   endif
-  var text = join(getbufline(buf, 1, '$'), "\n")
-  Send({type: 'dump_ast', buf: buf, lang: lang, text: text})
+  # 保证先同步
+  ScheduleSync(buf)
+  Send({type: 'dump_ast', buf: buf, lang: lang})
 enddef
 
 # =============== 渲染符号侧边栏（树形 + 高亮） ===============
@@ -1208,22 +1315,16 @@ def RequestNow(buf: number)
   if !EnsureDaemon() | return | endif
   var lang = DetectLang(buf)
   if lang ==# '' || !bufexists(buf) | return | endif
-
-  # 全局暂停时不发送高亮请求
   if IsHighlightSuspended(buf)
     return
   endif
 
-  # in-flight 去重：同一 buf 的 highlight 请求未返回前不再发送
   if get(s_inflight_hl, buf, false)
     return
   endif
   s_inflight_hl[buf] = true
 
-  var lines = getbufline(buf, 1, '$')
-  var text = join(lines, "\n")
-
   var [hstart, hend] = VisibleRangeForBuf(buf)
-  Send({type: 'highlight', buf: buf, lang: lang, text: text, lstart: hstart, lend: hend})
-  Log('Requested highlight for buffer ' .. buf .. ' ...')
+  Send({type: 'highlight', buf: buf, lang: lang, lstart: hstart, lend: hend})
+  Log('Requested highlight (range-only) for buffer ' .. buf .. ' ...')
 enddef
