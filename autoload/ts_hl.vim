@@ -1261,7 +1261,7 @@ export def OutlineClose()
   s_outline_items = []
   s_outline_linemap = []
   s_outline_src_buf = 0
-  echo '[ts-hl] outline closed'
+  Log('[ts-hl] outline closed')
 
   # 全局暂停 -> 恢复：关闭后主动刷新所有活跃缓冲
   if get(g:, 'ts_hl_suspend_highlight_on_outline', 0)
@@ -1308,6 +1308,21 @@ export def OutlineJump()
   endif
   call cursor(lnum, col)
   normal! zv
+enddef
+
+# 新增：WinClosed 事件回调（导出），用于判断关闭的是否为 outline 窗口
+export def OnWinClosed(wid_str: string)
+  var wid = 0
+  try
+    wid = str2nr(wid_str)
+  catch
+    wid = 0
+  endtry
+  if wid != 0 && wid == s_outline_win
+    # 如果关闭的是 outline 窗口，则走统一的清理逻辑
+    # 注意：此时窗口已被关闭，OutlineClose 内部 win_gotoid(s_outline_win) 会失败，但不影响清理状态
+    OutlineClose()
+  endif
 enddef
 
 # =============== 请求调度 ===============

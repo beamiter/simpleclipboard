@@ -66,3 +66,10 @@ augroup TsHlAutoStart
   autocmd!
   autocmd BufEnter,FileType * call ts_hl#OnBufEvent(bufnr())
 augroup END
+
+# 新增：当任何窗口关闭时，若是 outline 窗口则自动 OutlineClose
+augroup TsHlOutlineAutoClose
+  autocmd!
+  # WinClosed 的 <amatch> 是被关闭窗口的 winid（字符串）
+  autocmd WinClosed * call ts_hl#OnWinClosed(expand('<amatch>'))
+augroup END
