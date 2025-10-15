@@ -129,7 +129,7 @@ impl Server {
                 queries::CPP_SYM_QUERY,
             ),
             "vim" => (
-                tree_sitter_vim::language(),
+                tree_sitter_vim9::LANGUAGE.into(),
                 queries::VIM_QUERY,
                 queries::VIM_SYM_QUERY,
             ),
