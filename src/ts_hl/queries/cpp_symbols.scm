@@ -29,11 +29,11 @@
 (enum_specifier
   name: (type_identifier) @symbol.enum)
 
-; 命名空间
+; 命名空间（修正为 namespace_identifier）
 (namespace_definition
-  name: (identifier) @symbol.namespace)
+  name: (namespace_identifier) @symbol.namespace)
 
-; 变量声明（只抓 identifier，忽略复杂声明）
+; 变量声明（只抓 identifier）
 (declaration
   declarator: (init_declarator
     declarator: (identifier) @symbol.variable))
