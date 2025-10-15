@@ -12,6 +12,7 @@ g:simpletabline_key_sep       = get(g:, 'simpletabline_key_sep', '')   # 默认�
 g:simpletabline_ellipsis      = get(g:, 'simpletabline_ellipsis', ' … ')
 g:simpletabline_listed_only   = get(g:, 'simpletabline_listed_only', 1)
 g:simpletabline_superscript_index = get(g:, 'simpletabline_superscript_index', 1)
+g:simpletabline_pick_chars       = get(g:, 'simpletabline_pick_chars', 'asdfjkl;ghqweruiop')   # 默认无间隙
 
 # 高亮默认链接到内置 TabLine 组（可按需自定义）
 highlight default link SimpleTablineActive        TabLineSel
@@ -23,6 +24,7 @@ highlight default link SimpleTablineIndexActive   TabLineSel
 highlight default link SimpleTablineSep           TabLineFill
 # SepCurrent 将在后续函数里改为青色前景 + 继承 TabLineSel 背景（并加粗）
 highlight default link SimpleTablineSepCurrent    TabLineSel
+highlight SimpleTablinePickHint guifg=#ff0000 ctermfg=red gui=bold cterm=bold
 
 # 根据当前主题设置 SimpleTablineSepCurrent 为青色（前景），背景沿用 TabLineSel，并加粗
 def ApplySepCurrentHL()
@@ -47,6 +49,7 @@ set tabline=%!simpletabline#Tabline()
 # 命令与映射
 command! BufferPick  call simpletabline#BufferPick()
 nnoremap <silent> <leader>bp :BufferPick<CR>
+nnoremap <silent> <leader>bj :BufferPick<CR>
 command! BufferJump1 call simpletabline#BufferJump1()
 command! BufferJump2 call simpletabline#BufferJump2()
 command! BufferJump3 call simpletabline#BufferJump3()
@@ -80,4 +83,9 @@ augroup SimpleTablineAuto
         \ | highlight default link SimpleTablineSepCurrent    TabLineSel
         \ | call ApplySepCurrentHL()
         \ | catch | endtry
+augroup END
+
+augroup SimpleTablineRefresh
+  autocmd!
+  autocmd User SimpleTablineRefresh redrawtabline
 augroup END

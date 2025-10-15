@@ -5,9 +5,26 @@ var s_pick_mode: bool = false
 var s_pick_map: dict<number> = {}   # digit -> bufnr
 var s_last_visible: list<number> = []
 
+# Pick 模式用的字母序列（可配置）
+var s_pick_chars: list<string> = []
+var s_char_to_bufnr: dict<number> = {}
+
 # MRU 与索引分配
 var s_idx_to_buf: dict<number> = {}        # digit(1..9,0) -> bufnr
 var s_buf_to_idx: dict<number> = {}        # bufnr -> digit(1..9,0)
+
+def Log(msg: string, hl: string = 'None')
+  if get(g:, 'simpletabline_debug', 0) == 0
+    return
+  endif
+  try
+    echohl hl
+    echom '[SimpleTabline] ' .. msg
+  catch
+  finally
+    echohl None
+  endtry
+enddef
 
 # 配置获取（带默认）
 def Conf(name: string, default: any): any
@@ -71,7 +88,7 @@ def NormPath(p: string): string
   return q
 enddef
 
-# 返回 abs 相对于 root 的相对路径；若不在 root 下，返回空字符串
+# 返回 abs 相对于 root 的相对路径；若不在 root 下,返回空字符串
 def RelToRoot(abs: string, root: string): string
   if abs ==# '' || root ==# ''
     return ''
@@ -167,8 +184,6 @@ def ListedNormalBuffers(): list<dict<any>>
 enddef
 
 # 生成在 Tabline 上显示的名称：默认相对 SimpleTree 根并缩写
-# g:simpletabline_path_mode: 'abbr'|'rel'|'tail'|'abs'
-# g:simpletabline_fallback_cwd_root: 1 使用 CWD 作为 root（当未打开 SimpleTree 或 root 为空）
 def BufDisplayName(b: dict<any>): string
   var n = bufname(b.bufnr)
   if n ==# ''
@@ -202,11 +217,10 @@ def BufDisplayName(b: dict<any>): string
   endif
 enddef
 
-# 计算单项标签的“可见文字宽度”（不含高亮控制符）
-# 已移除 prefix/suffix，且默认去掉键位与名称之间的小间隙
+# 计算单项标签的"可见文字宽度"（不含高亮控制符）
 def LabelText(b: dict<any>, key: string): string
   var name = BufDisplayName(b)
-  var sep_key = Conf('simpletabline_key_sep', '')   # 默认无间隙
+  var sep_key = Conf('simpletabline_key_sep', '')
   var show_mod = Conf('simpletabline_show_modified', 1) != 0
   var mod_mark = (show_mod && get(b, 'changed', 0) == 1) ? ' +' : ''
 
@@ -219,13 +233,12 @@ def LabelText(b: dict<any>, key: string): string
   return base
 enddef
 
-# 构建当前可见窗口的缓冲区序列（含粘性窗口逻辑）
+# 构建当前可见窗口的缓冲区序列
 def ComputeVisible(all: list<dict<any>>, buf_keys: dict<string>): list<number>
   var cols = max([&columns, 20])
   var sep = Conf('simpletabline_item_sep', ' | ')
   var sep_w = strdisplaywidth(sep)
 
-  # 当前缓冲区索引
   var curbn = bufnr('%')
   var cur_idx = -1
   for i in range(len(all))
@@ -238,7 +251,6 @@ def ComputeVisible(all: list<dict<any>>, buf_keys: dict<string>): list<number>
     cur_idx = 0
   endif
 
-  # 预生成每个 bufnr 的 label 宽度
   var widths: list<number> = []
   var widths_by_bn: dict<number> = {}
   var i = 0
@@ -251,10 +263,9 @@ def ComputeVisible(all: list<dict<any>>, buf_keys: dict<string>): list<number>
     i += 1
   endwhile
 
-  # 留出一些边缘空间，避免溢出
   var budget = cols - 2
 
-  # ---------- 粘性分支 ----------
+  # 粘性分支
   if len(s_last_visible) > 0
     var present: dict<number> = {}
     for bi in all
@@ -305,9 +316,8 @@ def ComputeVisible(all: list<dict<any>>, buf_keys: dict<string>): list<number>
       return bs
     endif
   endif
-  # ---------- 结束粘性分支 ----------
 
-  # 原有“以当前为中心左右扩展”的计算
+  # 以当前为中心左右扩展
   var visible_idx: list<number> = [cur_idx]
   var used = widths[cur_idx]
   var left = cur_idx - 1
@@ -346,7 +356,6 @@ def ComputeVisible(all: list<dict<any>>, buf_keys: dict<string>): list<number>
   return s_last_visible
 enddef
 
-# MRU 更新与索引分配
 def IsEligibleBuffer(bn: number): bool
   if bn <= 0 || bufexists(bn) == 0
     return false
@@ -357,15 +366,112 @@ def IsEligibleBuffer(bn: number): bool
   endif
 
   var use_listed = ConfBool('simpletabline_listed_only', true)
-
-  # 安全读取 &buflisted 为布尔
   var bl = getbufvar(bn, '&buflisted')
   var is_listed = (type(bl) == v:t_bool) ? bl : (bl != 0)
 
   return use_listed ? is_listed : true
 enddef
 
+# 生成 Pick 模式专用的 Tabline（高亮字母提示）
+def TablinePickMode(): string
+  var all = ListedNormalBuffers()
+  if len(all) == 0
+    return ''
+  endif
+
+  # 计算可见项（不带键位标记）
+  var buf_keys_empty: dict<string> = {}
+  for binfo in all
+    buf_keys_empty[string(binfo.bufnr)] = ''
+  endfor
+  var visible = ComputeVisible(all, buf_keys_empty)
+
+  var bynr: dict<dict<any>> = {}
+  for binfo in all
+    bynr[string(binfo.bufnr)] = binfo
+  endfor
+
+  var sep = Conf('simpletabline_item_sep', ' | ')
+  var ellipsis = Conf('simpletabline_ellipsis', ' … ')
+  var left_omitted = (len(visible) > 0 && visible[0] != all[0].bufnr)
+  var right_omitted = (len(visible) > 0 && visible[-1] != all[-1].bufnr)
+
+  var s = ''
+  var curbn = bufnr('%')
+  var first = true
+  var prev_is_cur = false
+
+  if left_omitted
+    s ..= '%#SimpleTablineInactive#' .. ellipsis
+  endif
+
+  # 为每个可见 buffer 分配字母提示
+  s_char_to_bufnr = {}
+  var char_idx = 0
+
+  for vbn in visible
+    var k = string(vbn)
+    if !has_key(bynr, k)
+      continue
+    endif
+    var b = bynr[k]
+    var is_cur = (b.bufnr == curbn)
+
+    # 输出分隔符
+    if !first
+      var use_cur_sep = (prev_is_cur || is_cur)
+      if use_cur_sep
+        s ..= '%#SimpleTablineSepCurrent#' .. sep .. '%#None#'
+      else
+        s ..= '%#SimpleTablineSep#' .. sep .. '%#None#'
+      endif
+    endif
+
+    # 获取提示字母
+    var hint_char = ''
+    if char_idx < len(s_pick_chars)
+      hint_char = s_pick_chars[char_idx]
+      s_char_to_bufnr[hint_char] = b.bufnr
+      char_idx += 1
+    endif
+
+    # 生成显示名称
+    var name = BufDisplayName(b)
+    var show_mod = Conf('simpletabline_show_modified', 1) != 0
+    var mod_mark = (show_mod && get(b, 'changed', 0) == 1) ? ' +' : ''
+
+    # 高亮字母 + 剩余名称
+    var grp_item = is_cur ? '%#SimpleTablineActive#' : '%#SimpleTablineInactive#'
+    var name_part = ''
+
+    if hint_char !=# '' && len(name) > 0
+      # 用红色高亮提示字母
+      var rest_name = name
+      name_part = '%#SimpleTablinePickHint#' .. hint_char .. '%#None#' 
+            \ .. grp_item .. rest_name .. mod_mark .. '%#None#'
+    else
+      name_part = grp_item .. name .. mod_mark .. '%#None#'
+    endif
+
+    s ..= name_part
+    first = false
+    prev_is_cur = is_cur
+  endfor
+
+  if right_omitted
+    s ..= '%#SimpleTablineInactive#' .. ellipsis .. '%#None#'
+  endif
+
+  s ..= '%=%#SimpleTablineFill#'
+  return s
+enddef
+
 export def Tabline(): string
+  # Pick 模式下使用特殊渲染
+  if s_pick_mode
+    return TablinePickMode()
+  endif
+
   var all = ListedNormalBuffers()
   if len(all) == 0
     return ''
@@ -375,17 +481,15 @@ export def Tabline(): string
   var ellipsis = Conf('simpletabline_ellipsis', ' … ')
   var show_keys = 1
 
-  # 第一次：不带数字，估算可见集
+  # 计算可见集
   var buf_keys1: dict<string> = {}
   for binfo in all
     buf_keys1[string(binfo.bufnr)] = ''
   endfor
   var visible1 = ComputeVisible(all, buf_keys1)
 
-  # 基于 visible1 从左到右分配 1..9,0
   AssignDigitsForVisible(visible1)
 
-  # 第二次：带上数字再计算一次可见集，保证宽度准确
   var buf_keys2: dict<string> = {}
   for binfo in all
     var dg2 = get(s_buf_to_idx, binfo.bufnr, -1)
@@ -393,10 +497,8 @@ export def Tabline(): string
   endfor
   var visible2 = ComputeVisible(all, buf_keys2)
 
-  # 用最终的可见集再分配一次数字，确保“可见项左到右编号”
   AssignDigitsForVisible(visible2)
 
-  # 用最终分配生成 buf_keys
   var buf_keys: dict<string> = {}
   for binfo in all
     var dg = get(s_buf_to_idx, binfo.bufnr, -1)
@@ -419,7 +521,6 @@ export def Tabline(): string
     s ..= '%#SimpleTablineInactive#' .. ellipsis
   endif
 
-  # Pick 映射取本次可见分配
   s_pick_map = copy(s_idx_to_buf)
 
   var first = true
@@ -433,7 +534,6 @@ export def Tabline(): string
     var b = bynr[k]
     var is_cur = (b.bufnr == curbn)
 
-    # 输出分隔符（非第一个项）
     if !first
       var use_cur_sep = (prev_is_cur || is_cur)
       if use_cur_sep
@@ -443,7 +543,6 @@ export def Tabline(): string
       endif
     endif
 
-    # 索引显示文本（上标可选；Pick 模式优先）
     var key_raw = get(buf_keys, string(b.bufnr), '')
     var key_txt = key_raw
     if key_txt !=# '' && ConfBool('simpletabline_superscript_index', true)
@@ -451,12 +550,11 @@ export def Tabline(): string
     endif
     var key_part = ''
     if show_keys && key_txt !=# ''
-      var key_grp = s_pick_mode ? '%#SimpleTablinePickDigit#' : (is_cur ? '%#SimpleTablineIndexActive#' : '%#SimpleTablineIndex#')
-      var sep_key = Conf('simpletabline_key_sep', '')  # 默认无间隙
+      var key_grp = is_cur ? '%#SimpleTablineIndexActive#' : '%#SimpleTablineIndex#'
+      var sep_key = Conf('simpletabline_key_sep', '')
       key_part = key_grp .. key_txt .. '%#None#' .. sep_key
     endif
 
-    # 名称 + 修改标记（现有激活/非激活组）
     var grp_item = is_cur ? '%#SimpleTablineActive#' : '%#SimpleTablineInactive#'
     var name = BufDisplayName(b)
     var show_mod = Conf('simpletabline_show_modified', 1) != 0
@@ -483,69 +581,111 @@ export def Tabline(): string
   return s
 enddef
 
-# 进入/退出 Pick 模式：只在 Pick 模式下覆盖 0..9
-def MapDigit(n: number)
+# 初始化 Pick 字母序列（类似 EasyMotion）
+def InitPickChars()
+  # 可通过 g:simpletabline_pick_chars 自定义字母顺序
+  var chars_str = get(g:, 'simpletabline_pick_chars', 'asdfghjklqwertyuiopzxcvbnm')
+  s_pick_chars = split(chars_str, '\zs')
+enddef
+
+# 强制刷新 tabline
+def ForceRedrawTabline()
+  # 方法1: 触发 tabline 重绘
   try
-    execute 'nnoremap <nowait> <silent> ' .. (n == 0 ? '0' : string(n)) .. ' :call simpletabline#PickDigit(' .. n .. ')<CR>'
+    redrawtabline
+  catch
+  endtry
+
+  # 方法2: 强制完全重绘（备用）
+  try
+    redraw!
+  catch
+  endtry
+
+  # 方法3: 触发事件（备用）
+  try
+    execute 'doautocmd User SimpleTablineRefresh'
   catch
   endtry
 enddef
 
-def UnmapDigit(n: number)
-  try
-    execute 'nunmap ' .. (n == 0 ? '0' : string(n))
-  catch
-  endtry
-enddef
-
+# 进入 Pick 模式
 export def BufferPick()
   if s_pick_mode
     call CancelPick()
     return
   endif
+
+  InitPickChars()
   s_pick_mode = true
-  s_pick_map = copy(s_idx_to_buf)
-  for n in range(1, 9)
-    MapDigit(n)
+  s_char_to_bufnr = {}
+
+  # 映射所有可能的字母
+  for ch in s_pick_chars
+    try
+      execute 'nnoremap <nowait> <silent> ' .. ch .. ' :call simpletabline#PickChar("' .. ch .. '")<CR>'
+    catch
+    endtry
   endfor
-  MapDigit(0)
+
+  # ESC 取消
   try
     nnoremap <nowait> <silent> <Esc> :call simpletabline#CancelPick()<CR>
   catch
   endtry
-  echo '[SimpleTabline] Pick: press 1..9 or 0 to switch; Esc to cancel.'
-  redrawstatus
+
+  # 强制刷新 tabline 显示
+  ForceRedrawTabline()
+
+  Log('Pick mode: press highlighted letter to switch buffer, ESC to cancel')
 enddef
 
 export def CancelPick()
+  if !s_pick_mode
+    return
+  endif
+
   s_pick_mode = false
-  for n in range(1, 9)
-    UnmapDigit(n)
+  s_char_to_bufnr = {}
+
+  # 取消所有字母映射
+  for ch in s_pick_chars
+    try
+      execute 'nunmap ' .. ch
+    catch
+    endtry
   endfor
-  UnmapDigit(0)
+
   try
     nunmap <Esc>
   catch
   endtry
-  echo '[SimpleTabline] Pick canceled.'
-  redrawstatus
+
+  # 强制刷新 tabline 恢复正常显示
+  ForceRedrawTabline()
+
+  Log('Pick mode canceled')
 enddef
 
-export def PickDigit(n: number)
-  if !has_key(s_pick_map, n)
-    echo '[SimpleTabline] No buffer bound to ' .. (n == 0 ? '0' : string(n))
+# 根据字母跳转 buffer
+export def PickChar(ch: string)
+  if !has_key(s_char_to_bufnr, ch)
+    echo '[SimpleTabline] No buffer bound to "' .. ch .. '"'
     call CancelPick()
     return
   endif
-  var bn = s_pick_map[n]
+
+  var bn = s_char_to_bufnr[ch]
   if bn > 0 && bufexists(bn)
     execute 'buffer ' .. bn
   else
     echo '[SimpleTabline] Invalid buffer'
   endif
+
   call CancelPick()
 enddef
 
+# 数字快速跳转（保留原有功能）
 export def BufferJump(n: number)
   if empty(keys(s_idx_to_buf))
     try | redrawstatus | catch | endtry
@@ -592,4 +732,9 @@ export def BufferJump9()
 enddef
 export def BufferJump0()
   BufferJump(0)
+enddef
+
+# 废弃的 PickDigit（保留兼容性）
+export def PickDigit(n: number)
+  BufferJump(n)
 enddef
