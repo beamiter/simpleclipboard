@@ -410,6 +410,8 @@ fn run_symbols_cached(
     let mut seen_at = HashMap::<(u32, u32), String>::new();
 
     let mut symbols = Vec::with_capacity(limit.min(4096));
+
+    // 1) 先用查询收集符号
     let mut it = cursor.captures(&query, root, bytes);
     while let Some((m, cap_ix)) = it.next() {
         if symbols.len() >= limit {
@@ -443,7 +445,7 @@ fn run_symbols_cached(
         let mut clnum: Option<u32> = None;
         let mut ccol: Option<u32> = None;
 
-        // Rust 特定容器推断（保持原逻辑）
+        // Rust 容器推断
         if cache.lang == "rust" {
             match kind.as_str() {
                 "field" => {
@@ -505,13 +507,13 @@ fn run_symbols_cached(
             }
         }
 
-        // Vim 语言：隐藏函数体内的局部变量（标注容器为 function）
+        // Vim 语言：过滤掉 augroup END；隐藏函数体内的局部变量（标注容器为 function）
         if cache.lang == "vim" {
-            // 过滤掉 augroup END
             if kind == "namespace" && name == "END" {
                 continue;
             }
             if kind == "variable" {
+                // 处于函数内的变量：标注容器为 function，交给插件的 hide_inner 逻辑过滤
                 let mut cur = node;
                 let mut in_func = false;
                 while let Some(parent) = cur.parent() {
@@ -524,13 +526,11 @@ fn run_symbols_cached(
                 }
                 if in_func {
                     ckind = Some("function".to_string());
-                    // 如需显示父函数名作为容器，可以解析父声明名字赋值给 cname_opt/clnum/ccol
-                    // 这里为最小实现，仅标注容器类型即可被插件过滤
                 }
             }
         }
 
-        // 位置同一处的 function/method 优先保留 method（保持原逻辑）
+        // 同一位置的 function/method 去重规则
         if let Some(prev) = seen_at.get(&(lnum, col)) {
             if prev == "method" && kind == "function" {
                 continue;
@@ -572,6 +572,102 @@ fn run_symbols_cached(
             container_lnum: clnum,
             container_col: ccol,
         });
+    }
+
+    // 2) 额外：Vim 语言补充顶层 g: 全局变量（scoped_identifier，名字以 "g:" 开头）
+    if cache.lang == "vim" && symbols.len() < limit {
+        // 迭代整棵树（简单栈遍历）
+        let mut stack = Vec::<tree_sitter::Node>::with_capacity(1024);
+        stack.push(root);
+        while let Some(n) = stack.pop() {
+            // 只抓 scoped_identifier，且名字以 g: 开头
+            if n.kind() == "scoped_identifier" {
+                let name = node_text(n, bytes);
+                if name.starts_with("g:") {
+                    let sp = n.start_position();
+                    let lnum = sp.row as u32 + 1;
+                    let col = sp.column as u32 + 1;
+
+                    // 范围限制
+                    if let Some((ls, le)) = lrange {
+                        if lnum < ls || lnum > le {
+                            // 不在请求范围内
+                        } else {
+                            // 顶层约束：不在函数体内
+                            let mut cur = n;
+                            let mut in_func = false;
+                            while let Some(parent) = cur.parent() {
+                                let pk = parent.kind();
+                                if pk == "function_definition" || pk == "vim9_function_definition" {
+                                    in_func = true;
+                                    break;
+                                }
+                                cur = parent;
+                            }
+                            if !in_func {
+                                // 作为 variable 符号加入（无容器）
+                                let kind = "variable".to_string();
+                                let key = (kind.clone(), name.clone(), lnum, col, None, None, None, None);
+                                if !seen.contains(&key) {
+                                    seen.insert(key);
+                                    symbols.push(Symbol {
+                                        name,
+                                        kind,
+                                        lnum,
+                                        col,
+                                        container_kind: None,
+                                        container_name: None,
+                                        container_lnum: None,
+                                        container_col: None,
+                                    });
+                                    if symbols.len() >= limit {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // 无范围限制时同样按顶层约束加入
+                        let mut cur = n;
+                        let mut in_func = false;
+                        while let Some(parent) = cur.parent() {
+                            let pk = parent.kind();
+                            if pk == "function_definition" || pk == "vim9_function_definition" {
+                                in_func = true;
+                                break;
+                            }
+                            cur = parent;
+                        }
+                        if !in_func {
+                            let kind = "variable".to_string();
+                            let key = (kind.clone(), name.clone(), lnum, col, None, None, None, None);
+                            if !seen.contains(&key) {
+                                seen.insert(key);
+                                symbols.push(Symbol {
+                                    name,
+                                    kind,
+                                    lnum,
+                                    col,
+                                    container_kind: None,
+                                    container_name: None,
+                                    container_lnum: None,
+                                    container_col: None,
+                                });
+                                if symbols.len() >= limit {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 压入子节点
+            let mut child_cursor = n.walk();
+            for ch in n.children(&mut child_cursor) {
+                stack.push(ch);
+            }
+        }
     }
 
     symbols.sort_by_key(|s| (s.lnum, s.col));

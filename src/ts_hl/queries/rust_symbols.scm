@@ -37,3 +37,6 @@
     (enum_variant
       (field_declaration_list
         (field_declaration name: (field_identifier) @symbol.field)))))
+
+(vim9_assignment_statement
+  (scoped_identifier) @symbol.variable)
