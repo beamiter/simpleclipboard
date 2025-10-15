@@ -437,7 +437,13 @@ fn run_symbols_cached(
             }
         }
 
-        let (mut ckind, mut cname_opt, mut clnum, mut ccol) = (None, None, None, None);
+        // 容器信息（可选）
+        let mut ckind: Option<String> = None;
+        let mut cname_opt: Option<String> = None;
+        let mut clnum: Option<u32> = None;
+        let mut ccol: Option<u32> = None;
+
+        // Rust 特定容器推断（保持原逻辑）
         if cache.lang == "rust" {
             match kind.as_str() {
                 "field" => {
@@ -499,6 +505,32 @@ fn run_symbols_cached(
             }
         }
 
+        // Vim 语言：隐藏函数体内的局部变量（标注容器为 function）
+        if cache.lang == "vim" {
+            // 过滤掉 augroup END
+            if kind == "namespace" && name == "END" {
+                continue;
+            }
+            if kind == "variable" {
+                let mut cur = node;
+                let mut in_func = false;
+                while let Some(parent) = cur.parent() {
+                    let pk = parent.kind();
+                    if pk == "function_definition" || pk == "vim9_function_definition" {
+                        in_func = true;
+                        break;
+                    }
+                    cur = parent;
+                }
+                if in_func {
+                    ckind = Some("function".to_string());
+                    // 如需显示父函数名作为容器，可以解析父声明名字赋值给 cname_opt/clnum/ccol
+                    // 这里为最小实现，仅标注容器类型即可被插件过滤
+                }
+            }
+        }
+
+        // 位置同一处的 function/method 优先保留 method（保持原逻辑）
         if let Some(prev) = seen_at.get(&(lnum, col)) {
             if prev == "method" && kind == "function" {
                 continue;
@@ -739,6 +771,46 @@ fn outer_fn_info(node: tree_sitter::Node, bytes: &[u8]) -> Option<(String, u32, 
             if let Some(name) = child_text_by_kind(parent, "identifier", bytes) {
                 if let Some((ln, co)) = child_pos_by_kind(parent, "identifier") {
                     return Some((name, ln, co));
+                }
+            }
+        }
+        cur = parent;
+    }
+    None
+}
+#[allow(dead_code)]
+fn has_ancestor_of(node: tree_sitter::Node, kinds: &[&str]) -> bool {
+    let mut cur = node;
+    while let Some(parent) = cur.parent() {
+        for &k in kinds {
+            if parent.kind() == k {
+                return true;
+            }
+        }
+        cur = parent;
+    }
+    false
+}
+
+// 如需拿到父函数名，可用这个辅助（可选）
+#[allow(dead_code)]
+fn vim_func_name(node: tree_sitter::Node, bytes: &[u8]) -> Option<String> {
+    let mut cur = node;
+    while let Some(parent) = cur.parent() {
+        if parent.kind() == "function_definition" || parent.kind() == "vim9_function_definition" {
+            // 找到声明节点，取里面的名字（identifier/scoped_identifier/field_expression）
+            let mut cursor = parent.walk();
+            for ch in parent.children(&mut cursor) {
+                if ch.kind() == "function_declaration" || ch.kind() == "vim9_function_declaration" {
+                    let mut c2 = ch.walk();
+                    for nm in ch.children(&mut c2) {
+                        match nm.kind() {
+                            "identifier" | "scoped_identifier" | "field_expression" => {
+                                return Some(node_text(nm, bytes));
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
         }
