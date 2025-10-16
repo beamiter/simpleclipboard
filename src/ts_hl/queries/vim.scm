@@ -1,82 +1,62 @@
-; 基本语法元素
+; vim.scm — highlight queries for your custom Vim9 grammar (grammar.js)
+
+; 基本字面量/注释
 (comment) @comment
-(string_literal) @string
-(integer_literal) @number
-(float_literal) @number?
-(identifier) @variable
+(string)  @string
+(number)  @number
+(float)   @number
+(boolean) @boolean
 
-; 关键字（vimscript + vim9）
-"vim9script" @keyword
-"def" @keyword
-"enddef" @keyword
-"function" @keyword
-"endfunction" @keyword
-"var" @keyword
-"const" @keyword
-"let" @keyword
-"unlet" @keyword
-"return" @keyword
-"if" @keyword
-"elseif" @keyword
-"else" @keyword
-"endif" @keyword
-"for" @keyword
-"endfor" @keyword
-"while" @keyword
-"endwhile" @keyword
-"try" @keyword
-"catch" @keyword
-"finally" @keyword
-"endtry" @keyword
-"autocmd" @keyword
-"augroup" @keyword
-"command" @keyword
-"comclear" @keyword
-"delcommand" @keyword
-"set" @keyword
-"setlocal" @keyword
-"source" @keyword
-"runtime" @keyword
-"execute" @keyword
-"colorscheme" @keyword
-"silent" @keyword
-"map" @keyword
-"nmap" @keyword
-"vmap" @keyword
-"xmap" @keyword
-"nnoremap" @keyword
-"vnoremap" @keyword
-"inoremap" @keyword
-"tnoremap" @keyword
-"noremap" @keyword
+; 标识符与变量
+(identifier)   @variable
+(scope_var)    @variable
+(option_var)   @variable.builtin
 
-; 括号/分隔符/运算符
-"(" @punctuation.bracket
-")" @punctuation.bracket
-"[" @punctuation.bracket
-"]" @punctuation.bracket
-"{" @punctuation.bracket
-"}" @punctuation.bracket
+; 通用 Ex 命令名（你语法里是命名节点）
+(command_name) @keyword
 
-","  @punctuation.delimiter
-"."  @punctuation.delimiter
+; Vim9 指令（你的语法把 'vim9script' 定义为命名节点）
+(vim9script)   @keyword
 
-"->" @operator
-"="  @operator
-"+=" @operator
-"-=" @operator
-"*=" @operator
-"/=" @operator
-"%=" @operator
-".=" @operator
-"..=" @operator
-"==" @operator
-"!=" @operator
-">"  @operator
-"<"  @operator
-">=" @operator
-"<=" @operator
-"=~" @operator
-"!~" @operator
-"&&" @operator
-"||" @operator
+; 函数声明与调用
+(def_function (identifier)      @function)
+(call_expression (function_name) @function)
+(method_call (identifier)        @method)
+
+; 类型（内建与自定义）
+(type (identifier) @type)
+(type [
+  "bool" "number" "float" "string" "any"
+] @type.builtin)
+
+; 字典键/属性
+(dict_key (identifier) @property)
+(dict_key (string)     @property)
+
+; 特殊按键与管道（均为命名节点）
+(special_key) @string.special
+(pipe)        @operator
+
+; 括号
+[
+  "(" ")" "[" "]" "{" "}"
+] @punctuation.bracket
+
+; 分隔符
+[
+  "," ":"
+] @punctuation.delimiter
+
+; 运算符（与 grammar.js 中的定义一致）
+[
+  "->" "=>"
+  "!"
+  "+" "-" "*" "/"
+  "==" "!=" "==#" "!=#" "==?" "!=?"
+  "=~" "!~" "=~#" "!~#"
+  ">=" "<=" ">" "<"
+  ".."
+  "&&" "||"
+  "="
+  "?"
+] @operator
