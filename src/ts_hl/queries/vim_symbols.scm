@@ -10,6 +10,7 @@
 ; 作用域/选项变量（如 g:foo / &opt）按变量记
 (scope_var)  @symbol.variable
 (option_var) @symbol.variable
+<<<<<<< HEAD
 
 ; 如需把顶层命令名也作为“命名空间/宏”等，可按需扩展：
 ; (command_name) @symbol.namespace

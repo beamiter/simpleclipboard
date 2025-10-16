@@ -507,7 +507,6 @@ fn run_symbols_cached(
             }
         }
 
-        // Vim 语言：过滤掉 augroup END；隐藏函数体内的局部变量（标注容器为 function）
         if cache.lang == "vim" {
             if kind == "namespace" && name == "END" {
                 continue;
@@ -518,7 +517,11 @@ fn run_symbols_cached(
                 let mut in_func = false;
                 while let Some(parent) = cur.parent() {
                     let pk = parent.kind();
-                    if pk == "function_definition" || pk == "vim9_function_definition" {
+                    // 兼容你的 Vim9 语法（def_function）
+                    if pk == "def_function"
+                        || pk == "function_definition"
+                        || pk == "vim9_function_definition"
+                    {
                         in_func = true;
                         break;
                     }
@@ -607,7 +610,16 @@ fn run_symbols_cached(
                             if !in_func {
                                 // 作为 variable 符号加入（无容器）
                                 let kind = "variable".to_string();
-                                let key = (kind.clone(), name.clone(), lnum, col, None, None, None, None);
+                                let key = (
+                                    kind.clone(),
+                                    name.clone(),
+                                    lnum,
+                                    col,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                );
                                 if !seen.contains(&key) {
                                     seen.insert(key);
                                     symbols.push(Symbol {
@@ -640,7 +652,16 @@ fn run_symbols_cached(
                         }
                         if !in_func {
                             let kind = "variable".to_string();
-                            let key = (kind.clone(), name.clone(), lnum, col, None, None, None, None);
+                            let key = (
+                                kind.clone(),
+                                name.clone(),
+                                lnum,
+                                col,
+                                None,
+                                None,
+                                None,
+                                None,
+                            );
                             if !seen.contains(&key) {
                                 seen.insert(key);
                                 symbols.push(Symbol {
