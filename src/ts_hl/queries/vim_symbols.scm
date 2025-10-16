@@ -1,21 +1,15 @@
-; 函数定义（传统与 Vim9）—— 捕获声明的名字（任意子节点作为名字）
-(function_definition
-  (function_declaration
-    name: (_) @symbol.function))
+; vim_symbols.scm — symbols for your custom Vim9 grammar (grammar.js)
 
-(vim9_function_definition
-  (vim9_function_declaration
-    name: (_) @symbol.function))
+; 函数（Vim9: def ... enddef）
+(def_function (identifier) @symbol.function)
 
-; 用户命令 —— 把命令名当作“函数”符号
-(command_statement
-  name: (command_name) @symbol.function)
+; 变量/常量声明
+(let_statement   (identifier) @symbol.variable)
+(const_statement (identifier) @symbol.const)
 
-; augroup 名称当作 namespace
-(augroup_statement
-  (augroup_name) @symbol.namespace)
+; 作用域/选项变量（如 g:foo / &opt）按变量记
+(scope_var)  @symbol.variable
+(option_var) @symbol.variable
 
-; 变量声明（Vim9 var）
-(var_statement
-  (var_declarator
-    name: (_) @symbol.variable)+)
+; 如需把顶层命令名也作为“命名空间/宏”等，可按需扩展：
+; (command_name) @symbol.namespace
