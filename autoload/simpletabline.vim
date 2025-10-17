@@ -43,14 +43,14 @@ def ConfBool(name: string, default_val: bool): bool
   return default_val
 enddef
 
-# 将普通数字串转为上标（0..9 -> ⁰..⁹），不识别的字符原样返回
 def SupDigit(s: string): string
   if s ==# ''
     return ''
   endif
+  # 使用圈号数字（更具表现力）
   var m: dict<string> = {
-    '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
-    '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹'
+    '0': '⓪', '1': '①', '2': '②', '3': '③', '4': '④',
+    '5': '⑤', '6': '⑥', '7': '⑦', '8': '⑧', '9': '⑨'
   }
   var out = ''
   for ch in split(s, '\zs')
