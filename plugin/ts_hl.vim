@@ -9,7 +9,7 @@ g:loaded_ts_hl = 1
 g:ts_hl_daemon_path = get(g:, 'ts_hl_daemon_path', '')
 g:ts_hl_debounce = get(g:, 'ts_hl_debounce', 120)
 g:ts_hl_auto_enable_filetypes = get(g:, 'ts_hl_auto_enable_filetypes',
-  ['rust', 'c', 'cpp', 'javascript', 'vim'])
+  ['rust', 'c', 'cpp', 'javascript' ])
 g:ts_hl_auto_stop = get(g:, 'ts_hl_auto_stop', 1)
 
 g:ts_hl_debug = get(g:, 'ts_hl_debug', 0)

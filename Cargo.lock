@@ -1224,7 +1224,7 @@ dependencies = [
 [[package]]
 name = "tree-sitter-vim9"
 version = "0.1.0"
-source = "git+https://github.com/beamiter/tree-sitter-vim9#bde045c18e1b7f9617c36cd37458a5ca37f4b1c7"
+source = "git+https://github.com/beamiter/tree-sitter-vim9#283a9954916db7c27bfac704e9940fc2d158b094"
 dependencies = [
  "cc",
  "tree-sitter-language",
