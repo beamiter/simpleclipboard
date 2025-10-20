@@ -233,7 +233,7 @@ export def SetupRelayIfNeeded(): void
     Log('In container, probing local then host for reachable relay/base...', 'Question')
 
     var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
-    var base_port = get(g:, 'simpleclipboard_port', 12344)
+    var base_port = get(g:, 'simpleclipboard_port', 12343)
 
     # 1) 先探容器本地 127.0.0.1
     if IsTcpOpen($"127.0.0.1:{relay_port}")

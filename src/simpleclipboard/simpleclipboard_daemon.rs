@@ -40,7 +40,7 @@ fn pid_path() -> PathBuf {
 }
 
 fn listen_address() -> String {
-    env::var("SIMPLECLIPBOARD_ADDR").unwrap_or_else(|_| "127.0.0.1:12344".to_string())
+    env::var("SIMPLECLIPBOARD_ADDR").unwrap_or_else(|_| "127.0.0.1:12343".to_string())
 }
 
 fn final_addr() -> Option<String> {

@@ -27,7 +27,7 @@ g:simpleclipboard_incontainer_host_ip = get(g:, 'simpleclipboard_incontainer_hos
 
 # --- 端口规划 ---
 # 本地主守护进程监听的端口
-g:simpleclipboard_port = get(g:, 'simpleclipboard_port', 12344)
+g:simpleclipboard_port = get(g:, 'simpleclipboard_port', 12343)
 # 中继守护进程监听的端口
 g:simpleclipboard_relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
 # SSH 隧道在远程主机上监听的端口 (中继的目标)
