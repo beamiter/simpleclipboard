@@ -24,6 +24,7 @@ var s_outline_linemap: list<number> = []  # 每一可见行对应 s_outline_item
 var s_sym_timer: number = 0
 var s_inflight_syms: dict<bool> = {}
 var s_inflight_hl: dict<bool> = {}
+var s_user_disabled: bool = false
 
 # 待用的 TS 高亮组 -> Vim 高亮组 默认链接
 const s_groups = [
@@ -538,10 +539,17 @@ def AutoEnableForBuffer(buf: number)
   if !bufexists(buf)
     return
   endif
+
+  # 若用户手动关闭，则不自动启用
+  if s_user_disabled
+    return
+  endif
+
   var auto_enable_ft = get(g:, 'ts_hl_auto_enable_filetypes', [])
   if type(auto_enable_ft) != v:t_list || len(auto_enable_ft) == 0
     return
   endif
+
   var ft = getbufvar(buf, '&filetype')
   if index(auto_enable_ft, ft) < 0
     return
@@ -549,12 +557,12 @@ def AutoEnableForBuffer(buf: number)
   if has_key(s_active_bufs, buf) && s_active_bufs[buf]
     return
   endif
+
   if !s_enabled
     Log('Auto-enabling for filetype: ' .. ft)
     Enable()
   endif
   s_active_bufs[buf] = true
-  # 初次进入立即同步
   ScheduleSync(buf)
   ScheduleRequest(buf, 'edit')
 enddef
@@ -574,6 +582,43 @@ def CheckAndStopDaemon()
   endif
 enddef
 
+def ClearAllProps()
+  var seen: dict<bool> = {}
+  var bufs: list<number> = []
+  # 当前 buffer
+  var cur = bufnr()
+  if bufexists(cur)
+    bufs->add(cur)
+  endif
+  # 已激活的 buffer
+  for [k, active] in items(s_active_bufs)
+    var b = str2nr(k)
+    if active && bufexists(b)
+      bufs->add(b)
+    endif
+  endfor
+  # 记录过 last range 的 buffer 也清理一下，防止遗漏
+  for [k, _] in items(s_last_ranges)
+    var b = str2nr(k)
+    if bufexists(b)
+      bufs->add(b)
+    endif
+  endfor
+  # 去重并清理
+  for b in bufs
+    if get(seen, b, false)
+      continue
+    endif
+    seen[b] = true
+    try
+      call prop_clear(1, BufLineCount(b), {bufnr: b})
+    catch
+    endtry
+  endfor
+  # 清空范围缓存，避免误判
+  s_last_ranges = {}
+enddef
+
 # =============== 导出 API ===============
 export def Enable()
   if s_enabled
@@ -583,6 +628,7 @@ export def Enable()
     return
   endif
   s_enabled = true
+  s_user_disabled = false  # 清空标记（允许自动开启逻辑）
 
   augroup TsHl
     autocmd!
@@ -599,17 +645,16 @@ export def Disable()
     return
   endif
   s_enabled = false
+  s_user_disabled = true   # 记录用户主动关闭
   augroup TsHl
     autocmd!
   augroup END
-
   for [k, tid] in items(s_req_timers)
     if tid != 0 && exists('*timer_stop')
       try | call timer_stop(tid) | catch | endtry
     endif
   endfor
   s_req_timers = {}
-
   for [k, tid] in items(s_sync_timers)
     if tid != 0 && exists('*timer_stop')
       try | call timer_stop(tid) | catch | endtry
@@ -618,7 +663,10 @@ export def Disable()
   s_sync_timers = {}
   s_inflight_sync = {}
   s_sent_changedtick = {}
-
+  # 新增：关闭时清理所有已绘制的 props（可配置）
+  if get(g:, 'ts_hl_clear_props_on_disable', 1)
+    ClearAllProps()
+  endif
   if s_running && s_job != v:null
     try
       call job_stop(s_job, 'term')
@@ -628,7 +676,6 @@ export def Disable()
     catch
     endtry
   endif
-
   echo '[ts-hl] disabled'
 enddef
 
@@ -676,7 +723,7 @@ export def OnScroll(buf: number)
   if !bufexists(buf)
     return
   endif
-  AutoEnableForBuffer(buf)
+  # AutoEnableForBuffer(buf)
   ScheduleRequest(buf, 'scroll')
 enddef
 
