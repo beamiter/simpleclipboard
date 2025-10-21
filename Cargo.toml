@@ -11,12 +11,6 @@ path = "src/simpleclipboard/simpleclipboard_lib.rs"
 [[bin]]
 name = "simpleclipboard-daemon"
 path = "src/simpleclipboard/simpleclipboard_daemon.rs"
-[[bin]]
-name = "simpletree-daemon"
-path = "src/simpletree/simpletree_daemon.rs"
-[[bin]]
-name = "ts-hl-daemon"
-path = "src/ts_hl/ts_hl_daemon.rs"
 
 [dependencies]
 anyhow = "1.0.100"
@@ -36,13 +30,6 @@ tokio-util = "0.7.16"
 tower = { version = "0.5.2", features = ["buffer", "limit", "timeout", "util"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
-tree-sitter = "0.25.10"
-tree-sitter-c = "0.24.1"
-tree-sitter-cpp = "0.23.4"
-tree-sitter-javascript = "0.25.0"
-tree-sitter-rust = "0.24.0"
-[dependencies.tree-sitter-vim9]
-git = "https://github.com/beamiter/tree-sitter-vim9"
 
 [dev-dependencies]
 tempfile = "3.23.0"
