@@ -18,6 +18,8 @@ use tracing_subscriber::EnvFilter;
 
 const MAX_BYTES: usize = 160 * 1024 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+// 帧格式魔术字
+const FRAME_MAGIC: &[u8; 4] = b"SCB1";
 
 #[derive(Debug, Encode, Decode)]
 pub enum Msg {
@@ -88,6 +90,7 @@ async fn set_clipboard_text_async(text: String) -> bool {
     .unwrap_or(false)
 }
 
+// 转发到最终地址时保留“旧协议”以兼容（写完整 bincode，读到 EOF）
 async fn forward_legacy_async(addr: &str, text: String) -> io::Result<()> {
     let mut s = tokio::net::TcpStream::connect(addr).await?;
     let cfg = bincode::config::standard().with_limit::<MAX_BYTES>();
@@ -151,7 +154,7 @@ impl Service<Msg> for Handler {
                             Err(e) => {
                                 warn!("Relay forward failed: {e}. Fallback to local clipboard");
                                 let ok = set_clipboard_text_async(text).await;
-                                // 关键语义：fallback 到本地成功也返回 ok=false，让客户端触发 OSC52 回退
+                                // 保持原始语义：fallback 成功也 ok=false，让客户端自行决定是否走 OSC52。
                                 Ack { ok: false, detail: Some(if ok { "forward_failed_fallback_ok" } else { "forward_failed_fallback_err" }.into()) }
                             }
                         }
@@ -189,36 +192,65 @@ impl Service<Msg> for Handler {
     }
 }
 
+// 新协议读取：优先尝试帧格式（magic + len + payload），否则回退旧协议（读到 EOF）
 async fn read_full_msg(stream: &mut TcpStream) -> io::Result<Msg> {
-    let mut buf = Vec::new();
-    let read_res = timeout(READ_TIMEOUT, async {
-        let mut tmp = [0u8; 16 * 1024];
-        loop {
-            let n = stream.read(&mut tmp).await?;
-            if n == 0 {
-                break;
-            }
-            buf.extend_from_slice(&tmp[..n]);
-            if buf.len() > MAX_BYTES {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "message too large",
-                ));
-            }
-        }
-        Ok::<(), io::Error>(())
-    })
-    .await;
+    let mut magic = [0u8; 4];
+    match timeout(READ_TIMEOUT, stream.read_exact(&mut magic)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "read magic timeout")),
+    }
 
-    match read_res {
-        Ok(Ok(())) => {
-            let cfg = bincode::config::standard().with_limit::<MAX_BYTES>();
-            let (msg, _consumed): (Msg, usize) = bincode::decode_from_slice(&buf, cfg)
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "decode failed"))?;
-            Ok(msg)
+    if &magic == FRAME_MAGIC {
+        let mut len_buf = [0u8; 4];
+        match timeout(READ_TIMEOUT, stream.read_exact(&mut len_buf)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "read length timeout")),
         }
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "read timeout")),
+        let len = u32::from_be_bytes(len_buf) as usize;
+        if len == 0 || len > MAX_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid frame length"));
+        }
+        let mut buf = vec![0u8; len];
+        match timeout(READ_TIMEOUT, stream.read_exact(&mut buf)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "read payload timeout")),
+        }
+        let cfg = bincode::config::standard().with_limit::<MAX_BYTES>();
+        let (msg, _): (Msg, usize) = bincode::decode_from_slice(&buf, cfg)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "decode failed"))?;
+        Ok(msg)
+    } else {
+        // 旧协议：把已读的 4 字节当作消息一部分继续读到 EOF
+        let mut buf = magic.to_vec();
+        let read_res = timeout(READ_TIMEOUT, async {
+            let mut tmp = [0u8; 16 * 1024];
+            loop {
+                let n = stream.read(&mut tmp).await?;
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.len() > MAX_BYTES {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "message too large"));
+                }
+            }
+            Ok::<(), io::Error>(())
+        })
+        .await;
+
+        match read_res {
+            Ok(Ok(())) => {
+                let cfg = bincode::config::standard().with_limit::<MAX_BYTES>();
+                let (msg, _): (Msg, usize) = bincode::decode_from_slice(&buf, cfg)
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "decode failed"))?;
+                Ok(msg)
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "legacy read timeout")),
+        }
     }
 }
 
@@ -274,11 +306,15 @@ async fn main() -> io::Result<()> {
                     }
                     match svc.call(msg).await {
                         Ok(ack) => {
-                            // 编码并写回 ACK
+                            // 编码并写回 ACK（新协议帧）
                             let cfg = bincode::config::standard().with_limit::<MAX_BYTES>();
                             match bincode::encode_to_vec(ack, cfg) {
-                                Ok(buf) => {
-                                    let _ = stream.write_all(&buf).await;
+                                Ok(ack_buf) => {
+                                    let mut header = [0u8; 8];
+                                    header[..4].copy_from_slice(FRAME_MAGIC);
+                                    header[4..].copy_from_slice(&(ack_buf.len() as u32).to_be_bytes());
+                                    let _ = stream.write_all(&header).await;
+                                    let _ = stream.write_all(&ack_buf).await;
                                     let _ = stream.flush().await;
                                     let _ = stream.shutdown().await;
                                 }
@@ -288,7 +324,7 @@ async fn main() -> io::Result<()> {
                             }
                         }
                         Err(_e) => {
-                            // Infallible，不会到达
+                            // Infallible
                         }
                     }
                 }
