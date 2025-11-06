@@ -33,7 +33,7 @@ fn connect_with_timeout(addr: &str) -> std::io::Result<TcpStream> {
     let s = TcpStream::connect_timeout(&addrs[0], timeout)?;
     let _ = s.set_nodelay(true);
     let _ = s.set_write_timeout(Some(Duration::from_secs(2)));
-    let _ = s.set_read_timeout(Some(Duration::from_millis(1200))); // 读 ACK 的超时
+    let _ = s.set_read_timeout(Some(Duration::from_secs(10)));
     Ok(s)
 }
 
@@ -123,8 +123,7 @@ pub extern "C" fn rust_set_clipboard_tcp(payload: *const c_char) -> i32 {
             }
         }
         Err(_e) => {
-            // ACK 解码失败也视为成功（兼容旧版）
-            1
+            0
         }
     }
 }

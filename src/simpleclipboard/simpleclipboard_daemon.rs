@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 const MAX_BYTES: usize = 160 * 1024 * 1024;
-const READ_TIMEOUT: Duration = Duration::from_secs(3);
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Encode, Decode)]
 pub enum Msg {
@@ -248,7 +248,7 @@ async fn main() -> io::Result<()> {
     let builder = ServiceBuilder::new()
         .concurrency_limit(1024)
         .rate_limit(200, Duration::from_secs(1))
-        .timeout(Duration::from_secs(5));
+        .timeout(Duration::from_secs(30));
 
     let base_handler = Handler::new();
 
