@@ -74,22 +74,33 @@ def TryLoadLib(): void
 enddef
 
 # =============================================================
-# 环境检测
+# 环境检测（带缓存，只检测一次）
 # =============================================================
 
+var cached_is_ssh: number = -1
 def IsSSH(): bool
-  return exists('$SSH_CONNECTION') || exists('$SSH_CLIENT') || exists('$SSH_TTY')
+  if cached_is_ssh == -1
+    cached_is_ssh = (exists('$SSH_CONNECTION') || exists('$SSH_CLIENT') || exists('$SSH_TTY')) ? 1 : 0
+  endif
+  return cached_is_ssh == 1
 enddef
 
+var cached_in_container: number = -1
 def InContainer(): bool
-  if filereadable('/.dockerenv') || filereadable('/run/.containerenv')
-    return true
+  if cached_in_container == -1
+    if filereadable('/.dockerenv') || filereadable('/run/.containerenv')
+      cached_in_container = 1
+    elseif exists('$container') || exists('$DOCKER_CONTAINER') || exists('$KUBERNETES_SERVICE_HOST')
+      cached_in_container = 1
+    else
+      try
+        cached_in_container = readfile('/proc/1/cgroup')->join("\n") =~# '\<docker\>\|\<containerd\>\|\<kubepods\>\|\<libpod\>\|\<podman\>\|\<lxc\>' ? 1 : 0
+      catch
+        cached_in_container = 0
+      endtry
+    endif
   endif
-  try
-    return readfile('/proc/1/cgroup')->join("\n") =~# '\<docker\>\|\<containerd\>\|\<kubepods\>\|\<libpod\>\|\<podman\>\|\<lxc\>'
-  catch
-  endtry
-  return exists('$container') || exists('$DOCKER_CONTAINER') || exists('$KUBERNETES_SERVICE_HOST')
+  return cached_in_container == 1
 enddef
 
 # =============================================================
@@ -372,7 +383,8 @@ def IsDaemonRunning(): bool
       return false
     endif
     if has('unix')
-      system('ps -p ' .. pid .. ' > /dev/null 2>&1')
+      # kill -0 只检查进程是否存在，比 ps 更快（无需 fork 外部进程）
+      system('kill -0 ' .. pid .. ' 2>/dev/null')
       return v:shell_error == 0
     endif
   catch
