@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use bincode::{Decode, Encode};
 
-const MAX_BYTES: usize = 160 * 1024 * 1024;
+const MAX_BYTES: usize = 10 * 1024 * 1024;
 // 帧格式魔术字
 const FRAME_MAGIC: &[u8; 4] = b"SCB1";
 

@@ -109,11 +109,6 @@ enddef
 
 var daemon_exe_path: string = ''
 
-def IsPortListening(port: number, host: string = ''): bool
-  var pattern = host == '' ? $':{port}' : $"{host}:{port}"
-  system($"ss -lnt | grep -q '{pattern}'")
-  return v:shell_error == 0
-enddef
 def IsTcpOpen(addr: string): bool
   try
     var ch = ch_open(addr, {'timeout': 300})
@@ -199,23 +194,6 @@ def StartRelay(): void
   else
     Log('Failed to confirm persistent relay service startup.', 'ErrorMsg')
   endif
-enddef
-
-# 轻量级的连接测试函数（依赖 rust 客户端库）
-def CanConnect_secure(address: string): bool
-  TryLoadLib()
-  if client_lib ==# ''
-    return false
-  endif
-  var token = get(g:, 'simpleclipboard_token', '')
-  # 新协议：action=ping，text 为空
-  var payload = address .. "\x01" .. "ping" .. "\x01" .. "" .. "\x01" .. token
-  try
-    return libcallnr(client_lib, 'rust_set_clipboard_tcp', payload) == 1
-  catch
-    Log($"CanConnect_secure: libcallnr failed with exception: {v:exception}", 'WarningMsg')
-    return false
-  endtry
 enddef
 
 # 安全的 TCP 连通性测试：不依赖外部命令，不修改剪贴板
@@ -522,46 +500,51 @@ def CopyViaDaemonTCP(text: string): bool
   endtry
 enddef
 
-def CopyViaCmds(text: string): bool
-  Log('Attempting copy via external commands...', 'Question')
+# 缓存可用的外部复制命令，避免每次 yank 都重复探测
+var cached_copy_cmd: list<any> = []
+var cached_copy_cmd_checked: bool = false
+
+def DetectCopyCmd(): void
+  if cached_copy_cmd_checked
+    return
+  endif
+  cached_copy_cmd_checked = true
 
   if has('mac') || executable('pbcopy')
-    Log('Trying: pbcopy (macOS)', 'Identifier')
-    if StartCopyJob(['pbcopy'], text)
-      Log('Success: Copied via pbcopy.', 'ModeMsg')
-      return true
-    endif
-    Log('Failed: pbcopy command failed.', 'WarningMsg')
+    cached_copy_cmd = [['pbcopy'], 'pbcopy']
+    return
   endif
-
   if exists('$WAYLAND_DISPLAY') && executable('wl-copy')
-    Log('Trying: wl-copy (Wayland)', 'Identifier')
-    if StartCopyJob(['wl-copy'], text)
-      Log('Success: Copied via wl-copy.', 'ModeMsg')
-      return true
-    endif
-    Log('Failed: wl-copy command failed.', 'WarningMsg')
+    cached_copy_cmd = [['wl-copy'], 'wl-copy']
+    return
   endif
-
   if executable('xsel')
-    Log('Trying: xsel (X11)', 'Identifier')
-    if StartCopyJob(['xsel', '--clipboard', '--input'], text)
-      Log('Success: Copied via xsel.', 'ModeMsg')
-      return true
-    endif
-    Log('Failed: xsel command failed.', 'WarningMsg')
+    cached_copy_cmd = [['xsel', '--clipboard', '--input'], 'xsel']
+    return
   endif
-
   if executable('xclip')
-    Log('Trying: xclip (X11)', 'Identifier')
-    if StartCopyJob(['xclip', '-selection', 'clipboard'], text)
-      Log('Success: Copied via xclip.', 'ModeMsg')
-      return true
-    endif
-    Log('Failed: xclip command failed.', 'WarningMsg')
+    cached_copy_cmd = [['xclip', '-selection', 'clipboard'], 'xclip']
+    return
+  endif
+enddef
+
+def CopyViaCmds(text: string): bool
+  Log('Attempting copy via external commands...', 'Question')
+  DetectCopyCmd()
+
+  if empty(cached_copy_cmd)
+    Log('Skipped Cmds: No suitable command found.', 'Comment')
+    return false
   endif
 
-  Log('Skipped Cmds: No suitable command found or all failed.', 'Comment')
+  var argv: list<string> = cached_copy_cmd[0]
+  var name: string = cached_copy_cmd[1]
+  Log($'Trying: {name}', 'Identifier')
+  if StartCopyJob(argv, text)
+    Log($'Success: Copied via {name}.', 'ModeMsg')
+    return true
+  endif
+  Log($'Failed: {name} command failed.', 'WarningMsg')
   return false
 enddef
 
@@ -656,12 +639,22 @@ export def CopyRangeToClipboard(l1: number, l2: number)
   endif
 enddef
 
+var debounce_timer: number = -1
+
 export def CopyYankedToClipboardEvent(ev: any = v:null, _timer_id: any = 0)
   var txt = ''
-  if type(ev) == v:t_dict && has_key(ev, 'regcontents')
-    var lines = ev.regcontents
-    txt = join(lines, "\n")
-  else
+  if type(ev) == v:t_dict
+    # 只在 yank 操作时自动复制，d/c 等不触发
+    if has_key(ev, 'operator') && ev.operator !=# 'y'
+      return
+    endif
+    if has_key(ev, 'regcontents')
+      var lines = ev.regcontents
+      txt = join(lines, "\n")
+    endif
+  endif
+
+  if txt ==# ''
     # 兜底：回退到寄存器读取
     txt = getreg('"')
   endif
@@ -670,11 +663,19 @@ export def CopyYankedToClipboardEvent(ev: any = v:null, _timer_id: any = 0)
     return
   endif
 
-  if !CopyToSystemClipboard(txt)
-    echohl WarningMsg
-    echom 'SimpleClipboard: All copy methods failed. Check logs for details.'
-    echohl None
+  # 防抖：快速连续 yank 时只处理最后一次
+  if debounce_timer != -1
+    timer_stop(debounce_timer)
   endif
+  var captured_txt = txt
+  debounce_timer = timer_start(50, (_) => {
+    debounce_timer = -1
+    if !CopyToSystemClipboard(captured_txt)
+      echohl WarningMsg
+      echom 'SimpleClipboard: All copy methods failed. Check logs for details.'
+      echohl None
+    endif
+  })
 enddef
 
 export def Status(): void
