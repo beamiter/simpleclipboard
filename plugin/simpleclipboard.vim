@@ -28,16 +28,8 @@ g:simpleclipboard_incontainer_host_ip = get(g:, 'simpleclipboard_incontainer_hos
 # --- 端口规划 ---
 # 本地主守护进程监听的端口
 g:simpleclipboard_port = get(g:, 'simpleclipboard_port', 12343)
-# 中继守护进程监听的端口
-g:simpleclipboard_relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
-# SSH 隧道在远程主机上监听的端口 (中继的目标)
-g:simpleclipboard_final_daemon_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
-
-# --- 自动化中继配置 ---
-g:simpleclipboard_auto_relay = get(g:, 'simpleclipboard_auto_relay', 1)
-g:simpleclipboard_relay_method = get(g:, 'simpleclipboard_relay_method', 'daemon')
-# 全局状态守卫，防止重复设置
-g:simpleclipboard_relay_setup_done = get(g:, 'simpleclipboard_relay_setup_done', 0)
+# SSH 隧道在远程主机上监听的端口（通过 SSH RemoteForward 自动建立）
+g:simpleclipboard_tunnel_port = get(g:, 'simpleclipboard_tunnel_port', 12345)
 
 # ---------------- 命令与映射 ----------------
 command! SimpleCopyYank simpleclipboard#CopyYankedToClipboard()
@@ -68,7 +60,7 @@ if g:simpleclipboard_daemon_enabled
   augroup SimpleClipboardDaemon
     autocmd!
     if g:simpleclipboard_daemon_autostart
-      autocmd VimEnter * call simpleclipboard#SetupRelayIfNeeded() | call simpleclipboard#StartDaemon()
+      autocmd VimEnter * call simpleclipboard#DetectEnvironment() | call simpleclipboard#StartDaemon()
     endif
     if g:simpleclipboard_daemon_autostop
       autocmd VimLeave * call simpleclipboard#StopDaemon()

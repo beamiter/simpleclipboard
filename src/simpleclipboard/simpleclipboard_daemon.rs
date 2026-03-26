@@ -13,11 +13,10 @@ use tokio::sync::Semaphore;
 use tokio::task;
 use tokio::time::timeout;
 
-const MAX_BYTES: usize = 10 * 1024 * 1024; // 10 MiB，剪贴板文本足够
+const MAX_BYTES: usize = 10 * 1024 * 1024; // 10 MiB
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const HANDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONCURRENT: usize = 256;
-// 帧格式魔术字
 const FRAME_MAGIC: &[u8; 4] = b"SCB1";
 
 #[derive(Debug, Encode, Decode)]
@@ -42,11 +41,6 @@ fn pid_path() -> PathBuf {
 
 fn listen_address() -> String {
     env::var("SIMPLECLIPBOARD_ADDR").unwrap_or_else(|_| "127.0.0.1:12343".to_string())
-}
-
-fn final_addr() -> Option<String> {
-    let v = env::var("SIMPLECLIPBOARD_FINAL_ADDR").unwrap_or_default();
-    if v.is_empty() { None } else { Some(v) }
 }
 
 fn expected_token() -> Option<String> {
@@ -76,7 +70,6 @@ async fn set_clipboard_text_async(text: String) -> bool {
             if cb.set_text(text.clone()).is_ok() {
                 return true;
             }
-            // 失败后重建再试一次
             *lock = Clipboard::new().ok();
             if let Some(cb2) = lock.as_mut() {
                 return cb2.set_text(text).is_ok();
@@ -88,43 +81,15 @@ async fn set_clipboard_text_async(text: String) -> bool {
     .unwrap_or(false)
 }
 
-// 转发到最终地址时保留"旧协议"以兼容（写完整 bincode，读到 EOF）
-async fn forward_legacy_async(addr: &str, text: String) -> io::Result<()> {
-    let mut s = TcpStream::connect(addr).await?;
-    let cfg = bincode::config::standard().with_limit::<MAX_BYTES>();
-    let msg = Msg::Legacy { text };
-    let mut buf = Vec::new();
-    bincode::encode_into_std_write(msg, &mut buf, cfg)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "encode failed"))?;
-    s.write_all(&buf).await?;
-    s.flush().await?;
-    Ok(())
-}
-
-/// 处理剪贴板设置逻辑（Set 和 Legacy 共用）
-async fn handle_set_text(text: String, final_addr: &Option<String>) -> Ack {
-    if let Some(addr) = final_addr {
-        match forward_legacy_async(addr, text.clone()).await {
-            Ok(()) => Ack { ok: true, detail: Some("forwarded".into()) },
-            Err(e) => {
-                warn!("Relay forward failed: {e}. Fallback to local clipboard");
-                let ok = set_clipboard_text_async(text).await;
-                Ack {
-                    ok: false,
-                    detail: Some(if ok { "forward_failed_fallback_ok" } else { "forward_failed_fallback_err" }.into()),
-                }
-            }
-        }
-    } else {
-        let ok = set_clipboard_text_async(text).await;
-        Ack {
-            ok,
-            detail: Some(if ok { "local_set_ok" } else { "local_set_err" }.into()),
-        }
+async fn handle_set_text(text: String) -> Ack {
+    let ok = set_clipboard_text_async(text).await;
+    Ack {
+        ok,
+        detail: Some(if ok { "local_set_ok" } else { "local_set_err" }.into()),
     }
 }
 
-async fn handle_msg(msg: Msg, final_addr: &Option<String>) -> Ack {
+async fn handle_msg(msg: Msg) -> Ack {
     match msg {
         Msg::Ping { token } => {
             if token_ok(&token) {
@@ -140,14 +105,13 @@ async fn handle_msg(msg: Msg, final_addr: &Option<String>) -> Ack {
                 warn!("Set rejected by token");
                 Ack { ok: false, detail: Some("token_rejected".into()) }
             } else {
-                handle_set_text(text, final_addr).await
+                handle_set_text(text).await
             }
         }
-        Msg::Legacy { text } => handle_set_text(text, final_addr).await,
+        Msg::Legacy { text } => handle_set_text(text).await,
     }
 }
 
-// 新协议读取：优先尝试帧格式（magic + len + payload），否则回退旧协议（读到 EOF）
 async fn read_full_msg(stream: &mut TcpStream) -> io::Result<Msg> {
     let mut magic = [0u8; 4];
     match timeout(READ_TIMEOUT, stream.read_exact(&mut magic)).await {
@@ -179,7 +143,7 @@ async fn read_full_msg(stream: &mut TcpStream) -> io::Result<Msg> {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "decode failed"))?;
         Ok(msg)
     } else {
-        // 旧协议：把已读的 4 字节当作消息一部分继续读到 EOF
+        // 旧协议回退：把已读 4 字节当消息开头，读到 EOF
         let mut buf = magic.to_vec();
         let read_res = timeout(READ_TIMEOUT, async {
             let mut tmp = [0u8; 16 * 1024];
@@ -270,7 +234,6 @@ async fn main() -> io::Result<()> {
         });
     }
 
-    let final_addr = final_addr();
     let semaphore = std::sync::Arc::new(Semaphore::new(MAX_CONCURRENT));
 
     loop {
@@ -282,7 +245,6 @@ async fn main() -> io::Result<()> {
             }
         };
 
-        let final_addr = final_addr.clone();
         let permit = semaphore.clone().acquire_owned().await;
 
         tokio::spawn(async move {
@@ -291,7 +253,7 @@ async fn main() -> io::Result<()> {
                 match read_full_msg(&mut stream).await {
                     Ok(msg) => {
                         debug!("msg from {peer:?}: {msg:?}");
-                        let ack = handle_msg(msg, &final_addr).await;
+                        let ack = handle_msg(msg).await;
                         write_ack(&mut stream, ack).await;
                     }
                     Err(e) => {

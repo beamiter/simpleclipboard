@@ -104,7 +104,7 @@ def InContainer(): bool
 enddef
 
 # =============================================================
-# 网络配置、中继与守护进程管理
+# 环境探测与网络配置
 # =============================================================
 
 var daemon_exe_path: string = ''
@@ -121,6 +121,19 @@ def IsTcpOpen(addr: string): bool
   return false
 enddef
 
+def CanConnect(address: string): bool
+  try
+    var ch = ch_open(address, {'timeout': 500})
+    if ch_status(ch) ==# 'open'
+      ch_close(ch)
+      return true
+    endif
+  catch
+    Log($"CanConnect(ch_open) exception: {v:exception}", 'WarningMsg')
+  endtry
+  return false
+enddef
+
 def FindDaemonExe(): void
   if daemon_exe_path !=# '' | return | endif
   var override = get(g:, 'simpleclipboard_daemon_path', '')
@@ -133,216 +146,111 @@ def FindDaemonExe(): void
   daemon_exe_path = FindInRuntimepath('lib/simpleclipboard-daemon')
 enddef
 
-def StartRelay(): void
-  var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
-  if IsTcpOpen($"127.0.0.1:{relay_port}")
-    Log('Persistent relay service is already running.', 'MoreMsg')
+def ResolveContainerHostIP(): string
+  var ip = trim(system("ip route | awk '/default/ { print $3 }'"))
+  if empty(ip)
+    var host_internal = trim(system("getent hosts host.docker.internal | awk '{print $1}'"))
+    if !empty(host_internal)
+      ip = host_internal
+      Log('Using host.docker.internal as container host IP: ' .. ip, 'Comment')
+    endif
+  endif
+  return ip
+enddef
+
+# --- 环境探测结果（模块级状态） ---
+var env_detected: bool = false
+var is_remote: bool = false
+var tunnel_available: bool = false
+var daemon_address: string = ''
+
+export def DetectEnvironment(): void
+  if env_detected
     return
   endif
-  if get(g:, 'simpleclipboard_relay_method', 'daemon') !=# 'daemon'
-    Log($"Relay method is not 'daemon', skipping.", 'Comment')
-    return
-  endif
-  FindDaemonExe()
-  if daemon_exe_path ==# ''
-    Log("Daemon executable for relay not found.", 'ErrorMsg')
-    return
-  endif
-  if !executable(daemon_exe_path)
-    Log("Daemon executable for relay found but is not executable: " .. daemon_exe_path, 'ErrorMsg')
+  env_detected = true
+
+  var daemon_port = get(g:, 'simpleclipboard_port', 12343)
+  var tunnel_port = get(g:, 'simpleclipboard_tunnel_port', 12345)
+
+  if !IsSSH() && !InContainer()
+    # 本地环境：直连 daemon
+    is_remote = false
+    daemon_address = '127.0.0.1:' .. daemon_port
+    Log('Local environment. Daemon address: ' .. daemon_address, 'MoreMsg')
     return
   endif
 
-  var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
-  var token = get(g:, 'simpleclipboard_token', '')
-  var env_map = {
-    'SIMPLECLIPBOARD_ADDR': '0.0.0.0:' .. relay_port,
-    'SIMPLECLIPBOARD_FINAL_ADDR': '127.0.0.1:' .. final_port,
-  }
-  if token !=# ''
-    env_map['SIMPLECLIPBOARD_TOKEN'] = token
-  endif
+  is_remote = true
 
-  Log('Starting persistent relay service with daemon...', 'Question')
-  try
-    # 直接用 job_start 启动并脱离 Vim 生命周期
-    job_start([daemon_exe_path], {
-      'env': env_map,
-      out_io: 'null',
-      err_io: 'null',
-      stoponexit: 'none'
-    })
-  catch
-    # 兜底用 nohup；把环境变量都拼进 shell 命令
-    var env_parts = []
-    for [k, v] in items(env_map)
-      call add(env_parts, $"{k}={v}")
-    endfor
-    var env_str = join(env_parts, ' ')
-    var command = $"{env_str} nohup {daemon_exe_path} >/dev/null 2>&1 &"
-    try
-      job_start(['sh', '-c', command], {stoponexit: 'none'})
-    catch
-      Log($"Failed to start persistent relay job. Error: {v:exception}", 'ErrorMsg')
+  if InContainer() && IsSSH()
+    # SSH → Container 嵌套：探测宿主机的 tunnel 端口
+    Log('SSH + Container detected, probing host for tunnel...', 'Question')
+
+    # 先试 --network host 场景
+    if IsTcpOpen($"127.0.0.1:{tunnel_port}")
+      daemon_address = '127.0.0.1:' .. tunnel_port
+      tunnel_available = true
+      Log('SSH+Container: localhost tunnel reachable (host network mode).', 'ModeMsg')
       return
-    endtry
-  endtry
-
-  sleep 250m
-  if IsTcpOpen($"127.0.0.1:{relay_port}")
-    Log('Persistent relay service started successfully.', 'ModeMsg')
-  else
-    Log('Failed to confirm persistent relay service startup.', 'ErrorMsg')
-  endif
-enddef
-
-# 安全的 TCP 连通性测试：不依赖外部命令，不修改剪贴板
-def CanConnect(address: string): bool
-  try
-    # ch_open 支持 "host:port" 字符串；设置较短超时（毫秒）
-    var ch = ch_open(address, {'timeout': 500})
-    if ch_status(ch) ==# 'open'
-      ch_close(ch)
-      return true
     endif
-  catch
-    Log($"CanConnect(ch_open) exception: {v:exception}", 'WarningMsg')
-  endtry
-  return false
-enddef
 
-export def SetupRelayIfNeeded(): void
-  if g:simpleclipboard_relay_setup_done != 0 || get(g:, 'simpleclipboard_auto_relay', 1) == 0
-    return
-  endif
-
-  var changed = false
-
-  if InContainer()
-    Log('In container, probing local then host for reachable relay/base...', 'Question')
-
-    var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
-    var base_port = get(g:, 'simpleclipboard_port', 12343)
-
-    # 1) 先探容器本地 127.0.0.1
-    if IsTcpOpen($"127.0.0.1:{relay_port}")
-      Log('Container: local relay reachable. Use local relay.', 'ModeMsg')
-      g:simpleclipboard_port = relay_port
-      g:simpleclipboard_incontainer_target = 'local'
-      changed = true
-
-    elseif IsTcpOpen($"127.0.0.1:{base_port}")
-      Log('Container: local base daemon reachable. Use local base.', 'ModeMsg')
-      g:simpleclipboard_port = base_port
-      g:simpleclipboard_incontainer_target = 'local'
-      changed = true
-
-    else
-      # 2) 再探宿主机（默认网关），找不到则尝试 host.docker.internal
-      var ip_cmd = "ip route | awk '/default/ { print $3 }'"
-      var container_host_ip = trim(system(ip_cmd))
-      if empty(container_host_ip)
-        var host_internal = trim(system("getent hosts host.docker.internal | awk '{print $1}'"))
-        if !empty(host_internal)
-          container_host_ip = host_internal
-          Log('Using host.docker.internal as container host IP: ' .. container_host_ip, 'Comment')
-        endif
-      endif
-
-      if !empty(container_host_ip)
-        var relay_addr = $"{container_host_ip}:{relay_port}"
-        var base_addr = $"{container_host_ip}:{base_port}"
-
-        if CanConnect(relay_addr)
-          Log('Container: host relay reachable. Use host relay.', 'ModeMsg')
-          g:simpleclipboard_port = relay_port
-          g:simpleclipboard_incontainer_target = 'host'
-          g:simpleclipboard_incontainer_host_ip = container_host_ip
-          changed = true
-
-        elseif CanConnect(base_addr)
-          Log('Container: host base reachable. Use host base.', 'ModeMsg')
-          g:simpleclipboard_port = base_port
-          g:simpleclipboard_incontainer_target = 'host'
-          g:simpleclipboard_incontainer_host_ip = container_host_ip
-          changed = true
-
-        else
-          Log('Container: host relay/base unreachable. Default to local relay port.', 'Comment')
-          g:simpleclipboard_port = relay_port
-          # 默认回到本地目标，后续 GetDaemonAddress 返回 127.0.0.1
-          g:simpleclipboard_incontainer_target = 'local'
-          changed = true
-        endif
-      else
-        Log('Container: cannot determine host IP. Default to local relay port.', 'Comment')
-        g:simpleclipboard_port = relay_port
-        g:simpleclipboard_incontainer_target = 'local'
-        changed = true
+    # 再试容器宿主机 IP
+    var host_ip = ResolveContainerHostIP()
+    if !empty(host_ip)
+      g:simpleclipboard_incontainer_host_ip = host_ip
+      if CanConnect($"{host_ip}:{tunnel_port}")
+        daemon_address = host_ip .. ':' .. tunnel_port
+        tunnel_available = true
+        g:simpleclipboard_incontainer_target = 'host'
+        Log('SSH+Container: host tunnel reachable at ' .. daemon_address, 'ModeMsg')
+        return
       endif
     endif
+
+    Log('SSH+Container: no TCP path found, will use OSC52.', 'Comment')
 
   elseif IsSSH()
-    Log('In SSH session, checking for tunnel then relay...', 'MoreMsg')
-    var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
-    if IsTcpOpen($"127.0.0.1:{final_port}")
-      StartRelay()
-      var relay_port = get(g:, 'simpleclipboard_relay_port', 12346)
-      if CanConnect($"127.0.0.1:{relay_port}")
-        Log('Relay reachable. Switching to relay port.', 'ModeMsg')
-        g:simpleclipboard_port = relay_port
-        changed = true
-      else
-        Log('Relay not reachable; using default port.', 'WarningMsg')
-      endif
+    # 纯 SSH：探测隧道
+    Log('SSH session detected, probing tunnel port...', 'Question')
+    if IsTcpOpen($"127.0.0.1:{tunnel_port}")
+      daemon_address = '127.0.0.1:' .. tunnel_port
+      tunnel_available = true
+      Log('SSH: tunnel reachable at ' .. daemon_address, 'ModeMsg')
     else
-      Log('SSH tunnel not found. Using default port.', 'MoreMsg')
+      Log('SSH: no tunnel found, will use OSC52.', 'Comment')
     endif
 
-  else
-    Log('Local environment detected; no relay needed.', 'MoreMsg')
-  endif
+  elseif InContainer()
+    # 本地容器：探测宿主机 daemon
+    Log('Container detected, probing host for daemon...', 'Question')
+    var host_ip = ResolveContainerHostIP()
+    if !empty(host_ip)
+      g:simpleclipboard_incontainer_host_ip = host_ip
+      if CanConnect($"{host_ip}:{daemon_port}")
+        daemon_address = host_ip .. ':' .. daemon_port
+        tunnel_available = true
+        g:simpleclipboard_incontainer_target = 'host'
+        Log('Container: host daemon reachable at ' .. daemon_address, 'ModeMsg')
+        return
+      endif
+    endif
 
-  if changed
-    g:simpleclipboard_relay_setup_done = 1
+    # 试 127.0.0.1（--network host 场景）
+    if IsTcpOpen($"127.0.0.1:{daemon_port}")
+      daemon_address = '127.0.0.1:' .. daemon_port
+      tunnel_available = true
+      g:simpleclipboard_incontainer_target = 'local'
+      Log('Container: local daemon reachable.', 'ModeMsg')
+    else
+      Log('Container: no TCP path found, will use OSC52.', 'Comment')
+    endif
   endif
 enddef
 
 def GetDaemonAddress(): string
-  var host = get(g:, 'simpleclipboard_local_host', '127.0.0.1')
-  var port = g:simpleclipboard_port
-
-  if InContainer()
-    var tgt = get(g:, 'simpleclipboard_incontainer_target', '')
-    if tgt ==# 'local' || tgt ==# ''
-      host = '127.0.0.1'
-    elseif tgt ==# 'host'
-      var ip = get(g:, 'simpleclipboard_incontainer_host_ip', '')
-      if empty(ip)
-        # 容错：如果没保存到 IP，重新计算一次
-        var ip_cmd = "ip route | awk '/default/ { print $3 }'"
-        var container_host_ip = trim(system(ip_cmd))
-        if empty(container_host_ip)
-          var host_internal = trim(system("getent hosts host.docker.internal | awk '{print $1}'"))
-          if !empty(host_internal)
-            container_host_ip = host_internal
-            Log('Using host.docker.internal as container host IP.', 'Comment')
-          endif
-        endif
-        host = !empty(container_host_ip) ? container_host_ip : '127.0.0.1'
-      else
-        host = ip
-      endif
-    else
-      # 未知值，回退本地
-      host = '127.0.0.1'
-    endif
-
-  elseif IsSSH()
-    host = '127.0.0.1'
-  endif
-
-  return host .. ':' .. port
+  DetectEnvironment()
+  return daemon_address
 enddef
 
 # =============================================================
@@ -361,7 +269,6 @@ def IsDaemonRunning(): bool
       return false
     endif
     if has('unix')
-      # kill -0 只检查进程是否存在，比 ps 更快（无需 fork 外部进程）
       system('kill -0 ' .. pid .. ' 2>/dev/null')
       return v:shell_error == 0
     endif
@@ -391,7 +298,7 @@ export def StartDaemon(): void
   Log('Starting local daemon: ' .. daemon_exe_path, 'Question')
   try
     var port = g:simpleclipboard_port
-    var bind_addr = get(g:, 'simpleclipboard_bind_addr', '127.0.0.1')  # 更安全的默认
+    var bind_addr = get(g:, 'simpleclipboard_bind_addr', '127.0.0.1')
     var job_env = {'SIMPLECLIPBOARD_ADDR': bind_addr .. ':' .. port}
     job_start([daemon_exe_path], { 'env': job_env, out_io: 'null', err_io: 'null', stoponexit: 'none' })
     sleep 150m
@@ -419,7 +326,6 @@ export def StopDaemon(): void
   try
     var pid = trim(readfile(pidfile)[0])
     if pid != '' && pid =~ '^\d\+$'
-      # 尝试发送 TERM
       system('kill ' .. pid)
       if v:shell_error == 0
         Log('Sent TERM signal to local daemon.', 'ModeMsg')
@@ -427,12 +333,10 @@ export def StopDaemon(): void
         Log('Failed to send TERM to local daemon (pid ' .. pid .. ').', 'WarningMsg')
       endif
 
-      # 稍等片刻再清理 pidfile（容错）
       sleep 100m
       try
         delete(pidfile)
       catch
-        # ignore deletion errors
       endtry
     else
       Log('PID file content invalid; removing pid file.', 'WarningMsg')
@@ -445,8 +349,9 @@ export def StopDaemon(): void
     Log('Error stopping daemon: ' .. v:exception, 'ErrorMsg')
   endtry
 enddef
+
 # =============================================================
-# 复制逻辑 (TCP Daemon -> Fallbacks)
+# 复制逻辑 (TCP Daemon / OSC52 / 外部命令)
 # =============================================================
 
 var running_copy_jobs: list<job> = []
@@ -481,9 +386,11 @@ def CopyViaDaemonTCP(text: string): bool
     return false
   endif
   var address = GetDaemonAddress()
+  if address ==# ''
+    return false
+  endif
   Log('Targeting daemon at: ' .. address, 'Identifier')
 
-  # 新协议：action=set + token（可为空）
   var token = get(g:, 'simpleclipboard_token', '')
   var payload = address .. "\x01" .. "set" .. "\x01" .. text .. "\x01" .. token
 
@@ -500,7 +407,7 @@ def CopyViaDaemonTCP(text: string): bool
   endtry
 enddef
 
-# 缓存可用的外部复制命令，避免每次 yank 都重复探测
+# 缓存可用的外部复制命令
 var cached_copy_cmd: list<any> = []
 var cached_copy_cmd_checked: bool = false
 
@@ -590,29 +497,36 @@ def CopyViaOsc52(text: string): bool
     return false
   endtry
 enddef
+
 # =============================================================
 # 公共 API
 # =============================================================
 
 export def CopyToSystemClipboard(text: string): bool
-  SetupRelayIfNeeded()
-  # 在 SSH 环境，如果隧道未就绪，直接跳过 TCP daemon，使用 OSC52/Cmds
-  if IsSSH()
-    var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
-    if !IsTcpOpen($"127.0.0.1:{final_port}")
-      Log('SSH tunnel missing; skip daemon and use OSC52/Cmds.', 'Comment')
-      return CopyViaOsc52(text) || CopyViaCmds(text)
+  DetectEnvironment()
+
+  if !is_remote
+    # 本地：TCP daemon 优先
+    Log('Local: trying TCP daemon...', 'Question')
+    if CopyViaDaemonTCP(text)
+      return true
     endif
+    Log('Local: TCP failed, trying fallbacks...', 'WarningMsg')
+    return CopyViaCmds(text) || CopyViaOsc52(text)
   endif
-  Log('Attempting copy via TCP daemon...', 'Question')
-  if CopyViaDaemonTCP(text)
-    return true
+
+  # 远程场景
+  if tunnel_available
+    # 有 TCP 通路（隧道或宿主机 daemon）：TCP 优先，OSC52 兜底
+    Log('Remote (tunnel available): trying TCP...', 'Question')
+    if CopyViaDaemonTCP(text)
+      return true
+    endif
+    Log('Remote: TCP failed, falling back to OSC52...', 'WarningMsg')
   endif
-  Log('TCP daemon failed, falling back to other methods...', 'WarningMsg')
-  if IsSSH() || InContainer()
-    return CopyViaOsc52(text) || CopyViaCmds(text)
-  endif
-  return CopyViaCmds(text) || CopyViaOsc52(text)
+
+  # 无隧道或 TCP 失败：OSC52 优先
+  return CopyViaOsc52(text) || CopyViaCmds(text)
 enddef
 
 export def CopyYankedToClipboard(_timer_id: any = 0)
@@ -644,7 +558,6 @@ var debounce_timer: number = -1
 export def CopyYankedToClipboardEvent(ev: any = v:null, _timer_id: any = 0)
   var txt = ''
   if type(ev) == v:t_dict
-    # 只在 yank 操作时自动复制，d/c 等不触发
     if has_key(ev, 'operator') && ev.operator !=# 'y'
       return
     endif
@@ -655,7 +568,6 @@ export def CopyYankedToClipboardEvent(ev: any = v:null, _timer_id: any = 0)
   endif
 
   if txt ==# ''
-    # 兜底：回退到寄存器读取
     txt = getreg('"')
   endif
 
@@ -663,7 +575,6 @@ export def CopyYankedToClipboardEvent(ev: any = v:null, _timer_id: any = 0)
     return
   endif
 
-  # 防抖：快速连续 yank 时只处理最后一次
   if debounce_timer != -1
     timer_stop(debounce_timer)
   endif
@@ -679,10 +590,13 @@ export def CopyYankedToClipboardEvent(ev: any = v:null, _timer_id: any = 0)
 enddef
 
 export def Status(): void
+  DetectEnvironment()
   Log('IsSSH: ' .. string(IsSSH()), 'Comment')
   Log('InContainer: ' .. string(InContainer()), 'Comment')
+  Log('is_remote: ' .. string(is_remote), 'Comment')
+  Log('tunnel_available: ' .. string(tunnel_available), 'Comment')
+  Log('daemon_address: ' .. daemon_address, 'Comment')
   Log('Port (g:simpleclipboard_port): ' .. string(g:simpleclipboard_port), 'Comment')
-  Log('Daemon addr resolved: ' .. GetDaemonAddress(), 'Comment')
-  var final_port = get(g:, 'simpleclipboard_final_daemon_port', 12345)
-  Log('Tunnel 127.0.0.1:' .. final_port .. ' open: ' .. string(IsTcpOpen($"127.0.0.1:{final_port}")), 'Comment')
+  var tunnel_port = get(g:, 'simpleclipboard_tunnel_port', 12345)
+  Log('Tunnel port: ' .. tunnel_port .. ' open: ' .. string(IsTcpOpen($"127.0.0.1:{tunnel_port}")), 'Comment')
 enddef
