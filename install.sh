@@ -41,14 +41,22 @@ EOF
   echo "Future SSH connections will auto-forward clipboard when local daemon is running."
 }
 
-echo ""
-echo "=== SSH Auto-Tunnel Setup ==="
-echo "This configures SSH to automatically forward clipboard from remote Vim."
-echo "Without this, remote clipboard still works via OSC52 (terminal-based, ~75KB limit)."
-echo ""
-read -p "Configure SSH auto-tunnel for remote clipboard? (y/N) " answer
-if [[ "$answer" =~ ^[Yy] ]]; then
+if [[ "${1:-}" == "--with-ssh-tunnel" ]]; then
   setup_ssh_tunnel
+elif [[ -t 0 ]]; then
+  echo ""
+  echo "=== SSH Auto-Tunnel Setup ==="
+  echo "This configures SSH to automatically forward clipboard from remote Vim."
+  echo "Without this, remote clipboard still works via OSC52 (terminal-based, ~75KB limit)."
+  echo ""
+  read -p "Configure SSH auto-tunnel for remote clipboard? (y/N) " answer
+  if [[ "$answer" =~ ^[Yy] ]]; then
+    setup_ssh_tunnel
+  else
+    echo "Skipped. Run './install.sh --with-ssh-tunnel' later to set it up."
+  fi
 else
-  echo "Skipped. You can run this script again later to set it up."
+  echo ""
+  echo "SSH auto-tunnel setup skipped (non-interactive mode)."
+  echo "Run './install.sh --with-ssh-tunnel' to configure it later."
 fi
