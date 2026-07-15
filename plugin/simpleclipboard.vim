@@ -3,10 +3,15 @@ vim9script
 if exists('g:loaded_simpleclipboard')
   finish
 endif
+if v:version < 900 || !has('job') || !has('channel')
+  echohl ErrorMsg
+  echom '[SimpleClipboard] Vim 9.0+ with +job and +channel is required.'
+  echohl None
+  finish
+endif
 g:loaded_simpleclipboard = 1
-g:simpleclipboard_token = get(g:, 'simpleclipboard_token', '')
 
-# ---------------- 配置项（可在 vimrc 中覆盖） ----------------
+# Configuration defaults. Set these before the plugin is loaded to override.
 g:simpleclipboard_daemon_enabled = get(g:, 'simpleclipboard_daemon_enabled', 1)
 g:simpleclipboard_daemon_autostart = get(g:, 'simpleclipboard_daemon_autostart', 1)
 g:simpleclipboard_daemon_autostop = get(g:, 'simpleclipboard_daemon_autostop', 0)
@@ -16,43 +21,43 @@ g:simpleclipboard_daemon_path = get(g:, 'simpleclipboard_daemon_path', '')
 g:simpleclipboard_no_default_mappings = get(g:, 'simpleclipboard_no_default_mappings', 0)
 g:simpleclipboard_debug = get(g:, 'simpleclipboard_debug', 0)
 g:simpleclipboard_debug_to_file = get(g:, 'simpleclipboard_debug_to_file', 0)
+g:simpleclipboard_debug_file = get(g:, 'simpleclipboard_debug_file', '')
 g:simpleclipboard_disable_osc52 = get(g:, 'simpleclipboard_disable_osc52', 0)
-g:simpleclipboard_bind_addr = get(g:, 'simpleclipboard_bind_addr', '0.0.0.0')
-
-
-# 容器环境下，指示应连接本地(local)还是宿主机(host)
-g:simpleclipboard_incontainer_target = get(g:, 'simpleclipboard_incontainer_target', '')
-# 若选择 host，记录探测到的宿主机 IP
-g:simpleclipboard_incontainer_host_ip = get(g:, 'simpleclipboard_incontainer_host_ip', '')
-
-# --- 端口规划 ---
-# 本地主守护进程监听的端口
+g:simpleclipboard_osc52_limit = get(g:, 'simpleclipboard_osc52_limit', 75000)
+g:simpleclipboard_osc52_truncate = get(g:, 'simpleclipboard_osc52_truncate', 0)
+g:simpleclipboard_bind_addr = get(g:, 'simpleclipboard_bind_addr', '127.0.0.1')
 g:simpleclipboard_port = get(g:, 'simpleclipboard_port', 12343)
-# SSH 隧道在远程主机上监听的端口（通过 SSH RemoteForward 自动建立）
 g:simpleclipboard_tunnel_port = get(g:, 'simpleclipboard_tunnel_port', 12345)
+g:simpleclipboard_token = get(g:, 'simpleclipboard_token', '')
+g:simpleclipboard_address = get(g:, 'simpleclipboard_address', '')
+g:simpleclipboard_copy_command = get(g:, 'simpleclipboard_copy_command', [])
+g:simpleclipboard_debounce_ms = get(g:, 'simpleclipboard_debounce_ms', 50)
+g:simpleclipboard_container_host = get(g:, 'simpleclipboard_container_host', '')
 
-# ---------------- 命令与映射 ----------------
 command! SimpleCopyYank simpleclipboard#CopyYankedToClipboard()
-command! SimpleCopyStop simpleclipboard#StopDaemon()
+command! SimpleCopyVisual simpleclipboard#CopyVisualSelection()
 command! -range=% SimpleCopyRange simpleclipboard#CopyRangeToClipboard(<line1>, <line2>)
-command! SimpleCopyStatus call simpleclipboard#Status()
+command! SimpleCopyStart simpleclipboard#StartDaemon()
+command! SimpleCopyStop simpleclipboard#StopDaemon()
+command! SimpleCopyStatus simpleclipboard#Status()
+command! SimpleCopyRefresh simpleclipboard#Refresh()
 
 nnoremap <silent> <Plug>(SimpleCopyYank) <Cmd>SimpleCopyYank<CR>
+xnoremap <silent> <Plug>(SimpleCopyVisual) :<C-U>SimpleCopyVisual<CR>
+
 if !g:simpleclipboard_no_default_mappings
-  nnoremap <silent> <leader>y <Plug>(SimpleCopyYank)
-  xnoremap <silent> <leader>y :<C-U>'<,'>SimpleCopyRange<CR>
+  if maparg('<leader>y', 'n') ==# '' && !hasmapto('<Plug>(SimpleCopyYank)', 'n')
+    nmap <silent> <leader>y <Plug>(SimpleCopyYank)
+  endif
+  if maparg('<leader>y', 'x') ==# '' && !hasmapto('<Plug>(SimpleCopyVisual)', 'x')
+    xmap <silent> <leader>y <Plug>(SimpleCopyVisual)
+  endif
 endif
 
-# ---------------- 自动命令 ----------------
 if g:simpleclipboard_auto_copy
   augroup SimpleClipboardYank
     autocmd!
-    if exists('*timer_start')
-      autocmd TextYankPost * call timer_start(0, function('simpleclipboard#CopyYankedToClipboardEvent', [v:event]))
-    else
-      # 无 timer_start 时直接调用，传 1 个参数也匹配上面的函数签名
-      autocmd TextYankPost * call simpleclipboard#CopyYankedToClipboardEvent(v:event)
-    endif
+    autocmd TextYankPost * call simpleclipboard#CopyYankedToClipboardEvent(deepcopy(v:event))
   augroup END
 endif
 
@@ -60,10 +65,14 @@ if g:simpleclipboard_daemon_enabled
   augroup SimpleClipboardDaemon
     autocmd!
     if g:simpleclipboard_daemon_autostart
-      autocmd VimEnter * call simpleclipboard#DetectEnvironment() | call simpleclipboard#StartDaemon()
+      if v:vim_did_enter
+        call simpleclipboard#StartDaemon(false)
+      else
+        autocmd VimEnter * call simpleclipboard#DetectEnvironment() | call simpleclipboard#StartDaemon(false)
+      endif
     endif
     if g:simpleclipboard_daemon_autostop
-      autocmd VimLeave * call simpleclipboard#StopDaemon()
+      autocmd VimLeave * call simpleclipboard#StopDaemon(false)
     endif
   augroup END
 endif

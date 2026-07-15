@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  vim90:
+    name: Vim 9.0 baseline
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          version: v9.0.0000
+      - run: vim --version | head -1 | grep 'Vi IMproved 9.0'
+      - run: vim -Nu NONE -i NONE -n -es -S test/vim_smoke.vim
+
+  linux:
+    name: Linux / Rust ${{ matrix.rust }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ["1.85.0", stable]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        run: |
+          rustup toolchain install "${{ matrix.rust }}" --profile minimal --component clippy,rustfmt
+          rustup override set "${{ matrix.rust }}"
+      - name: Install Vim and native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes vim shellcheck pkg-config libwayland-dev libxkbcommon-dev
+      - name: Full check suite
+        if: matrix.rust == 'stable'
+        run: make check
+      - name: MSRV compile and tests
+        if: matrix.rust == '1.85.0'
+        run: |
+          cargo test --locked --all-targets
+          cargo build --locked --release
+      - run: bash -n install.sh
+      - run: shellcheck install.sh test/install_args.sh test/tcp_e2e.sh
+      - name: Install host artifacts
+        run: |
+          ./install.sh
+          ./lib/simpleclipboard-daemon --version | grep 'simpleclipboard-daemon 0.2.0'
+      - name: TCP protocol end-to-end
+        if: matrix.rust == 'stable'
+        run: bash test/tcp_e2e.sh
+
+  macos:
+    name: macOS / Rust stable
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup override set stable
+      - name: Install Vim
+        run: brew install vim shellcheck
+      - run: make check
+      - run: bash -n install.sh
+      - run: shellcheck install.sh test/install_args.sh test/tcp_e2e.sh
+      - name: Install host artifacts
+        run: |
+          ./install.sh
+          ./lib/simpleclipboard-daemon --version | grep 'simpleclipboard-daemon 0.2.0'
+      - name: TCP protocol end-to-end
+        run: bash test/tcp_e2e.sh

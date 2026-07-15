@@ -1,173 +1,555 @@
+pub mod protocol;
+
 use libc::c_char;
+use protocol::{
+    Ack, AuthKeys, FRAME_HEADER_BYTES, PlainRequest, ServerHello, WireAck, WireRequest,
+    decode_ack_payload, decode_hello_payload, derive_auth_keys, encode_request_frame, open_ack,
+    parse_header, seal_request, validate_ack_length,
+};
 use std::ffi::CStr;
+use std::fmt;
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::LazyLock;
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::time::{Duration, Instant};
 
-use bincode::{Decode, Encode};
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(800);
+const IO_TIMEOUT: Duration = Duration::from_secs(4);
+const FIELD_SEPARATOR: char = '\u{1}';
+const ABI_V2: &str = "SCB2";
+const RESOLVER_QUEUE: usize = 8;
+const AMBIGUOUS_CLIPBOARD_DETAIL: &str = "clipboard_outcome_unknown";
 
-const MAX_BYTES: usize = 10 * 1024 * 1024;
-// 帧格式魔术字
-const FRAME_MAGIC: &[u8; 4] = b"SCB1";
+type Resolution = std::io::Result<Vec<SocketAddr>>;
 
-#[derive(Debug, Encode, Decode)]
-pub enum Msg {
-    Ping { token: Option<String> },
-    Set { text: String, token: Option<String> },
-    Legacy { text: String },
+struct ResolveJob {
+    address: String,
+    reply: SyncSender<Resolution>,
 }
 
-#[derive(Debug, Encode, Decode)]
-pub struct Ack {
-    pub ok: bool,
-    pub detail: Option<String>,
+static RESOLVER: LazyLock<Option<SyncSender<ResolveJob>>> = LazyLock::new(|| {
+    let (sender, receiver) = mpsc::sync_channel::<ResolveJob>(RESOLVER_QUEUE);
+    std::thread::Builder::new()
+        .name("simpleclipboard-resolver".to_owned())
+        .spawn(move || {
+            while let Ok(job) = receiver.recv() {
+                let result = job
+                    .address
+                    .to_socket_addrs()
+                    .map(|addresses| addresses.collect::<Vec<_>>());
+                let _ = job.reply.send(result);
+            }
+        })
+        .ok()
+        .map(|_| sender)
+});
+
+struct ClientRequest {
+    request: PlainRequest,
+    keys: Option<AuthKeys>,
 }
 
-fn connect_with_timeout(addr: &str) -> std::io::Result<TcpStream> {
-    let addrs = addr.to_socket_addrs()?.collect::<Vec<_>>();
-    if addrs.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "no addr",
+impl ClientRequest {
+    fn new(request: PlainRequest, token: &str) -> Self {
+        Self {
+            request,
+            keys: (!token.is_empty()).then(|| derive_auth_keys(token)),
+        }
+    }
+
+    fn mutates_clipboard(&self) -> bool {
+        matches!(
+            &self.request,
+            PlainRequest::Set { .. } | PlainRequest::Legacy { .. }
+        )
+    }
+}
+
+#[derive(Debug)]
+enum ClientError {
+    InvalidPayload,
+    Io(std::io::Error),
+    Protocol(protocol::ProtocolError),
+    OutcomeUnknown,
+}
+
+impl fmt::Display for ClientError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidPayload => f.write_str("invalid client payload"),
+            Self::Io(error) => write!(f, "I/O failed: {error}"),
+            Self::Protocol(error) => write!(f, "protocol failed: {error}"),
+            Self::OutcomeUnknown => f.write_str("clipboard request outcome is unknown"),
+        }
+    }
+}
+
+impl From<std::io::Error> for ClientError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl From<protocol::ProtocolError> for ClientError {
+    fn from(value: protocol::ProtocolError) -> Self {
+        Self::Protocol(value)
+    }
+}
+
+fn resolver_error(kind: std::io::ErrorKind, detail: &'static str) -> ClientError {
+    ClientError::Io(std::io::Error::new(kind, detail))
+}
+
+fn await_resolution(
+    receiver: &Receiver<Resolution>,
+    deadline: Instant,
+) -> Result<Vec<SocketAddr>, ClientError> {
+    match receiver.recv_timeout(deadline_remaining(deadline)?) {
+        Ok(Ok(addresses)) if !addresses.is_empty() => Ok(addresses),
+        Ok(Ok(_)) => Err(ClientError::InvalidPayload),
+        Ok(Err(error)) => Err(ClientError::Io(error)),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(resolver_error(
+            std::io::ErrorKind::TimedOut,
+            "address resolution deadline exceeded",
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(resolver_error(
+            std::io::ErrorKind::BrokenPipe,
+            "address resolver stopped",
+        )),
+    }
+}
+
+fn resolve_with_deadline(address: &str, deadline: Instant) -> Result<Vec<SocketAddr>, ClientError> {
+    if let Ok(address) = address.parse::<SocketAddr>() {
+        return Ok(vec![address]);
+    }
+
+    let Some(resolver) = RESOLVER.as_ref() else {
+        return Err(resolver_error(
+            std::io::ErrorKind::Other,
+            "address resolver could not start",
         ));
-    }
-    let timeout = Duration::from_millis(800);
-    let s = TcpStream::connect_timeout(&addrs[0], timeout)?;
-    let _ = s.set_nodelay(true);
-    let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
-    let _ = s.set_read_timeout(Some(Duration::from_secs(10))); // 放宽 ACK 读取超时
-    Ok(s)
+    };
+    let (reply, result) = mpsc::sync_channel(1);
+    resolver
+        .try_send(ResolveJob {
+            address: address.to_owned(),
+            reply,
+        })
+        .map_err(|error| match error {
+            TrySendError::Full(_) => resolver_error(
+                std::io::ErrorKind::WouldBlock,
+                "address resolver queue is full",
+            ),
+            TrySendError::Disconnected(_) => {
+                resolver_error(std::io::ErrorKind::BrokenPipe, "address resolver stopped")
+            }
+        })?;
+    await_resolution(&result, deadline)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_set_clipboard_tcp(payload: *const c_char) -> i32 {
-    // payload 格式：
-    //   Set:    "address \x01 set  \x01 text  \x01 token?"
-    //   Ping:   "address \x01 ping \x01 ''    \x01 token?"
-    //   Legacy: "address \x01 set  \x01 text"（兼容旧调用）
-    let payload_cstr = unsafe {
-        match CStr::from_ptr(payload).to_str() {
-            Ok(s) => s,
+fn connect_with_timeout(address: &str) -> Result<TcpStream, ClientError> {
+    let deadline = Instant::now() + CONNECT_TIMEOUT;
+    let addresses = resolve_with_deadline(address, deadline)?;
+
+    let mut last_error = None;
+    for socket_address in addresses {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match TcpStream::connect_timeout(&socket_address, remaining) {
+            Ok(stream) => {
+                stream.set_nodelay(true)?;
+                stream.set_write_timeout(Some(IO_TIMEOUT))?;
+                stream.set_read_timeout(Some(IO_TIMEOUT))?;
+                return Ok(stream);
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(ClientError::Io(last_error.unwrap_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::TimedOut, "connection deadline exceeded")
+    })))
+}
+
+fn send_request(address: &str, request: &ClientRequest) -> Result<Ack, ClientError> {
+    if address.is_empty() {
+        return Err(ClientError::InvalidPayload);
+    }
+
+    let mut stream = connect_with_timeout(address)?;
+    let deadline = Instant::now() + IO_TIMEOUT;
+    let hello = read_hello_from_stream(&mut stream, deadline)?;
+    let (wire_request, request_nonce) = match request.keys.as_ref() {
+        Some(keys) => {
+            let (wire, nonce) = seal_request(keys, &hello.challenge, &request.request)?;
+            (wire, Some(nonce))
+        }
+        None => (WireRequest::Plain(request.request.clone()), None),
+    };
+    let frame = encode_request_frame(&wire_request)?;
+    write_all_until(&mut stream, &frame, deadline)?;
+    after_frame_sent(request, || {
+        stream.set_write_timeout(Some(deadline_remaining(deadline)?))?;
+        stream.flush()?;
+        stream.shutdown(Shutdown::Write)?;
+
+        let response = read_ack_from_stream(&mut stream, deadline)?;
+        match (request.keys.as_ref(), request_nonce, response) {
+            (None, None, WireAck::Plain(ack)) => Ok(ack),
+            (Some(keys), Some(nonce), response) => {
+                Ok(open_ack(keys, &hello.challenge, &nonce, &response)?)
+            }
+            _ => Err(protocol::ProtocolError::UnexpectedProtection.into()),
+        }
+    })
+}
+
+fn after_frame_sent<T>(
+    request: &ClientRequest,
+    operation: impl FnOnce() -> Result<T, ClientError>,
+) -> Result<T, ClientError> {
+    match operation() {
+        Err(_) if request.mutates_clipboard() => Err(ClientError::OutcomeUnknown),
+        result => result,
+    }
+}
+
+#[cfg(test)]
+fn read_ack(reader: &mut impl Read) -> Result<WireAck, ClientError> {
+    let mut header = [0_u8; FRAME_HEADER_BYTES];
+    reader.read_exact(&mut header)?;
+    let payload_length = parse_header(&header)?;
+    validate_ack_length(payload_length)?;
+    let mut payload = vec![0_u8; payload_length];
+    reader.read_exact(&mut payload)?;
+    Ok(decode_ack_payload(&payload)?)
+}
+
+fn read_ack_from_stream(stream: &mut TcpStream, deadline: Instant) -> Result<WireAck, ClientError> {
+    let mut header = [0_u8; FRAME_HEADER_BYTES];
+    read_exact_until(stream, &mut header, deadline)?;
+    let payload_length = parse_header(&header)?;
+    validate_ack_length(payload_length)?;
+    let mut payload = vec![0_u8; payload_length];
+    read_exact_until(stream, &mut payload, deadline)?;
+    Ok(decode_ack_payload(&payload)?)
+}
+
+fn read_hello_from_stream(
+    stream: &mut TcpStream,
+    deadline: Instant,
+) -> Result<ServerHello, ClientError> {
+    let mut header = [0_u8; FRAME_HEADER_BYTES];
+    read_exact_until(stream, &mut header, deadline)?;
+    let payload_length = parse_header(&header)?;
+    validate_ack_length(payload_length)?;
+    let mut payload = vec![0_u8; payload_length];
+    read_exact_until(stream, &mut payload, deadline)?;
+    Ok(decode_hello_payload(&payload)?)
+}
+
+fn deadline_remaining(deadline: Instant) -> std::io::Result<Duration> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "request deadline exceeded",
+        ))
+    } else {
+        Ok(remaining)
+    }
+}
+
+fn write_all_until(
+    stream: &mut TcpStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+) -> std::io::Result<()> {
+    while !bytes.is_empty() {
+        stream.set_write_timeout(Some(deadline_remaining(deadline)?))?;
+        match stream.write(bytes) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "failed to write request frame",
+                ));
+            }
+            Ok(written) => bytes = &bytes[written..],
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn read_exact_until(
+    stream: &mut TcpStream,
+    mut bytes: &mut [u8],
+    deadline: Instant,
+) -> std::io::Result<()> {
+    while !bytes.is_empty() {
+        stream.set_read_timeout(Some(deadline_remaining(deadline)?))?;
+        match stream.read(bytes) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "response frame was truncated",
+                ));
+            }
+            Ok(read) => bytes = &mut bytes[read..],
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn parse_v2_payload(payload: &str) -> Result<(&str, ClientRequest), ClientError> {
+    let mut fields = payload.splitn(5, FIELD_SEPARATOR);
+    if fields.next() != Some(ABI_V2) {
+        return Err(ClientError::InvalidPayload);
+    }
+    let address = fields.next().ok_or(ClientError::InvalidPayload)?;
+    let action = fields.next().ok_or(ClientError::InvalidPayload)?;
+    let token = fields.next().ok_or(ClientError::InvalidPayload)?;
+    let text = fields.next().ok_or(ClientError::InvalidPayload)?;
+    if address.is_empty() || token.contains(FIELD_SEPARATOR) {
+        return Err(ClientError::InvalidPayload);
+    }
+    let request = match action {
+        "ping" if text.is_empty() => PlainRequest::Ping,
+        "set" => PlainRequest::Set {
+            text: text.to_owned(),
+        },
+        _ => return Err(ClientError::InvalidPayload),
+    };
+    Ok((address, ClientRequest::new(request, token)))
+}
+
+fn parse_legacy_payload(payload: &str) -> Result<(&str, ClientRequest), ClientError> {
+    let (address, remainder) = payload
+        .split_once(FIELD_SEPARATOR)
+        .ok_or(ClientError::InvalidPayload)?;
+    if address.is_empty() {
+        return Err(ClientError::InvalidPayload);
+    }
+
+    for action in ["ping", "set"] {
+        let prefix = format!("{action}{FIELD_SEPARATOR}");
+        if let Some(arguments) = remainder.strip_prefix(&prefix) {
+            let (text, token) = arguments
+                .rsplit_once(FIELD_SEPARATOR)
+                .unwrap_or((arguments, ""));
+            let request = match action {
+                "ping" if text.is_empty() => PlainRequest::Ping,
+                "set" => PlainRequest::Set {
+                    text: text.to_owned(),
+                },
+                _ => return Err(ClientError::InvalidPayload),
+            };
+            return Ok((address, ClientRequest::new(request, token)));
+        }
+    }
+
+    Ok((
+        address,
+        ClientRequest::new(
+            PlainRequest::Legacy {
+                text: remainder.to_owned(),
+            },
+            "",
+        ),
+    ))
+}
+
+fn ack_result(ack: &Ack) -> i32 {
+    if ack.ok {
+        1
+    } else if ack.detail.as_deref() == Some(AMBIGUOUS_CLIPBOARD_DETAIL) {
+        // The worker already started an operation that cannot be cancelled.  A
+        // fallback now could race and be overwritten by that late operation.
+        2
+    } else {
+        0
+    }
+}
+
+unsafe fn call_from_c(
+    payload: *const c_char,
+    parser: for<'a> fn(&'a str) -> Result<(&'a str, ClientRequest), ClientError>,
+) -> i32 {
+    if payload.is_null() {
+        return 0;
+    }
+
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: The exported C ABI requires a valid, NUL-terminated string.
+        let payload = unsafe { CStr::from_ptr(payload) };
+        let payload = match payload.to_str() {
+            Ok(value) => value,
             Err(_) => return 0,
-        }
-    };
-
-    let parts: Vec<&str> = payload_cstr.split('\u{1}').collect();
-    if parts.len() < 2 {
-        return 0;
-    }
-    let address = parts[0];
-
-    let mut stream = match connect_with_timeout(address) {
-        Ok(s) => s,
-        Err(_) => return 0,
-    };
-
-    let config = bincode::config::standard().with_limit::<MAX_BYTES>();
-
-    // 构造消息并用帧格式写出
-    let msg = if parts.len() == 2 {
-        let text = parts[1].to_string();
-        Msg::Legacy { text }
-    } else {
-        let action = parts[1];
-        let text = if parts.len() >= 3 { parts[2] } else { "" };
-        let token = if parts.len() >= 4 && !parts[3].is_empty() {
-            Some(parts[3].to_string())
-        } else {
-            None
         };
-        match action {
-            "ping" => Msg::Ping { token },
-            "set" => Msg::Set { text: text.to_string(), token },
-            _ => return 0,
+        let (address, request) = match parser(payload) {
+            Ok(value) => value,
+            Err(_) => return 0,
+        };
+        match send_request(address, &request) {
+            Ok(ack) => ack_result(&ack),
+            Err(ClientError::OutcomeUnknown) => 2,
+            Err(_) => 0,
         }
-    };
+    }))
+    .unwrap_or(0)
+}
 
-    let msg_buf = match bincode::encode_to_vec(msg, config) {
-        Ok(buf) => buf,
-        Err(_) => return 0,
-    };
+/// Sends an SCB2 ABI payload (`SCB2\x01address\x01action\x01token\x01text`).
+///
+/// The text field is last, so embedded U+0001 characters are preserved. Returns
+/// 1 for success, 2 when a clipboard operation is already in progress but its
+/// result is unknown, and 0 for a definitive failure.
+///
+/// # Safety
+///
+/// `payload` must point to a valid NUL-terminated C string for the duration of
+/// this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_set_clipboard_tcp_v2(payload: *const c_char) -> i32 {
+    // SAFETY: The caller upholds the exported ABI contract.
+    unsafe { call_from_c(payload, parse_v2_payload) }
+}
 
-    // 写帧头 + 长度 + 负载
-    if stream.write_all(FRAME_MAGIC).is_err() {
-        return 0;
-    }
-    if stream
-        .write_all(&(msg_buf.len() as u32).to_be_bytes())
-        .is_err()
-    {
-        return 0;
-    }
-    if stream.write_all(&msg_buf).is_err() {
-        return 0;
-    }
-    let _ = stream.flush();
-    let _ = stream.shutdown(Shutdown::Write); // 半关闭写端，便于服务端尽快读到 EOF（旧服务端兼容）
+/// Compatibility entry point for the v0.1 Vim client payload.
+///
+/// Returns the same 0/1/2 status values as [`rust_set_clipboard_tcp_v2`].
+///
+/// # Safety
+///
+/// `payload` must point to a valid NUL-terminated C string for the duration of
+/// this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_set_clipboard_tcp(payload: *const c_char) -> i32 {
+    // SAFETY: The caller upholds the exported ABI contract.
+    unsafe { call_from_c(payload, parse_legacy_payload) }
+}
 
-    // 读取 ACK：优先新帧；不是帧头则回退旧方式
-    let mut magic = [0u8; 4];
-    match stream.read_exact(&mut magic) {
-        Ok(()) => {}
-        Err(_e) => {
-            // 旧守护不返回 ACK：保持旧行为（视为成功）
-            return 1;
-        }
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol::encode_ack_frame;
+    use std::io::Cursor;
+    use std::ptr;
 
-    if &magic != FRAME_MAGIC {
-        // 回退旧 ACK：把已读 4 字节当作 ACK 开头，继续读到 EOF
-        let mut buf = magic.to_vec();
-        let mut tmp = [0u8; 1024];
-        loop {
-            match stream.read(&mut tmp) {
-                Ok(0) => break,
-                Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                Err(_e) => {
-                    // 旧守护或读取失败：兼容旧行为，视为成功
-                    return 1;
-                }
+    #[test]
+    fn v2_payload_keeps_field_separator_in_text() {
+        let payload = "SCB2\u{1}127.0.0.1:1\u{1}set\u{1}token\u{1}a\u{1}b";
+        let (address, request) = parse_v2_payload(payload).unwrap();
+        assert_eq!(address, "127.0.0.1:1");
+        assert_eq!(
+            request.request,
+            PlainRequest::Set {
+                text: "a\u{1}b".to_owned(),
             }
-        }
-        // 尝试解码；失败也视为成功以兼容旧版
-        match bincode::decode_from_slice::<Ack, _>(&buf, config) {
-            Ok((ack, _)) => {
-                if ack.ok {
-                    1
-                } else if matches!(ack.detail.as_deref(), Some("forward_failed_fallback_ok")) {
-                    // 转发失败但本地 fallback 成功：视为成功，避免 Vim 端强制走 OSC52
-                    1
-                } else {
-                    0
-                }
+        );
+        assert!(request.keys.is_some());
+    }
+
+    #[test]
+    fn legacy_payload_uses_the_last_separator_for_token() {
+        let payload = "127.0.0.1:1\u{1}set\u{1}a\u{1}b\u{1}token";
+        let (_, request) = parse_legacy_payload(payload).unwrap();
+        assert_eq!(
+            request.request,
+            PlainRequest::Set {
+                text: "a\u{1}b".to_owned(),
             }
-            Err(_) => 1,
-        }
-    } else {
-        // 新帧 ACK
-        let mut len_buf = [0u8; 4];
-        if stream.read_exact(&mut len_buf).is_err() {
-            return 1; // 兼容旧版
-        }
-        let len = u32::from_be_bytes(len_buf) as usize;
-        if len == 0 || len > MAX_BYTES {
-            return 0;
-        }
-        let mut buf = vec![0u8; len];
-        if stream.read_exact(&mut buf).is_err() {
-            return 1; // 兼容旧版
-        }
-        match bincode::decode_from_slice::<Ack, _>(&buf, config) {
-            Ok((ack, _)) => {
-                if ack.ok {
-                    1
-                } else if matches!(ack.detail.as_deref(), Some("forward_failed_fallback_ok")) {
-                    1
-                } else {
-                    0
-                }
-            }
-            Err(_) => 1,
-        }
+        );
+        assert!(request.keys.is_some());
+    }
+
+    #[test]
+    fn null_ffi_pointer_is_rejected() {
+        // SAFETY: A null pointer is explicitly supported and rejected.
+        assert_eq!(unsafe { rust_set_clipboard_tcp_v2(ptr::null()) }, 0);
+    }
+
+    #[test]
+    fn client_requires_a_complete_valid_ack() {
+        let mut ack = encode_ack_frame(&WireAck::Plain(Ack {
+            ok: true,
+            detail: Some("ping_ok".to_owned()),
+        }))
+        .unwrap();
+        ack.pop();
+        let result = read_ack(&mut Cursor::new(ack));
+        assert!(matches!(result, Err(ClientError::Io(_))));
+
+        let mut oversized_header = Vec::from(protocol::FRAME_MAGIC);
+        oversized_header.extend_from_slice(&((protocol::MAX_ACK_BYTES + 1) as u32).to_be_bytes());
+        let oversized = read_ack(&mut Cursor::new(oversized_header));
+        assert!(matches!(oversized, Err(ClientError::Protocol(_))));
+    }
+
+    #[test]
+    fn rejected_ack_is_not_reported_as_success() {
+        let encoded = encode_ack_frame(&WireAck::Plain(Ack {
+            ok: false,
+            detail: Some("request_rejected".to_owned()),
+        }))
+        .unwrap();
+        let WireAck::Plain(ack) = read_ack(&mut Cursor::new(encoded)).unwrap() else {
+            panic!("expected plaintext ack");
+        };
+        assert_eq!(ack_result(&ack), 0);
+    }
+
+    #[test]
+    fn ambiguous_clipboard_result_suppresses_immediate_fallback() {
+        let ack = Ack {
+            ok: false,
+            detail: Some(AMBIGUOUS_CLIPBOARD_DETAIL.to_owned()),
+        };
+        assert_eq!(ack_result(&ack), 2);
+    }
+
+    #[test]
+    fn transport_failure_after_full_set_frame_is_ambiguous_but_ping_is_not() {
+        let set = ClientRequest::new(
+            PlainRequest::Set {
+                text: "already sent".to_owned(),
+            },
+            "secret",
+        );
+        let set_result: Result<(), ClientError> = after_frame_sent(&set, || {
+            Err(ClientError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "ack lost",
+            )))
+        });
+        assert!(matches!(set_result, Err(ClientError::OutcomeUnknown)));
+
+        let ping = ClientRequest::new(PlainRequest::Ping, "secret");
+        let ping_result: Result<(), ClientError> = after_frame_sent(&ping, || {
+            Err(ClientError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "ack lost",
+            )))
+        });
+        assert!(matches!(ping_result, Err(ClientError::Io(_))));
+    }
+
+    #[test]
+    fn resolution_wait_obeys_its_deadline() {
+        let (_sender, receiver) = mpsc::sync_channel::<Resolution>(1);
+        let started = Instant::now();
+        let result = await_resolution(&receiver, started + Duration::from_millis(20));
+        assert!(
+            matches!(result, Err(ClientError::Io(ref error)) if error.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }

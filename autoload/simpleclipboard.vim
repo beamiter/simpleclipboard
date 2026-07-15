@@ -1,43 +1,98 @@
 vim9script
 
-# =============================================================
-# 日志与工具函数
-# =============================================================
+const VERSION = '0.2.0'
+const FIELD_SEPARATOR = "\x01"
+const DAEMON_FAILURE = 0
+const DAEMON_SUCCESS = 1
+const DAEMON_UNCERTAIN = 2
+const MAX_TOKEN_BYTES = 4096
 
-def RuntimeDir(): string
-  var dir = getenv('XDG_RUNTIME_DIR')
-  if empty(dir)
-    dir = '/tmp'
+def TokenValidationError(token: any): string
+  if type(token) != v:t_string
+    return 'g:simpleclipboard_token must be a string'
   endif
-  return dir
+  if stridx(token, FIELD_SEPARATOR) >= 0
+    return 'g:simpleclipboard_token must not contain U+0001'
+  endif
+  if strlen(token) > MAX_TOKEN_BYTES
+    return $'g:simpleclipboard_token exceeds {MAX_TOKEN_BYTES} UTF-8 bytes'
+  endif
+  return ''
+enddef
+
+# -----------------------------------------------------------------------------
+# Messages and paths
+# -----------------------------------------------------------------------------
+
+def StateDir(): string
+  var base = getenv('XDG_STATE_HOME')
+  if empty(base) || base[0] !=# '/'
+    base = expand('~/.local/state')
+  endif
+  return base .. '/simpleclipboard'
+enddef
+
+def UsesDefaultDebugFile(): bool
+  var configured = get(g:, 'simpleclipboard_debug_file', '')
+  return type(configured) != v:t_string || configured ==# ''
+enddef
+
+def DebugFile(): string
+  return UsesDefaultDebugFile()
+    ? StateDir() .. '/simpleclipboard.log'
+    : expand(get(g:, 'simpleclipboard_debug_file', ''))
+enddef
+
+def PrepareDefaultDebugFile(path: string): void
+  if !UsesDefaultDebugFile()
+    return
+  endif
+  var dir = fnamemodify(path, ':h')
+  var dir_type = getftype(dir)
+  if dir_type ==# ''
+    mkdir(dir, 'p', 0o700)
+  elseif dir_type !=# 'dir'
+    throw 'default debug path is not a private directory'
+  endif
+  if setfperm(dir, 'rwx------') != 1
+    throw 'could not secure default debug directory'
+  endif
+  var file_type = getftype(path)
+  if file_type !=# '' && file_type !=# 'file'
+    throw 'default debug path is not a regular file'
+  endif
 enddef
 
 def Log(msg: string, hl: string = 'None')
   if get(g:, 'simpleclipboard_debug', 0) == 0
     return
   endif
-
   if get(g:, 'simpleclipboard_debug_to_file', 0)
     try
-      var f = get(g:, 'simpleclipboard_debug_file', RuntimeDir() .. '/simpleclipboard.log')
-      var line = strftime('%Y-%m-%d %H:%M:%S ') .. msg
-      writefile([line], expand(f), 'a')
+      var path = DebugFile()
+      PrepareDefaultDebugFile(path)
+      writefile([strftime('%Y-%m-%d %H:%M:%S ') .. msg], path, 'a')
+      if UsesDefaultDebugFile() && setfperm(path, 'rw-------') != 1
+        throw 'could not secure default debug file'
+      endif
+      return
     catch
-      echohl hl
-      echom '[SimpleClipboard] ' .. msg
-      echohl None
+      # Fall through to :messages when the configured file is unavailable.
     endtry
-    return
   endif
-
   echohl hl
   echom '[SimpleClipboard] ' .. msg
   echohl None
 enddef
 
-def FindInRuntimepath(rel: string): string
-  for dir in split(&runtimepath, ',')
-    var path = dir .. '/' .. rel
+def Notify(msg: string, hl: string = 'None')
+  echohl hl
+  echom '[SimpleClipboard] ' .. msg
+  echohl None
+enddef
+
+def FindInRuntimepath(relative: string): string
+  for path in globpath(&runtimepath, relative, true, true)
     if filereadable(path)
       return path
     endif
@@ -46,46 +101,59 @@ def FindInRuntimepath(rel: string): string
 enddef
 
 def LibName(): string
-  if has('macunix')
-    return 'libsimpleclipboard.dylib'
-  endif
-  return 'libsimpleclipboard.so'
+  return has('macunix') ? 'libsimpleclipboard.dylib' : 'libsimpleclipboard.so'
 enddef
 
-var client_lib: string = ''
+var client_lib = ''
+var client_abi = 0 # 0 unknown, 1 legacy ABI, 2 delimiter-safe ABI
+
 def TryLoadLib(): void
   if client_lib !=# ''
     return
   endif
   var override = get(g:, 'simpleclipboard_libpath', '')
-  if type(override) == v:t_string && override !=# ''
-    if filereadable(override)
-      client_lib = override
-      Log('Found lib via g:simpleclipboard_libpath: ' .. client_lib, 'MoreMsg')
-      return
-    endif
+  if type(override) == v:t_string && override !=# '' && filereadable(override)
+    client_lib = override
+  else
+    client_lib = FindInRuntimepath('lib/' .. LibName())
   endif
-  var libname = LibName()
-  var path = FindInRuntimepath('lib/' .. libname)
-  if path !=# ''
-    client_lib = path
-    Log('Found lib in runtimepath: ' .. path, 'MoreMsg')
+  if client_lib !=# ''
+    Log('Client library: ' .. client_lib, 'MoreMsg')
   endif
 enddef
 
-# =============================================================
-# 环境检测（带缓存，只检测一次）
-# =============================================================
+var daemon_exe_path = ''
 
-var cached_is_ssh: number = -1
+def FindDaemonExe(): void
+  if daemon_exe_path !=# ''
+    return
+  endif
+  var override = get(g:, 'simpleclipboard_daemon_path', '')
+  if type(override) == v:t_string && override !=# '' && executable(override) == 1
+    daemon_exe_path = override
+    return
+  endif
+  var candidate = FindInRuntimepath('lib/simpleclipboard-daemon')
+  if candidate !=# '' && executable(candidate) == 1
+    daemon_exe_path = candidate
+  endif
+enddef
+
+# -----------------------------------------------------------------------------
+# Environment discovery
+# -----------------------------------------------------------------------------
+
+var cached_is_ssh = -1
+var cached_in_container = -1
+var cached_is_wsl = -1
+
 def IsSSH(): bool
   if cached_is_ssh == -1
-    cached_is_ssh = (exists('$SSH_CONNECTION') || exists('$SSH_CLIENT') || exists('$SSH_TTY')) ? 1 : 0
+    cached_is_ssh = exists('$SSH_CONNECTION') || exists('$SSH_CLIENT') || exists('$SSH_TTY') ? 1 : 0
   endif
   return cached_is_ssh == 1
 enddef
 
-var cached_in_container: number = -1
 def InContainer(): bool
   if cached_in_container == -1
     if filereadable('/.dockerenv') || filereadable('/run/.containerenv')
@@ -94,7 +162,8 @@ def InContainer(): bool
       cached_in_container = 1
     else
       try
-        cached_in_container = readfile('/proc/1/cgroup')->join("\n") =~# '\<docker\>\|\<containerd\>\|\<kubepods\>\|\<libpod\>\|\<podman\>\|\<lxc\>' ? 1 : 0
+        cached_in_container = readfile('/proc/1/cgroup')->join("\n")
+          =~# '\<docker\>\|\<containerd\>\|\<kubepods\>\|\<libpod\>\|\<podman\>\|\<lxc\>' ? 1 : 0
       catch
         cached_in_container = 0
       endtry
@@ -103,149 +172,212 @@ def InContainer(): bool
   return cached_in_container == 1
 enddef
 
-# =============================================================
-# 环境探测与网络配置
-# =============================================================
-
-var daemon_exe_path: string = ''
-
-def IsTcpOpen(addr: string): bool
-  try
-    var ch = ch_open(addr, {'timeout': 300})
-    if ch_status(ch) ==# 'open'
-      ch_close(ch)
-      return true
-    endif
-  catch
-  endtry
-  return false
-enddef
-
-def CanConnect(address: string): bool
-  try
-    var ch = ch_open(address, {'timeout': 500})
-    if ch_status(ch) ==# 'open'
-      ch_close(ch)
-      return true
-    endif
-  catch
-    Log($"CanConnect(ch_open) exception: {v:exception}", 'WarningMsg')
-  endtry
-  return false
-enddef
-
-def FindDaemonExe(): void
-  if daemon_exe_path !=# '' | return | endif
-  var override = get(g:, 'simpleclipboard_daemon_path', '')
-  if type(override) == v:t_string && override !=# ''
-    if filereadable(override)
-      daemon_exe_path = override
-      return
-    endif
+def IsWSL(): bool
+  if cached_is_wsl == -1
+    try
+      cached_is_wsl = readfile('/proc/sys/kernel/osrelease')->join('') =~? 'microsoft' ? 1 : 0
+    catch
+      cached_is_wsl = 0
+    endtry
   endif
-  daemon_exe_path = FindInRuntimepath('lib/simpleclipboard-daemon')
+  return cached_is_wsl == 1
+enddef
+
+def HostPort(host: string, port: number): string
+  if host =~# ':' && host !~# '^\[.*\]$'
+    return '[' .. host .. ']:' .. string(port)
+  endif
+  return host .. ':' .. string(port)
+enddef
+
+def IsIpv4Loopback(host: string): bool
+  var parts = split(host, '\.', true)
+  if len(parts) != 4 || parts[0] !=# '127'
+    return false
+  endif
+  for part in parts
+    if part !~# '^\d\{1,3}$' || str2nr(part, 10) > 255
+      return false
+    endif
+  endfor
+  return true
+enddef
+
+def IsLoopbackHost(host: string): bool
+  return IsIpv4Loopback(host) || index(['localhost', '::1', '[::1]'], tolower(host)) >= 0
+enddef
+
+def IsLoopbackAddress(address: string): bool
+  var separator = strridx(address, ':')
+  return separator > 0 && IsLoopbackHost(strpart(address, 0, separator))
+enddef
+
+def IsTcpOpen(address: string): bool
+  try
+    var channel = ch_open(address, {waittime: 300, mode: 'raw'})
+    if ch_status(channel) ==# 'open'
+      ch_close(channel)
+      return true
+    endif
+  catch
+    Log($'TCP probe failed for {address}: {v:exception}', 'WarningMsg')
+  endtry
+  return false
 enddef
 
 def ResolveContainerHostIP(): string
-  var ip = trim(system("ip route | awk '/default/ { print $3 }'"))
-  if empty(ip)
-    var host_internal = trim(system("getent hosts host.docker.internal | awk '{print $1}'"))
-    if !empty(host_internal)
-      ip = host_internal
-      Log('Using host.docker.internal as container host IP: ' .. ip, 'Comment')
+  var configured = get(g:, 'simpleclipboard_container_host', '')
+  if type(configured) == v:t_string && configured !=# ''
+    return configured
+  endif
+
+  if executable('ip') == 1
+    for line in systemlist('ip route')
+      if line =~# '^default\s'
+        var fields = split(line)
+        var via = index(fields, 'via')
+        if via >= 0 && via + 1 < len(fields)
+          return fields[via + 1]
+        endif
+      endif
+    endfor
+  endif
+
+  if executable('getent') == 1
+    var hosts = systemlist('getent hosts host.docker.internal')
+    if v:shell_error == 0 && !empty(hosts)
+      return split(hosts[0])[0]
     endif
   endif
-  return ip
+  return ''
 enddef
 
-# --- 环境探测结果（模块级状态） ---
-var env_detected: bool = false
-var is_remote: bool = false
-var tunnel_available: bool = false
-var daemon_address: string = ''
+var env_detected = false
+var is_remote = false
+var tunnel_available = false
+var daemon_address = ''
+var environment_kind = 'unknown'
+var custom_address = false
+var daemon_route_error = ''
 
 export def DetectEnvironment(): void
   if env_detected
     return
   endif
   env_detected = true
+  is_remote = IsSSH() || InContainer()
+  tunnel_available = false
+  custom_address = false
+  daemon_route_error = ''
 
-  var daemon_port = get(g:, 'simpleclipboard_port', 12343)
-  var tunnel_port = get(g:, 'simpleclipboard_tunnel_port', 12345)
+  if IsSSH() && InContainer()
+    environment_kind = 'ssh+container'
+  elseif IsSSH()
+    environment_kind = 'ssh'
+  elseif InContainer()
+    environment_kind = 'container'
+  else
+    environment_kind = IsWSL() ? 'wsl' : 'local'
+  endif
 
-  if !IsSSH() && !InContainer()
-    # 本地环境：直连 daemon
-    is_remote = false
-    daemon_address = '127.0.0.1:' .. daemon_port
-    Log('Local environment. Daemon address: ' .. daemon_address, 'MoreMsg')
+  if !get(g:, 'simpleclipboard_daemon_enabled', 1) || !has('libcall')
+    daemon_address = ''
+    Log(environment_kind .. ': daemon routing disabled; skipping network probes.', 'Comment')
     return
   endif
 
-  is_remote = true
-
-  if InContainer() && IsSSH()
-    # SSH → Container 嵌套：探测宿主机的 tunnel 端口
-    Log('SSH + Container detected, probing host for tunnel...', 'Question')
-
-    # 先试 --network host 场景
-    if IsTcpOpen($"127.0.0.1:{tunnel_port}")
-      daemon_address = '127.0.0.1:' .. tunnel_port
-      tunnel_available = true
-      Log('SSH+Container: localhost tunnel reachable (host network mode).', 'ModeMsg')
+  var override = get(g:, 'simpleclipboard_address', '')
+  var token = get(g:, 'simpleclipboard_token', '')
+  var token_error = TokenValidationError(token)
+  if token_error !=# ''
+    daemon_address = ''
+    daemon_route_error = token_error
+    Log(token_error .. '; daemon routing blocked.', 'ErrorMsg')
+    return
+  endif
+  if type(override) == v:t_string && override !=# ''
+    custom_address = true
+    environment_kind = 'custom'
+    if type(token) != v:t_string || token ==# ''
+      daemon_address = ''
+      daemon_route_error = 'custom daemon routing requires g:simpleclipboard_token'
+      Log(daemon_route_error .. '; refusing plaintext daemon traffic.', 'ErrorMsg')
       return
     endif
+    daemon_address = override
+    tunnel_available = true
+    Log('Using g:simpleclipboard_address: ' .. daemon_address, 'MoreMsg')
+    return
+  endif
 
-    # 再试容器宿主机 IP
-    var host_ip = ResolveContainerHostIP()
-    if !empty(host_ip)
-      g:simpleclipboard_incontainer_host_ip = host_ip
-      if CanConnect($"{host_ip}:{tunnel_port}")
-        daemon_address = host_ip .. ':' .. tunnel_port
-        tunnel_available = true
-        g:simpleclipboard_incontainer_target = 'host'
-        Log('SSH+Container: host tunnel reachable at ' .. daemon_address, 'ModeMsg')
-        return
-      endif
+  if is_remote && (type(token) != v:t_string || token ==# '')
+    daemon_address = ''
+    daemon_route_error = 'remote daemon routing requires g:simpleclipboard_token'
+    Log(daemon_route_error .. '; skipping route probes and plaintext daemon traffic.', 'ErrorMsg')
+    return
+  endif
+
+  var daemon_port = get(g:, 'simpleclipboard_port', 12343)
+  var tunnel_port = get(g:, 'simpleclipboard_tunnel_port', 12345)
+  if !is_remote
+    if IsWSL()
+      environment_kind = 'wsl'
+      daemon_address = ''
+      return
     endif
+    environment_kind = 'local'
+    var configured_host = get(g:, 'simpleclipboard_bind_addr', '127.0.0.1')
+    var client_host = configured_host ==# '0.0.0.0' ? '127.0.0.1'
+      : configured_host ==# '::' || configured_host ==# '[::]' ? '::1' : configured_host
+    if !IsLoopbackHost(client_host) && (type(token) != v:t_string || token ==# '')
+      daemon_address = ''
+      daemon_route_error = 'non-loopback daemon routing requires g:simpleclipboard_token'
+      Log(daemon_route_error .. '; refusing plaintext daemon traffic.', 'ErrorMsg')
+      return
+    endif
+    daemon_address = HostPort(client_host, daemon_port)
+    return
+  endif
 
-    Log('SSH+Container: no TCP path found, will use OSC52.', 'Comment')
-
+  if IsSSH() && InContainer()
+    environment_kind = 'ssh+container'
+    var local_tunnel = HostPort('127.0.0.1', tunnel_port)
+    if IsTcpOpen(local_tunnel)
+      daemon_address = local_tunnel
+      tunnel_available = true
+      return
+    endif
+    var host = ResolveContainerHostIP()
+    if host !=# '' && IsTcpOpen(HostPort(host, tunnel_port))
+      daemon_address = HostPort(host, tunnel_port)
+      tunnel_available = true
+      return
+    endif
   elseif IsSSH()
-    # 纯 SSH：探测隧道
-    Log('SSH session detected, probing tunnel port...', 'Question')
-    if IsTcpOpen($"127.0.0.1:{tunnel_port}")
-      daemon_address = '127.0.0.1:' .. tunnel_port
+    environment_kind = 'ssh'
+    var tunnel = HostPort('127.0.0.1', tunnel_port)
+    if IsTcpOpen(tunnel)
+      daemon_address = tunnel
       tunnel_available = true
-      Log('SSH: tunnel reachable at ' .. daemon_address, 'ModeMsg')
-    else
-      Log('SSH: no tunnel found, will use OSC52.', 'Comment')
+      return
     endif
-
-  elseif InContainer()
-    # 本地容器：探测宿主机 daemon
-    Log('Container detected, probing host for daemon...', 'Question')
-    var host_ip = ResolveContainerHostIP()
-    if !empty(host_ip)
-      g:simpleclipboard_incontainer_host_ip = host_ip
-      if CanConnect($"{host_ip}:{daemon_port}")
-        daemon_address = host_ip .. ':' .. daemon_port
-        tunnel_available = true
-        g:simpleclipboard_incontainer_target = 'host'
-        Log('Container: host daemon reachable at ' .. daemon_address, 'ModeMsg')
-        return
-      endif
-    endif
-
-    # 试 127.0.0.1（--network host 场景）
-    if IsTcpOpen($"127.0.0.1:{daemon_port}")
-      daemon_address = '127.0.0.1:' .. daemon_port
+  else
+    environment_kind = 'container'
+    var host = ResolveContainerHostIP()
+    if host !=# '' && IsTcpOpen(HostPort(host, daemon_port))
+      daemon_address = HostPort(host, daemon_port)
       tunnel_available = true
-      g:simpleclipboard_incontainer_target = 'local'
-      Log('Container: local daemon reachable.', 'ModeMsg')
-    else
-      Log('Container: no TCP path found, will use OSC52.', 'Comment')
+      return
+    endif
+    var local_daemon = HostPort('127.0.0.1', daemon_port)
+    if IsTcpOpen(local_daemon)
+      daemon_address = local_daemon
+      tunnel_available = true
+      return
     endif
   endif
+  daemon_address = ''
+  Log(environment_kind .. ': no daemon route detected; fallbacks remain available.', 'Comment')
 enddef
 
 def GetDaemonAddress(): string
@@ -253,350 +385,728 @@ def GetDaemonAddress(): string
   return daemon_address
 enddef
 
-# =============================================================
-# 本地主守护进程管理
-# =============================================================
+# -----------------------------------------------------------------------------
+# Daemon client and lifecycle
+# -----------------------------------------------------------------------------
 
-def IsDaemonRunning(): bool
-  var pidfile = RuntimeDir() .. '/simpleclipboard.pid'
-  if !filereadable(pidfile)
-    return false
-  endif
+var daemon_job: job
+var daemon_start_attempted = false
+var daemon_jobs_being_stopped: list<job> = []
 
-  try
-    var pid = trim(readfile(pidfile)[0])
-    if pid == '' || pid !~ '^\d\+$'
-      return false
-    endif
-    if has('unix')
-      system('kill -0 ' .. pid .. ' 2>/dev/null')
-      return v:shell_error == 0
-    endif
-  catch
-    return false
-  endtry
-  return false
+def DaemonJobRunning(): bool
+  return job_status(daemon_job) ==# 'run'
 enddef
 
-export def StartDaemon(): void
-  if InContainer() || IsSSH()
-    Log("Skip local daemon autostart in SSH/container.", 'Comment')
-    return
-  endif
-
-  if IsDaemonRunning()
-    Log('Local daemon is already running.', 'MoreMsg')
-    return
-  endif
-
-  FindDaemonExe()
-  if daemon_exe_path ==# ''
-    Log('Local daemon executable not found. Cannot start.', 'ErrorMsg')
-    return
-  endif
-
-  Log('Starting local daemon: ' .. daemon_exe_path, 'Question')
-  try
-    var port = g:simpleclipboard_port
-    var bind_addr = get(g:, 'simpleclipboard_bind_addr', '127.0.0.1')
-    var job_env = {'SIMPLECLIPBOARD_ADDR': bind_addr .. ':' .. port}
-    job_start([daemon_exe_path], { 'env': job_env, out_io: 'null', err_io: 'null', stoponexit: 'none' })
-    sleep 150m
-    if IsDaemonRunning()
-      Log('Local daemon started successfully.', 'ModeMsg')
-    else
-      Log('Failed to confirm local daemon startup.', 'ErrorMsg')
-    endif
-  catch
-    Log('Error starting daemon process: ' .. v:exception, 'ErrorMsg')
-  endtry
+def NormalizeDaemonResult(result: number): number
+  return result == DAEMON_SUCCESS || result == DAEMON_UNCERTAIN
+    ? result : DAEMON_FAILURE
 enddef
 
-export def StopDaemon(): void
-  if InContainer()
-    Log("Vim is in a remote/container environment, local daemon management is skipped.", 'Comment')
-    return
+def DaemonRequest(action: string, text: string, address: string = ''): number
+  if !has('libcall')
+    return DAEMON_FAILURE
   endif
-
-  var pidfile = RuntimeDir() .. '/simpleclipboard.pid'
-  if !filereadable(pidfile)
-    return
-  endif
-
-  try
-    var pid = trim(readfile(pidfile)[0])
-    if pid != '' && pid =~ '^\d\+$'
-      system('kill ' .. pid)
-      if v:shell_error == 0
-        Log('Sent TERM signal to local daemon.', 'ModeMsg')
-      else
-        Log('Failed to send TERM to local daemon (pid ' .. pid .. ').', 'WarningMsg')
-      endif
-
-      sleep 100m
-      try
-        delete(pidfile)
-      catch
-      endtry
-    else
-      Log('PID file content invalid; removing pid file.', 'WarningMsg')
-      try
-        delete(pidfile)
-      catch
-      endtry
-    endif
-  catch
-    Log('Error stopping daemon: ' .. v:exception, 'ErrorMsg')
-  endtry
-enddef
-
-# =============================================================
-# 复制逻辑 (TCP Daemon / OSC52 / 外部命令)
-# =============================================================
-
-var running_copy_jobs: list<job> = []
-
-def JobExitCallback(job: job, status: number)
-  if status != 0
-    var job_info = job_info(job)
-    Log($"Copy command '{string(job_info.cmd)}' failed with exit code {status}.", 'WarningMsg')
-  endif
-  var idx = index(running_copy_jobs, job)
-  if idx != -1
-    remove(running_copy_jobs, idx)
-  endif
-enddef
-
-def StartCopyJob(argv: list<string>, text: string): bool
-  try
-    var job = job_start(argv, { in_io: 'pipe', out_io: 'null', err_io: 'null', exit_cb: JobExitCallback })
-    add(running_copy_jobs, job)
-    ch_sendraw(job, text)
-    ch_close_in(job)
-    return true
-  catch
-    Log('StartCopyJob error: ' .. v:exception, 'WarningMsg')
-    return false
-  endtry
-enddef
-
-def CopyViaDaemonTCP(text: string): bool
   TryLoadLib()
   if client_lib ==# ''
-    return false
+    return DAEMON_FAILURE
   endif
-  var address = GetDaemonAddress()
-  if address ==# ''
-    return false
-  endif
-  Log('Targeting daemon at: ' .. address, 'Identifier')
-
+  var target = address ==# '' ? GetDaemonAddress() : address
   var token = get(g:, 'simpleclipboard_token', '')
-  var payload = address .. "\x01" .. "set" .. "\x01" .. text .. "\x01" .. token
+  var token_error = TokenValidationError(token)
+  if token_error !=# ''
+    Log(token_error .. '.', 'ErrorMsg')
+    return DAEMON_FAILURE
+  endif
+  if target ==# '' || stridx(target, FIELD_SEPARATOR) >= 0
+    return DAEMON_FAILURE
+  endif
+  if token ==# '' && (is_remote || custom_address || !IsLoopbackAddress(target))
+    Log('Refusing plaintext daemon traffic outside the default local loopback route.', 'ErrorMsg')
+    return DAEMON_FAILURE
+  endif
 
+  if client_abi != 1
+    var payload = 'SCB2' .. FIELD_SEPARATOR .. target .. FIELD_SEPARATOR .. action
+      .. FIELD_SEPARATOR .. token .. FIELD_SEPARATOR .. text
+    try
+      var result = libcallnr(client_lib, 'rust_set_clipboard_tcp_v2', payload)
+      client_abi = 2
+      return NormalizeDaemonResult(result)
+    catch
+      client_abi = 1
+      Log('Delimiter-safe client ABI unavailable; trying v0.1 compatibility ABI.', 'WarningMsg')
+    endtry
+  endif
+
+  if stridx(text, FIELD_SEPARATOR) >= 0
+    Log('Legacy client ABI cannot safely carry U+0001 text.', 'ErrorMsg')
+    return DAEMON_FAILURE
+  endif
   try
-    if libcallnr(client_lib, 'rust_set_clipboard_tcp', payload) == 1
-      Log('Success: Sent text to daemon via TCP (Msg::Set).', 'ModeMsg')
-      return true
-    endif
-    Log('Failed: Could not send text to daemon via TCP.', 'ErrorMsg')
-    return false
+    var legacy = target .. FIELD_SEPARATOR .. action .. FIELD_SEPARATOR .. text
+      .. FIELD_SEPARATOR .. token
+    return NormalizeDaemonResult(libcallnr(client_lib, 'rust_set_clipboard_tcp', legacy))
   catch
-    Log('Error calling client library: ' .. v:exception, 'ErrorMsg')
-    return false
+    Log('Client library call failed: ' .. v:exception, 'ErrorMsg')
+    return DAEMON_FAILURE
   endtry
 enddef
 
-# 缓存可用的外部复制命令
-var cached_copy_cmd: list<any> = []
-var cached_copy_cmd_checked: bool = false
+def PingDaemon(address: string = ''): bool
+  return DaemonRequest('ping', '', address) == DAEMON_SUCCESS
+enddef
+
+def DaemonExitCallback(exited_job: job, status: number)
+  var stopped_index = index(daemon_jobs_being_stopped, exited_job)
+  var stop_requested = stopped_index >= 0
+  if stop_requested
+    remove(daemon_jobs_being_stopped, stopped_index)
+  endif
+  if status != 0 && !stop_requested
+    Log('Daemon exited with status ' .. string(status) .. '.', 'WarningMsg')
+  endif
+  if !stop_requested
+    daemon_start_attempted = false
+  endif
+enddef
+
+def LifecycleMessage(msg: string, hl: string, interactive: bool)
+  if interactive
+    Notify(msg, hl)
+  else
+    Log(msg, hl)
+  endif
+enddef
+
+def StopOwnedDaemon(): bool
+  if !DaemonJobRunning()
+    return true
+  endif
+  var stopped_job = daemon_job
+  add(daemon_jobs_being_stopped, stopped_job)
+  if !job_stop(daemon_job, 'term')
+    remove(daemon_jobs_being_stopped, index(daemon_jobs_being_stopped, stopped_job))
+    return false
+  endif
+  # The daemon may spend up to two seconds draining an in-flight clipboard write.
+  for _ in range(100)
+    if !DaemonJobRunning()
+      return true
+    endif
+    sleep 25m
+  endfor
+  return !DaemonJobRunning()
+enddef
+
+export def StartDaemon(interactive: bool = true): void
+  if !get(g:, 'simpleclipboard_daemon_enabled', 1)
+    LifecycleMessage('Daemon backend is disabled.', 'Comment', interactive)
+    return
+  endif
+  if !has('libcall')
+    LifecycleMessage('Daemon start skipped because Vim lacks +libcall.', 'WarningMsg', interactive)
+    return
+  endif
+  DetectEnvironment()
+  if daemon_route_error !=# ''
+    LifecycleMessage(daemon_route_error .. '; daemon start refused.', 'ErrorMsg', interactive)
+    return
+  endif
+  if IsSSH() || InContainer() || IsWSL() || custom_address
+    LifecycleMessage('Local daemon start skipped for remote, container, WSL, or custom routing.',
+      'Comment', interactive)
+    return
+  endif
+  if PingDaemon(GetDaemonAddress())
+    LifecycleMessage('Daemon is already reachable.', 'MoreMsg', interactive)
+    return
+  endif
+  if DaemonJobRunning()
+    LifecycleMessage('Restarting an owned daemon that failed its health check.',
+      'WarningMsg', interactive)
+    if !StopOwnedDaemon()
+      LifecycleMessage('Owned daemon did not stop; refusing to start a duplicate.',
+        'ErrorMsg', interactive)
+      return
+    endif
+  endif
+
+  daemon_start_attempted = true
+  FindDaemonExe()
+  if daemon_exe_path ==# ''
+    LifecycleMessage('Daemon executable not found.', 'ErrorMsg', interactive)
+    return
+  endif
+
+  var port = get(g:, 'simpleclipboard_port', 12343)
+  var bind_host = get(g:, 'simpleclipboard_bind_addr', '127.0.0.1')
+  var token = get(g:, 'simpleclipboard_token', '')
+  if type(bind_host) != v:t_string
+    LifecycleMessage('g:simpleclipboard_bind_addr must be a string.', 'ErrorMsg', interactive)
+    return
+  endif
+  var token_error = TokenValidationError(token)
+  if token_error !=# ''
+    LifecycleMessage(token_error .. '; daemon start refused.', 'ErrorMsg', interactive)
+    return
+  endif
+  if !IsLoopbackHost(bind_host) && token ==# ''
+    LifecycleMessage('Refusing non-loopback daemon without g:simpleclipboard_token.',
+      'ErrorMsg', interactive)
+    return
+  endif
+
+  var job_env = {
+    SIMPLECLIPBOARD_ADDR: HostPort(bind_host, port),
+    SIMPLECLIPBOARD_TOKEN: token,
+  }
+  try
+    daemon_job = job_start([daemon_exe_path], {
+      env: job_env,
+      out_io: 'null',
+      err_io: 'null',
+      stoponexit: 'none',
+      exit_cb: DaemonExitCallback,
+    })
+  catch
+    LifecycleMessage('Could not start daemon: ' .. v:exception, 'ErrorMsg', interactive)
+    return
+  endtry
+
+  for _ in range(8)
+    if IsTcpOpen(GetDaemonAddress())
+      if PingDaemon(GetDaemonAddress())
+        LifecycleMessage('Daemon started and passed protocol health check.', 'ModeMsg', interactive)
+        return
+      endif
+      break
+    endif
+    if job_status(daemon_job) !=# 'run'
+      break
+    endif
+    sleep 40m
+  endfor
+  LifecycleMessage('Daemon did not become ready; fallbacks will be used.',
+    'WarningMsg', interactive)
+enddef
+
+export def StopDaemon(interactive: bool = true): void
+  if !DaemonJobRunning()
+    LifecycleMessage('No daemon owned by this Vim instance is running.', 'Comment', interactive)
+    return
+  endif
+  if StopOwnedDaemon()
+    LifecycleMessage('Stopped daemon owned by this Vim instance.', 'ModeMsg', interactive)
+  else
+    LifecycleMessage('Failed to stop the owned daemon job.', 'WarningMsg', interactive)
+  endif
+enddef
+
+# -----------------------------------------------------------------------------
+# Copy backends
+# -----------------------------------------------------------------------------
+
+var running_copy_jobs: list<job> = []
+var cached_copy_cmds: list<list<string>> = []
+var cached_copy_names: list<string> = []
+var cached_copy_cmd_checked = false
+var last_method = 'none'
+var last_error = ''
+var last_copy_bytes = 0
+var last_copy_at = ''
+var last_outcome = 'none'
+var copy_generation = 0
+var pending_copy_text = ''
+var pending_copy_waiting = false
+var debounce_timer = -1
+var pending_yank = ''
+
+def MarkSuccess(method: string)
+  last_method = method
+  last_error = ''
+  last_copy_at = strftime('%Y-%m-%d %H:%M:%S')
+  last_outcome = method =~# '(queued)' ? 'queued' : 'success'
+enddef
+
+def MarkUncertain(method: string)
+  last_method = method .. ' (uncertain)'
+  last_error = 'daemon started the clipboard write, but completion is uncertain; fallback suppressed'
+  last_copy_at = strftime('%Y-%m-%d %H:%M:%S')
+  last_outcome = 'uncertain'
+  Notify('Daemon clipboard outcome is uncertain; fallback was suppressed to avoid overwriting it.',
+    'WarningMsg')
+enddef
+
+def MarkFailure(detail: string)
+  last_error = detail
+enddef
+
+def StartPendingCopyIfIdle(): void
+  if !pending_copy_waiting || !empty(running_copy_jobs)
+    return
+  endif
+  var text = pending_copy_text
+  pending_copy_text = ''
+  pending_copy_waiting = false
+  if !BeginCopy(text, false)
+    Notify('Queued copy failed. Run :SimpleCopyStatus.', 'WarningMsg')
+  endif
+enddef
+
+def CopyJobExitCallback(job: job, status: number, text: string, osc52_fallback: bool,
+    generation: number, candidate_index: number, command_name: string)
+  var index = index(running_copy_jobs, job)
+  if index >= 0
+    remove(running_copy_jobs, index)
+  endif
+  if generation != copy_generation
+    StartPendingCopyIfIdle()
+    return
+  endif
+  if status == 0
+    MarkSuccess(command_name)
+    return
+  endif
+  MarkFailure($'{command_name} exited with status {status}')
+  Log(last_error, 'WarningMsg')
+  if StartCopyCandidate(candidate_index + 1, text, osc52_fallback, generation)
+    return
+  endif
+  if osc52_fallback
+    if CopyViaOsc52(text)
+      return
+    endif
+  endif
+  last_method = 'failed'
+  last_outcome = 'failed'
+  Notify('All copy backends failed. Run :SimpleCopyStatus.', 'WarningMsg')
+  StartPendingCopyIfIdle()
+enddef
+
+def StartCopyJob(argv: list<string>, text: string, osc52_fallback: bool,
+    generation: number, candidate_index: number, command_name: string): bool
+  var callback_owns_fallback = false
+  var copy_job: job
+  try
+    copy_job = job_start(argv, {
+      in_io: 'pipe',
+      out_io: 'null',
+      err_io: 'null',
+      exit_cb: (job, status) => CopyJobExitCallback(job, status, text,
+        osc52_fallback, generation, candidate_index, command_name),
+    })
+    if job_status(copy_job) ==# 'fail'
+      return false
+    endif
+    add(running_copy_jobs, copy_job)
+    callback_owns_fallback = true
+    ch_sendraw(copy_job, text)
+    ch_close_in(copy_job)
+    return true
+  catch
+    MarkFailure('Could not start copy command: ' .. v:exception)
+    Log(last_error, 'WarningMsg')
+    # Once a live job has an exit callback, let that callback advance the
+    # candidate chain.  Advancing here as well could launch a duplicate.
+    if callback_owns_fallback
+      try
+        ch_close_in(copy_job)
+      catch
+      endtry
+    endif
+    return callback_owns_fallback
+  endtry
+enddef
+
+def AddCopyCandidate(argv: list<string>, name: string): void
+  if index(cached_copy_cmds, argv) >= 0
+    return
+  endif
+  add(cached_copy_cmds, argv)
+  add(cached_copy_names, name)
+enddef
+
+def ValidCommand(value: any): bool
+  if type(value) != v:t_list || empty(value)
+    return false
+  endif
+  for part in value
+    if type(part) != v:t_string || part ==# ''
+      return false
+    endif
+  endfor
+  return true
+enddef
 
 def DetectCopyCmd(): void
   if cached_copy_cmd_checked
     return
   endif
   cached_copy_cmd_checked = true
-
-  if has('mac') || executable('pbcopy')
-    cached_copy_cmd = [['pbcopy'], 'pbcopy']
-    return
+  var configured = get(g:, 'simpleclipboard_copy_command', [])
+  if ValidCommand(configured)
+    AddCopyCandidate(copy(configured), 'custom command')
   endif
-  if exists('$WAYLAND_DISPLAY') && executable('wl-copy')
-    cached_copy_cmd = [['wl-copy'], 'wl-copy']
-    return
+  if executable('pbcopy') == 1
+    AddCopyCandidate(['pbcopy'], 'pbcopy')
   endif
-  if executable('xsel')
-    cached_copy_cmd = [['xsel', '--clipboard', '--input'], 'xsel']
-    return
+  if getenv('WAYLAND_DISPLAY') !=# '' && executable('wl-copy') == 1
+    AddCopyCandidate(['wl-copy'], 'wl-copy')
   endif
-  if executable('xclip')
-    cached_copy_cmd = [['xclip', '-selection', 'clipboard'], 'xclip']
-    return
+  if executable('clip.exe') == 1
+    AddCopyCandidate(['clip.exe'], 'clip.exe')
+  elseif executable('/mnt/c/Windows/System32/clip.exe') == 1
+    AddCopyCandidate(['/mnt/c/Windows/System32/clip.exe'], 'clip.exe')
+  endif
+  if executable('xsel') == 1
+    AddCopyCandidate(['xsel', '--clipboard', '--input'], 'xsel')
+  endif
+  if executable('xclip') == 1
+    AddCopyCandidate(['xclip', '-selection', 'clipboard'], 'xclip')
   endif
 enddef
 
-def CopyViaCmds(text: string): bool
-  Log('Attempting copy via external commands...', 'Question')
-  DetectCopyCmd()
-
-  if empty(cached_copy_cmd)
-    Log('Skipped Cmds: No suitable command found.', 'Comment')
+def StartCopyCandidate(candidate_index: number, text: string, osc52_fallback: bool,
+    generation: number): bool
+  if generation != copy_generation
     return false
   endif
-
-  var argv: list<string> = cached_copy_cmd[0]
-  var name: string = cached_copy_cmd[1]
-  Log($'Trying: {name}', 'Identifier')
-  if StartCopyJob(argv, text)
-    Log($'Success: Copied via {name}.', 'ModeMsg')
-    return true
-  endif
-  Log($'Failed: {name} command failed.', 'WarningMsg')
+  DetectCopyCmd()
+  var index = candidate_index
+  while index < len(cached_copy_cmds)
+    var name = cached_copy_names[index]
+    if StartCopyJob(cached_copy_cmds[index], text, osc52_fallback,
+        generation, index, name)
+      MarkSuccess(name .. ' (queued)')
+      return true
+    endif
+    index += 1
+  endwhile
   return false
+enddef
+
+def CopyViaCmds(text: string, osc52_fallback: bool = false): bool
+  return StartCopyCandidate(0, text, osc52_fallback, copy_generation)
+enddef
+
+def TruncateUtf8(text: string, byte_limit: number): string
+  var low = 0
+  var high = strchars(text)
+  while low < high
+    var middle = (low + high + 1) / 2
+    if strlen(strcharpart(text, 0, middle)) <= byte_limit
+      low = middle
+    else
+      high = middle - 1
+    endif
+  endwhile
+  return strcharpart(text, 0, low)
 enddef
 
 def CopyViaOsc52(text: string): bool
   if get(g:, 'simpleclipboard_disable_osc52', 0)
-    Log('Skipped OSC52: disabled by g:simpleclipboard_disable_osc52.', 'Comment')
+    return false
+  endif
+  if executable('base64') != 1
+    MarkFailure('base64 is unavailable for OSC52')
     return false
   endif
 
-  Log('Attempting copy via OSC52 terminal sequence...', 'Question')
-
   var limit = get(g:, 'simpleclipboard_osc52_limit', 75000)
-  var payload = strchars(text) > limit ? strcharpart(text, 0, limit) : text
-  if strchars(text) > limit
-    Log('Text truncated to ' .. limit .. ' characters for OSC52.', 'Comment')
+  if type(limit) != v:t_number || limit <= 0
+    MarkFailure('simpleclipboard_osc52_limit must be a positive number')
+    return false
   endif
-
-  var b64 = trim(system('base64 -w0', payload))
-  if v:shell_error != 0 || b64 ==# ''
-    b64 = system('base64', payload)
-    if v:shell_error != 0
-      Log('Failed: base64 encoding failed.', 'WarningMsg')
+  var payload = text
+  if strlen(payload) > limit
+    if !get(g:, 'simpleclipboard_osc52_truncate', 0)
+      MarkFailure($'OSC52 refused {strlen(payload)} bytes (limit {limit})')
+      Log(last_error, 'WarningMsg')
       return false
     endif
-    b64 = substitute(b64, '\n', '', 'g')
+    payload = TruncateUtf8(payload, limit)
+    Log($'OSC52 payload truncated to {strlen(payload)} bytes.', 'WarningMsg')
   endif
 
-  var seq = exists('$TMUX')
-    ? "\x1bPtmux;\x1b]52;c;" .. b64 .. "\x07\x1b\\"
-    : "\x1b]52;c;" .. b64 .. "\x07"
+  var encoded = trim(system('base64 -w0', payload))
+  if v:shell_error != 0
+    encoded = substitute(system('base64', payload), '\n', '', 'g')
+  endif
+  if v:shell_error != 0
+    MarkFailure('base64 encoding failed')
+    return false
+  endif
 
+  var direct = "\x1b]52;c;" .. encoded .. "\x07"
+  var sequence = exists('$TMUX')
+    ? "\x1bPtmux;\x1b" .. direct .. "\x1b\\"
+    : exists('$STY') ? "\x1bP" .. direct .. "\x1b\\" : direct
   try
-    if has('unix') && filereadable('/dev/tty')
-      writefile([seq], '/dev/tty', 'b')
-      Log('Success: Sent OSC52 sequence to /dev/tty.', 'ModeMsg')
-      return true
-    else
-      Log('Skipped OSC52 echo path: /dev/tty not available.', 'Comment')
-      return false
-    endif
+    writefile([sequence], '/dev/tty', 'b')
+    MarkSuccess('OSC52')
+    return true
   catch
-    Log('Failed: Error writing OSC52 sequence. Details: ' .. v:exception, 'ErrorMsg')
+    MarkFailure('could not write OSC52 to /dev/tty: ' .. v:exception)
+    Log(last_error, 'WarningMsg')
     return false
   endtry
 enddef
 
-# =============================================================
-# 公共 API
-# =============================================================
+# -----------------------------------------------------------------------------
+# Public copy API
+# -----------------------------------------------------------------------------
 
-export def CopyToSystemClipboard(text: string): bool
+def CancelPendingYank(): void
+  if debounce_timer >= 0
+    timer_stop(debounce_timer)
+  endif
+  debounce_timer = -1
+  pending_yank = ''
+enddef
+
+def BeginCopy(text: string, cancel_pending_yank: bool): bool
+  if cancel_pending_yank
+    CancelPendingYank()
+  endif
+  copy_generation += 1
+  last_copy_bytes = strlen(text)
+  last_method = 'pending'
+  last_error = ''
+  last_outcome = 'pending'
+
+  # External copy programs own the clipboard write until they exit.  Queue
+  # only the newest request so an older, slower program cannot finish after a
+  # newer backend and overwrite it.
+  if !empty(running_copy_jobs)
+    pending_copy_text = text
+    pending_copy_waiting = true
+    MarkSuccess('latest copy (queued)')
+    return true
+  endif
+
   DetectEnvironment()
 
+  if get(g:, 'simpleclipboard_daemon_enabled', 1) && daemon_address !=# ''
+    var daemon_method = is_remote || custom_address ? 'daemon (routed)' : 'daemon'
+    var daemon_result = DaemonRequest('set', text)
+    if daemon_result == DAEMON_SUCCESS
+      MarkSuccess(daemon_method)
+      return true
+    elseif daemon_result == DAEMON_UNCERTAIN
+      MarkUncertain(daemon_method)
+      return true
+    endif
+    MarkFailure('daemon request failed')
+  endif
+
   if !is_remote
-    # 本地：TCP daemon 优先
-    Log('Local: trying TCP daemon...', 'Question')
-    if CopyViaDaemonTCP(text)
+    if get(g:, 'simpleclipboard_daemon_enabled', 1)
+        && has('libcall')
+        && get(g:, 'simpleclipboard_daemon_autostart', 1)
+        && !custom_address && !IsWSL() && !daemon_start_attempted
+      StartDaemon(false)
+      if daemon_address !=# ''
+        var retry_result = DaemonRequest('set', text)
+        if retry_result == DAEMON_SUCCESS
+          MarkSuccess('daemon')
+          return true
+        elseif retry_result == DAEMON_UNCERTAIN
+          MarkUncertain('daemon')
+          return true
+        endif
+      endif
+    endif
+    if CopyViaCmds(text, true) || CopyViaOsc52(text)
       return true
     endif
-    Log('Local: TCP failed, trying fallbacks...', 'WarningMsg')
-    return CopyViaCmds(text) || CopyViaOsc52(text)
+    last_method = 'failed'
+    last_outcome = 'failed'
+    return false
   endif
 
-  # 远程场景
-  if tunnel_available
-    # 有 TCP 通路（隧道或宿主机 daemon）：TCP 优先，OSC52 兜底
-    Log('Remote (tunnel available): trying TCP...', 'Question')
-    if CopyViaDaemonTCP(text)
-      return true
-    endif
-    Log('Remote: TCP failed, falling back to OSC52...', 'WarningMsg')
+  if CopyViaCmds(text, true) || CopyViaOsc52(text)
+    return true
   endif
+  last_method = 'failed'
+  last_outcome = 'failed'
+  return false
+enddef
 
-  # 无隧道或 TCP 失败：OSC52 优先
-  return CopyViaOsc52(text) || CopyViaCmds(text)
+export def CopyToSystemClipboard(text: string): bool
+  return BeginCopy(text, true)
 enddef
 
 export def CopyYankedToClipboard(_timer_id: any = 0)
-  var txt = getreg('"')
-  if txt ==# ''
+  var text = getreg('"')
+  if text ==# ''
     return
   endif
-  if !CopyToSystemClipboard(txt)
-    echohl WarningMsg
-    echom 'SimpleClipboard: All copy methods failed. Check logs for details.'
-    echohl None
+  if !CopyToSystemClipboard(text)
+    Notify('All copy methods failed. Run :SimpleCopyStatus.', 'WarningMsg')
   endif
 enddef
 
-export def CopyRangeToClipboard(l1: number, l2: number)
-  var lines = getline(l1, l2)
-  var txt = join(lines, "\n")
-  if CopyToSystemClipboard(txt)
-    echom 'Copied selection to system clipboard'
+def TextFromYankEvent(event: any): string
+  if type(event) != v:t_dict || get(event, 'operator', '') !=# 'y'
+    return ''
+  endif
+  if get(event, 'regname', '') ==# '_'
+    return ''
+  endif
+  var contents = get(event, 'regcontents', [])
+  if type(contents) != v:t_list
+    return ''
+  endif
+  var text = join(contents, "\n")
+  if get(event, 'regtype', '') ==# 'V'
+    text ..= "\n"
+  endif
+  return text
+enddef
+
+def FlushPendingYank(_timer_id: number)
+  debounce_timer = -1
+  var text = pending_yank
+  pending_yank = ''
+  if text !=# '' && !BeginCopy(text, false)
+    Notify('Automatic copy failed. Run :SimpleCopyStatus.', 'WarningMsg')
+  endif
+enddef
+
+export def CopyYankedToClipboardEvent(event: any = v:null)
+  var text = TextFromYankEvent(event)
+  if text ==# ''
+    return
+  endif
+  var delay = get(g:, 'simpleclipboard_debounce_ms', 50)
+  if exists('*timer_start') && type(delay) == v:t_number && delay > 0
+    if debounce_timer >= 0
+      timer_stop(debounce_timer)
+    endif
+    pending_yank = text
+    debounce_timer = timer_start(delay, FlushPendingYank)
   else
-    echohl WarningMsg
-    echom 'SimpleClipboard: All copy methods failed.'
-    echohl None
+    pending_yank = text
+    FlushPendingYank(0)
   endif
 enddef
 
-var debounce_timer: number = -1
-
-export def CopyYankedToClipboardEvent(ev: any = v:null, _timer_id: any = 0)
-  var txt = ''
-  if type(ev) == v:t_dict
-    if has_key(ev, 'operator') && ev.operator !=# 'y'
-      return
-    endif
-    if has_key(ev, 'regcontents')
-      var lines = ev.regcontents
-      txt = join(lines, "\n")
-    endif
+export def GetVisualSelection(): string
+  if getpos("'<")[1] == 0 || getpos("'>")[1] == 0
+    return ''
   endif
+  var unnamed = getreginfo('"')
+  var yank_zero = getreginfo('0')
+  var scratch = getreginfo('z')
+  var view = winsaveview()
+  try
+    execute 'silent noautocmd normal! gv"zy'
+    return getreg('z')
+  finally
+    setreg('z', scratch)
+    setreg('0', yank_zero)
+    setreg('"', unnamed)
+    winrestview(view)
+  endtry
+  return ''
+enddef
 
-  if txt ==# ''
-    txt = getreg('"')
-  endif
-
-  if txt ==# ''
+export def CopyVisualSelection(): void
+  var text = GetVisualSelection()
+  if text ==# ''
     return
   endif
-
-  if debounce_timer != -1
-    timer_stop(debounce_timer)
-  endif
-  var captured_txt = txt
-  debounce_timer = timer_start(50, (_) => {
-    debounce_timer = -1
-    if !CopyToSystemClipboard(captured_txt)
-      echohl WarningMsg
-      echom 'SimpleClipboard: All copy methods failed. Check logs for details.'
-      echohl None
+  if CopyToSystemClipboard(text)
+    if last_outcome !=# 'uncertain'
+      Notify(last_outcome ==# 'queued' ? 'Visual clipboard copy queued.' : 'Copied visual selection.')
     endif
-  })
+  else
+    Notify('Visual copy failed. Run :SimpleCopyStatus.', 'WarningMsg')
+  endif
 enddef
+
+export def CopyRangeToClipboard(first_line: number, last_line: number)
+  var text = join(getline(first_line, last_line), "\n")
+  if CopyToSystemClipboard(text)
+    if last_outcome !=# 'uncertain'
+      Notify(last_outcome ==# 'queued'
+        ? $'Clipboard copy for lines {first_line}-{last_line} queued.'
+        : $'Copied lines {first_line}-{last_line}.')
+    endif
+  else
+    Notify('Range copy failed. Run :SimpleCopyStatus.', 'WarningMsg')
+  endif
+enddef
+
+# -----------------------------------------------------------------------------
+# Diagnostics and cache refresh
+# -----------------------------------------------------------------------------
 
 export def Status(): void
   DetectEnvironment()
-  Log('IsSSH: ' .. string(IsSSH()), 'Comment')
-  Log('InContainer: ' .. string(InContainer()), 'Comment')
-  Log('is_remote: ' .. string(is_remote), 'Comment')
-  Log('tunnel_available: ' .. string(tunnel_available), 'Comment')
-  Log('daemon_address: ' .. daemon_address, 'Comment')
-  Log('Port (g:simpleclipboard_port): ' .. string(g:simpleclipboard_port), 'Comment')
-  var tunnel_port = get(g:, 'simpleclipboard_tunnel_port', 12345)
-  Log('Tunnel port: ' .. tunnel_port .. ' open: ' .. string(IsTcpOpen($"127.0.0.1:{tunnel_port}")), 'Comment')
+  TryLoadLib()
+  FindDaemonExe()
+  DetectCopyCmd()
+  var daemon_health = 'disabled'
+  if get(g:, 'simpleclipboard_daemon_enabled', 1)
+    daemon_health = !has('libcall') ? 'unavailable (+libcall missing)'
+      : daemon_route_error !=# '' ? 'blocked (configuration)'
+      : daemon_address ==# '' ? 'no route'
+      : PingDaemon(daemon_address) ? 'reachable' : 'unreachable'
+  endif
+  var token_state = get(g:, 'simpleclipboard_token', '') ==# '' ? 'off' : 'configured'
+  var command_summary = empty(cached_copy_names) ? 'none' : join(cached_copy_names, ' -> ')
+  var osc52_state = get(g:, 'simpleclipboard_disable_osc52', 0) ? 'disabled'
+    : executable('base64') == 1 ? 'enabled' : 'unavailable (base64 missing)'
+  var lines = [
+    $'SimpleClipboard {VERSION}',
+    $'environment: {environment_kind} (ssh={string(IsSSH())}, container={string(InContainer())})',
+    $'daemon: {daemon_health}; address={daemon_address ==# "" ? "none" : daemon_address}; token={token_state}',
+    $'daemon route error: {daemon_route_error ==# "" ? "none" : daemon_route_error}',
+    $'client library: {client_lib ==# "" ? "not found" : client_lib}',
+    $'daemon executable: {daemon_exe_path ==# "" ? "not found" : daemon_exe_path}',
+    $'external commands: {command_summary}',
+    $'OSC52: {osc52_state}',
+    $'last copy: method={last_method}, outcome={last_outcome}, bytes={last_copy_bytes}, at={last_copy_at ==# "" ? "never" : last_copy_at}',
+    $'last error: {last_error ==# "" ? "none" : last_error}',
+  ]
+  for line in lines
+    Notify(line)
+  endfor
+enddef
+
+export def Refresh(): void
+  var restart_owned = DaemonJobRunning()
+  if restart_owned && !StopOwnedDaemon()
+    Notify('Refresh aborted because the owned daemon did not stop.', 'ErrorMsg')
+    return
+  endif
+  copy_generation += 1
+  env_detected = false
+  is_remote = false
+  tunnel_available = false
+  daemon_address = ''
+  environment_kind = 'unknown'
+  custom_address = false
+  daemon_route_error = ''
+  cached_is_ssh = -1
+  cached_in_container = -1
+  cached_is_wsl = -1
+  cached_copy_cmds = []
+  cached_copy_names = []
+  cached_copy_cmd_checked = false
+  client_lib = ''
+  client_abi = 0
+  daemon_exe_path = ''
+  daemon_start_attempted = false
+  DetectEnvironment()
+  if restart_owned
+    if get(g:, 'simpleclipboard_daemon_enabled', 1) && has('libcall')
+        && !is_remote && !IsWSL() && !custom_address
+      StartDaemon(true)
+    else
+      Notify('Owned daemon stopped and was not restarted for the current environment.', 'Comment')
+    endif
+  endif
+  Notify('Environment and backend caches refreshed.')
 enddef

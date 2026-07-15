@@ -1,11 +1,15 @@
 [package]
 name = "simpleclipboard"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version = "1.85"
+description = "Reliable system clipboard integration for Vim"
+repository = "https://github.com/beamiter/simpleclipboard"
+publish = false
 
 [lib]
 name = "simpleclipboard"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 path = "src/simpleclipboard/simpleclipboard_lib.rs"
 
 [[bin]]
@@ -13,12 +17,13 @@ name = "simpleclipboard-daemon"
 path = "src/simpleclipboard/simpleclipboard_daemon.rs"
 
 [dependencies]
-arboard = "3.6.1"
-bincode = { version = "2.0.1", features = ["serde"] }
-libc = "0.2.176"
+aes-gcm = "0.10.3"
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+getrandom = "0.4.3"
+libc = "0.2.186"
 log = "0.4"
-serde = { version = "1.0.219", features = ["derive"] }
-tokio = { version = "1.47.1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+sha2 = "0.10.9"
+tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
 
 [dev-dependencies]
 tempfile = "3.23.0"
