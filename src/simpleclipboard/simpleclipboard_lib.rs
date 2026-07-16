@@ -15,8 +15,8 @@ use std::sync::LazyLock;
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
-const CONNECT_TIMEOUT: Duration = Duration::from_millis(800);
-const IO_TIMEOUT: Duration = Duration::from_secs(4);
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
+const IO_TIMEOUT: Duration = Duration::from_millis(1200);
 const FIELD_SEPARATOR: char = '\u{1}';
 const ABI_V2: &str = "SCB2";
 const RESOLVER_QUEUE: usize = 8;

@@ -66,9 +66,9 @@ if g:simpleclipboard_daemon_enabled
     autocmd!
     if g:simpleclipboard_daemon_autostart
       if v:vim_did_enter
-        call simpleclipboard#StartDaemon(false)
+        call timer_start(0, (_) => simpleclipboard#StartDaemon(false, false))
       else
-        autocmd VimEnter * call simpleclipboard#DetectEnvironment() | call simpleclipboard#StartDaemon(false)
+        autocmd VimEnter * call timer_start(0, (_) => simpleclipboard#StartDaemon(false, false))
       endif
     endif
     if g:simpleclipboard_daemon_autostop

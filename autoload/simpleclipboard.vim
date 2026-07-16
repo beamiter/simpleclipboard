@@ -498,7 +498,7 @@ def StopOwnedDaemon(): bool
   return !DaemonJobRunning()
 enddef
 
-export def StartDaemon(interactive: bool = true): void
+export def StartDaemon(interactive: bool = true, wait_for_ready: bool = true): void
   if !get(g:, 'simpleclipboard_daemon_enabled', 1)
     LifecycleMessage('Daemon backend is disabled.', 'Comment', interactive)
     return
@@ -517,7 +517,7 @@ export def StartDaemon(interactive: bool = true): void
       'Comment', interactive)
     return
   endif
-  if PingDaemon(GetDaemonAddress())
+  if wait_for_ready && PingDaemon(GetDaemonAddress())
     LifecycleMessage('Daemon is already reachable.', 'MoreMsg', interactive)
     return
   endif
@@ -572,6 +572,10 @@ export def StartDaemon(interactive: bool = true): void
     LifecycleMessage('Could not start daemon: ' .. v:exception, 'ErrorMsg', interactive)
     return
   endtry
+
+  if !wait_for_ready
+    return
+  endif
 
   for _ in range(8)
     if IsTcpOpen(GetDaemonAddress())
@@ -900,11 +904,11 @@ def BeginCopy(text: string, cancel_pending_yank: bool): bool
   endif
 
   if !is_remote
-    if get(g:, 'simpleclipboard_daemon_enabled', 1)
+      if get(g:, 'simpleclipboard_daemon_enabled', 1)
         && has('libcall')
         && get(g:, 'simpleclipboard_daemon_autostart', 1)
         && !custom_address && !IsWSL() && !daemon_start_attempted
-      StartDaemon(false)
+      StartDaemon(false, false)
       if daemon_address !=# ''
         var retry_result = DaemonRequest('set', text)
         if retry_result == DAEMON_SUCCESS
