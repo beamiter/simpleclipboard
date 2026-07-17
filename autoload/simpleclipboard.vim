@@ -908,7 +908,9 @@ def BeginCopy(text: string, cancel_pending_yank: bool): bool
         && has('libcall')
         && get(g:, 'simpleclipboard_daemon_autostart', 1)
         && !custom_address && !IsWSL() && !daemon_start_attempted
-      StartDaemon(false, false)
+      # Unlike the proactive VimEnter start, this path retries the copy
+      # immediately, so do not race the daemon's listener initialization.
+      StartDaemon(false, true)
       if daemon_address !=# ''
         var retry_result = DaemonRequest('set', text)
         if retry_result == DAEMON_SUCCESS

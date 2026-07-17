@@ -271,6 +271,25 @@ finally
   call simpleclipboard#StopDaemon(v:false)
 endtry
 
+" A copy-triggered lazy start must wait for daemon readiness before retrying.
+" This deliberately non-listening daemon makes the bounded readiness wait
+" observable without relying on a desktop clipboard being available in CI.
+let g:simpleclipboard_daemon_autostart = 1
+let g:simpleclipboard_copy_command = []
+let $PATH = s:fake_bin
+call simpleclipboard#Refresh()
+messages clear
+call simpleclipboard#Status()
+if execute('messages') =~# 'environment: local'
+  let s:lazy_started_at = reltime()
+  call assert_false(simpleclipboard#CopyToSystemClipboard('lazy-start readiness'))
+  let s:lazy_elapsed = reltimefloat(reltime(s:lazy_started_at))
+  call assert_true(s:lazy_elapsed >= 0.25,
+        \ 'lazy daemon start returned before its bounded readiness wait')
+  call simpleclipboard#StopDaemon(v:false)
+endif
+let $PATH = s:old_path
+
 let g:simpleclipboard_daemon_enabled = 0
 let g:simpleclipboard_daemon_path = ''
 let g:simpleclipboard_port = 12343
