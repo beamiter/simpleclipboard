@@ -17,7 +17,7 @@ name = "simpleclipboard-daemon"
 path = "src/simpleclipboard/simpleclipboard_daemon.rs"
 
 [dependencies]
-aes-gcm = "0.10.3"
+aes-gcm = "0.11"
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 getrandom = "0.4.3"
 libc = "0.2.186"

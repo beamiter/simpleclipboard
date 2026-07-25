@@ -14,6 +14,11 @@ let s:old_state_home = $XDG_STATE_HOME
 let s:had_ssh_connection = exists('$SSH_CONNECTION')
 let s:old_ssh_connection = $SSH_CONNECTION
 
+" Some Vim builds keep a 'Messages maintainer: ...' header after :messages
+" clear; capture the post-clear baseline instead of assuming empty output.
+messages clear
+let s:empty_messages = trim(execute('messages'))
+
 call delete(s:capture)
 call delete(s:state_home, 'rf')
 call delete(s:fake_bin, 'rf')
@@ -264,7 +269,7 @@ try
   call assert_match('Stopped daemon owned by this Vim instance.', execute('messages'))
   messages clear
   call simpleclipboard#StopDaemon(v:false)
-  call assert_equal('', trim(execute('messages')))
+  call assert_equal(s:empty_messages, trim(execute('messages')))
   call simpleclipboard#StopDaemon(v:true)
   call assert_match('No daemon owned by this Vim instance is running.', execute('messages'))
 finally
@@ -296,7 +301,7 @@ let g:simpleclipboard_port = 12343
 let g:simpleclipboard_token = ''
 messages clear
 call simpleclipboard#StartDaemon(v:false)
-call assert_equal('', trim(execute('messages')))
+call assert_equal(s:empty_messages, trim(execute('messages')))
 call simpleclipboard#StartDaemon(v:true)
 call assert_match('Daemon backend is disabled.', execute('messages'))
 call simpleclipboard#Refresh()

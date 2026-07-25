@@ -480,7 +480,7 @@ fn encrypt(
 ) -> Result<Vec<u8>, ProtocolError> {
     cipher(key)?
         .encrypt(
-            AesNonce::from_slice(nonce),
+            &AesNonce::from(*nonce),
             Payload {
                 msg: plaintext,
                 aad,
@@ -497,7 +497,7 @@ fn decrypt(
 ) -> Result<Vec<u8>, ProtocolError> {
     cipher(key)?
         .decrypt(
-            AesNonce::from_slice(nonce),
+            &AesNonce::from(*nonce),
             Payload {
                 msg: ciphertext,
                 aad,

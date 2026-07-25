@@ -32,6 +32,10 @@ upgrade. The Vim plugin, client library, and daemon must be upgraded together.
 
 ### Changed
 
+- Upgraded the AEAD stack to `aes-gcm` 0.11 and replaced the deprecated
+  nonce construction; wire format and behavior are unchanged.
+- Made the Vim smoke test tolerate Vim builds whose `:messages clear` keeps
+  the "Messages maintainer" header line.
 - Standardized the documented transport on the loopback TCP backend that is
   actually shipped. The default endpoint is `127.0.0.1:12343`.
 - Centralized and strictly enforced the existing 10 MiB daemon message limit.
