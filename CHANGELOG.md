@@ -8,6 +8,10 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-01
 
+### 构建与 CI 修复
+
+- 新增 CI 的 MSRV 作业,按 `rust-version` 声明的最低版本构建。
+
 ### 新增
 
 - `:SimpleCopyHealth`(`:SimpleCopyStatus` 的别名,与全套插件命名对齐)、

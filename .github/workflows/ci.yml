@@ -8,6 +8,19 @@ permissions:
   contents: read
 
 jobs:
+
+  # The crate declares a minimum supported Rust version; a dependency bump or a
+  # newly used language feature can quietly break it, because every other job
+  # runs on stable.  This is the check that caught `ignore` pulling in
+  # let-chains and two crates whose own sources had outgrown their declared
+  # MSRV.  Keep the toolchain here in step with rust-version in Cargo.toml.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - name: Build on the declared minimum supported Rust
+        run: cargo check --all-targets --locked
   vim90:
     name: Vim 9.0 baseline
     runs-on: ubuntu-24.04
