@@ -40,6 +40,10 @@ command! -range=% SimpleCopyRange simpleclipboard#CopyRangeToClipboard(<line1>, 
 command! SimpleCopyStart simpleclipboard#StartDaemon()
 command! SimpleCopyStop simpleclipboard#StopDaemon()
 command! SimpleCopyStatus simpleclipboard#Status()
+# Suite-wide convention: every simple* plugin answers to :<Plugin>Health.
+command! SimpleCopyHealth simpleclipboard#Status()
+command! SimpleCopyRestart simpleclipboard#RestartDaemon()
+command! SimpleCopyLog simpleclipboard#ShowLog()
 command! SimpleCopyRefresh simpleclipboard#Refresh()
 
 nnoremap <silent> <Plug>(SimpleCopyYank) <Cmd>SimpleCopyYank<CR>

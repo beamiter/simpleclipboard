@@ -85,7 +85,28 @@ def Log(msg: string, hl: string = 'None')
   echohl None
 enddef
 
+# Every notification is retained so :SimpleCopyLog can explain a copy that
+# silently took the wrong route.
+var log_ring: list<string> = []
+
+export def ShowLog(): void
+  new
+  setlocal buftype=nofile bufhidden=wipe noswapfile
+  setline(1, empty(log_ring) ? ['(no log entries)'] : log_ring)
+  setlocal nomodifiable
+  normal! G
+enddef
+
+export def RestartDaemon(): void
+  StopDaemon(false)
+  StartDaemon(true, true)
+enddef
+
 def Notify(msg: string, hl: string = 'None')
+  log_ring->add(strftime('%H:%M:%S') .. ' ' .. msg)
+  if len(log_ring) > 500
+    log_ring = log_ring[-300 : ]
+  endif
   echohl hl
   echom '[SimpleClipboard] ' .. msg
   echohl None

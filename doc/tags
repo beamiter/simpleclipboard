@@ -1,6 +1,9 @@
 !_TAG_FILE_ENCODING	utf-8	//
+:SimpleCopyHealth	simpleclipboard.txt	/*:SimpleCopyHealth*
+:SimpleCopyLog	simpleclipboard.txt	/*:SimpleCopyLog*
 :SimpleCopyRange	simpleclipboard.txt	/*:SimpleCopyRange*
 :SimpleCopyRefresh	simpleclipboard.txt	/*:SimpleCopyRefresh*
+:SimpleCopyRestart	simpleclipboard.txt	/*:SimpleCopyRestart*
 :SimpleCopyStart	simpleclipboard.txt	/*:SimpleCopyStart*
 :SimpleCopyStatus	simpleclipboard.txt	/*:SimpleCopyStatus*
 :SimpleCopyStop	simpleclipboard.txt	/*:SimpleCopyStop*
@@ -33,6 +36,7 @@ simpleclipboard	simpleclipboard.txt	/*simpleclipboard*
 simpleclipboard-architecture	simpleclipboard.txt	/*simpleclipboard-architecture*
 simpleclipboard-commands	simpleclipboard.txt	/*simpleclipboard-commands*
 simpleclipboard-contents	simpleclipboard.txt	/*simpleclipboard-contents*
+simpleclipboard-daemon	simpleclipboard.txt	/*simpleclipboard-daemon*
 simpleclipboard-diagnostics	simpleclipboard.txt	/*simpleclipboard-diagnostics*
 simpleclipboard-install	simpleclipboard.txt	/*simpleclipboard-install*
 simpleclipboard-logging	simpleclipboard.txt	/*simpleclipboard-logging*

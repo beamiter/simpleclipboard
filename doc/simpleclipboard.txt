@@ -634,4 +634,43 @@ daemon 协议消息上限为 10 MiB。OSC52 默认上限是 75000 个 UTF-8 字�
 兼容层。
 
 ==============================================================================
+
+==============================================================================
+DAEMON SUPERVISION                                    *simpleclipboard-daemon*
+
+The Rust daemon is managed by simplecore, the supervisor shared by the whole
+simple* plugin suite. It is vendored into this repository at
+autoload/simpleclipboard/core.vim; that file is generated, do not edit it in place.
+
+What it guarantees:
+
+- Liveness is always read from |job_status()|. job_start() returns a job
+  object even when the exec itself failed, so a daemon that cannot start is
+  never mistaken for one that is running.
+- A superseded daemon's late exit callback cannot clear the state of the
+  replacement that already took its place.
+- Output still queued when you stop the daemon is discarded, so an explicit
+  stop cannot be undone by an event that was already in flight.
+- A daemon that dies is restarted automatically with exponential backoff.
+  If it keeps crashing, the supervisor reports it once and stops trying
+  rather than respawning forever; :SimpleCopyRestart re-arms it.
+- Requests are correlated to replies by id and can time out, so a wedged
+  daemon never leaves a callback hanging.
+
+                                                      *:SimpleCopyHealth*
+:SimpleCopyHealth
+        Report daemon path, run state, negotiated protocol and capabilities,
+        uptime, crash and restart counts, and whether the crash-loop breaker
+        has tripped, alongside this plugin's own diagnostics.
+
+                                                      *:SimpleCopyRestart*
+:SimpleCopyRestart
+        Stop the daemon and start a fresh one. Clears the crash-loop breaker,
+        so this is the way back after repeated failures.
+
+                                                      *:SimpleCopyLog*
+:SimpleCopyLog
+        Open the daemon transcript in a scratch buffer: start and exit events,
+        restarts, protocol handshakes, send failures and stderr.
+
 vim:tw=78:ts=8:noet:ft=help:norl:

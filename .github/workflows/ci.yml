@@ -74,3 +74,9 @@ jobs:
           ./lib/simpleclipboard-daemon --version | grep 'simpleclipboard-daemon 0.2.0'
       - name: TCP protocol end-to-end
         run: bash test/tcp_e2e.sh
+
+      - name: Compile every Vim9 def (lazy compilation hides cold-branch errors)
+        run: make defcompile
+
+      - name: simplecore supervisor regression suite
+        run: make vim-core
