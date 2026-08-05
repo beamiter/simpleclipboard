@@ -180,10 +180,10 @@ impl ReplayCache {
         if self.seen.contains(&nonce) {
             return false;
         }
-        if self.order.len() == self.capacity {
-            if let Some(expired) = self.order.pop_front() {
-                self.seen.remove(&expired);
-            }
+        if self.order.len() == self.capacity
+            && let Some(expired) = self.order.pop_front()
+        {
+            self.seen.remove(&expired);
         }
         self.order.push_back(nonce);
         self.seen.insert(nonce);
@@ -463,10 +463,10 @@ impl Drop for PidGuard {
     fn drop(&mut self) {
         match self.still_owns_path() {
             Ok(true) => {
-                if let Err(error) = fs::remove_file(&self.path) {
-                    if error.kind() != io::ErrorKind::NotFound {
-                        warn!("Failed to remove PID file: {error}");
-                    }
+                if let Err(error) = fs::remove_file(&self.path)
+                    && error.kind() != io::ErrorKind::NotFound
+                {
+                    warn!("Failed to remove PID file: {error}");
                 }
             }
             Ok(false) => {}
@@ -524,10 +524,66 @@ async fn shutdown_signal() -> io::Result<()> {
     tokio::signal::ctrl_c().await
 }
 
+/// Runs one authenticated request through the protocol, in-process.
+///
+/// The installer needs to know that the binary it just built actually works,
+/// and a version string only proves the file is not corrupt.  Everything a
+/// real request touches before it reaches the clipboard — key derivation, AEAD
+/// sealing, framing, and the response binding that ties an ack to its request
+/// nonce — is exercised here.  The clipboard itself is left alone: it needs a
+/// display server, which an installer cannot assume.
+fn self_test() -> io::Result<()> {
+    let fail = |stage: &str, error: ProtocolError| io::Error::other(format!("{stage}: {error}"));
+
+    let keys = derive_auth_keys("self-test token");
+    let hello = new_server_hello().map_err(|error| fail("server hello", error))?;
+    let challenge: Challenge = hello.challenge;
+
+    let sent = PlainRequest::Set {
+        text: "simpleclipboard self-test 第一行\n".to_owned(),
+    };
+    let (wire, request_nonce) = simpleclipboard::protocol::seal_request(&keys, &challenge, &sent)
+        .map_err(|error| fail("sealing the request", error))?;
+
+    // Through the wire encoding and back, the way the daemon receives it.
+    let frame = simpleclipboard::protocol::encode_request_frame(&wire)
+        .map_err(|error| fail("encoding the request frame", error))?;
+    let payload = &frame[FRAME_HEADER_BYTES..];
+    let decoded =
+        decode_request_payload(payload).map_err(|error| fail("decoding the request", error))?;
+    let WireRequest::Authenticated { nonce, ciphertext } = decoded else {
+        return Err(io::Error::other(
+            "a sealed request decoded as unauthenticated",
+        ));
+    };
+    let opened = open_request(&keys, &challenge, &nonce, &ciphertext)
+        .map_err(|error| fail("opening the request", error))?;
+    if opened != sent {
+        return Err(io::Error::other(
+            "the request did not survive the round trip",
+        ));
+    }
+
+    // And the ack back, including the binding that stops a replayed response.
+    let ack = Ack {
+        ok: true,
+        detail: None,
+    };
+    let sealed_ack = seal_ack(&keys, &challenge, request_nonce, &ack)
+        .map_err(|error| fail("sealing the ack", error))?;
+    let returned =
+        simpleclipboard::protocol::open_ack(&keys, &challenge, &request_nonce, &sealed_ack)
+            .map_err(|error| fail("opening the ack", error))?;
+    if returned != ack {
+        return Err(io::Error::other("the ack did not survive the round trip"));
+    }
+    Ok(())
+}
+
 fn print_help() {
     println!(
         "simpleclipboard-daemon {}\n\n\
-         Usage: simpleclipboard-daemon [--help | --version]\n\n\
+         Usage: simpleclipboard-daemon [--help | --version | --self-test]\n\n\
          Environment:\n  \
          SIMPLECLIPBOARD_ADDR      listen address (default 127.0.0.1:12343)\n  \
          SIMPLECLIPBOARD_TOKEN     optional pre-shared key; required off loopback\n  \
@@ -555,6 +611,11 @@ fn handle_cli() -> io::Result<bool> {
         }
         Some("--version" | "-V") => {
             println!("simpleclipboard-daemon {}", env!("CARGO_PKG_VERSION"));
+            Ok(false)
+        }
+        Some("--self-test") => {
+            self_test()?;
+            println!("ok");
             Ok(false)
         }
         _ => Err(io::Error::new(

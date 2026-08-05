@@ -673,4 +673,36 @@ What it guarantees:
         Open the daemon transcript in a scratch buffer: start and exit events,
         restarts, protocol handshakes, send failures and stderr.
 
+
+==============================================================================
+DAEMON COMMAND LINE                               *simpleclipboard-daemon-cli*
+
+The daemon takes no arguments in normal use: the plugin starts it and speaks
+JSON over its stdin and stdout.  For diagnosis it also answers: >
+
+  simpleclipboard-daemon --version
+  simpleclipboard-daemon --help
+  simpleclipboard-daemon --self-test
+<
+--self-test runs one authenticated request through the protocol, and prints
+"ok".
+install.sh runs it on the freshly built binary before replacing a working one,
+so a build that compiles but does not work never reaches lib/.
+
+Every daemon in the simple* suite answers these three the same way.
+
+VENDORED SUPERVISOR                               *simpleclipboard-simplecore*
+
+The daemon supervisor in autoload/simpleclipboard/core.vim, and the test
+harness beside it, are vendored from the suite's shared .simplecore bundle
+rather than written here — each plugin carries its own copy so that
+installing this plugin alone is enough.  Do not edit those files in place: >
+
+  make core-verify
+<
+checks each of them against the sha256 recorded in .simplecore.manifest and
+fails the build when one has drifted.  `make check` depends on it.  To change
+the supervisor, edit .simplecore/core.vim in the suite checkout and re-run
+.simplecore/vendor.sh.
+
 vim:tw=78:ts=8:noet:ft=help:norl:

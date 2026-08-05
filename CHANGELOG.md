@@ -6,7 +6,46 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 SimpleClipboard uses semantic versioning for the Vim interface, TCP protocol,
 and packaged Rust components.
 
-## Unreleased - 2026-08-01
+## Unreleased - 2026-08-05
+
+### 全套统一
+
+- `.simplecore/` 回来了。10 个仓库里的 supervisor(`autoload/<plugin>/core.vim`
+  与三个测试文件)本来就是一套 vendored bundle,但源头目录早已丢失,而每个
+  Makefile 都还在引用 `../.simplecore/vendor.sh`。现在 bundle 有了源头,而且
+  每个仓库带一份 `.simplecore.manifest` 记录各文件的 sha256,`make core-verify`
+  会校验它,`check` 依赖它——手改 vendored 文件会在改它的那个仓库里直接失败,
+  不需要 `.simplecore/` 在场。
+- 安装器抽成共享的 `install-common.sh`,各仓库的 `install.sh` 只剩配置。
+  由此补齐的能力:构建前检查 cargo/rustc 与 MSRV(此前 3 个仓库缺,用户看到的
+  是一屏 trait 解析错误);原子替换(此前 2 个仓库是就地覆写,Vim 还开着旧 daemon
+  时会 ETXTBSY);Windows 的 `.exe` 后缀;安装前用 `--self-test` 验证刚构建的
+  二进制;以及生成 helptags。
+- `make check` 现在是每个仓库统一的完整门禁。simplemarkdown 与 simpleminimap
+  此前叫 `make test`,旧名字保留为别名。
+- daemon 的命令行统一为 `--version` / `--help` / `--self-test`。
+
+### 工具链
+
+- `rust-version` 统一到 1.88(此前 1.85 与 1.88 各半)。实测:1.88 能构建全部
+  10 个仓库,1.85 只能构建 5 个。
+- `cargo update`:全部为补丁级更新。
+
+  注意:这次更新让 `ignore` 从 0.4.27 升到 0.4.30+,而后者用了 let-chains。
+  simplefinder 与 simpletree 此前声明的 1.85 在更新前是真实可用的,更新后不再成立
+  ——这是这次依赖刷新付出的代价,不是发现了旧的错误声明。
+- MSRV 提到 1.88 后,clippy 的 `collapsible_if` 开始建议用 let-chains 合并
+  (该 lint 受 MSRV 门控)。已按建议合并,语义不变。
+
+### 本插件
+
+- `--self-test`:在进程内跑一次完整的认证请求——密钥派生、AEAD 封装、
+  分帧,以及把 ack 绑定到请求 nonce 的那层校验。剪贴板本身不碰,
+  它需要显示服务器,而安装器不能假设有。
+- 保留了自己的 install.sh:它装两个产物(daemon 和 Vim 用 libcall 加载的
+  cdylib),并且带暂存目录与回滚,共享安装器做不到这些。
+- `Cargo.toml` 里写明了为什么这个 crate 不设 `panic = "abort"`:cdylib 与
+  Vim 同进程,abort 会连编辑器一起带走。
 
 ### 构建与 CI 修复
 

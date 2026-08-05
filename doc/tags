@@ -37,6 +37,7 @@ simpleclipboard-architecture	simpleclipboard.txt	/*simpleclipboard-architecture*
 simpleclipboard-commands	simpleclipboard.txt	/*simpleclipboard-commands*
 simpleclipboard-contents	simpleclipboard.txt	/*simpleclipboard-contents*
 simpleclipboard-daemon	simpleclipboard.txt	/*simpleclipboard-daemon*
+simpleclipboard-daemon-cli	simpleclipboard.txt	/*simpleclipboard-daemon-cli*
 simpleclipboard-diagnostics	simpleclipboard.txt	/*simpleclipboard-diagnostics*
 simpleclipboard-install	simpleclipboard.txt	/*simpleclipboard-install*
 simpleclipboard-logging	simpleclipboard.txt	/*simpleclipboard-logging*
@@ -47,6 +48,7 @@ simpleclipboard-refresh	simpleclipboard.txt	/*simpleclipboard-refresh*
 simpleclipboard-remote	simpleclipboard.txt	/*simpleclipboard-remote*
 simpleclipboard-requirements	simpleclipboard.txt	/*simpleclipboard-requirements*
 simpleclipboard-security	simpleclipboard.txt	/*simpleclipboard-security*
+simpleclipboard-simplecore	simpleclipboard.txt	/*simpleclipboard-simplecore*
 simpleclipboard-status	simpleclipboard.txt	/*simpleclipboard-status*
 simpleclipboard-systemd	simpleclipboard.txt	/*simpleclipboard-systemd*
 simpleclipboard-troubleshooting	simpleclipboard.txt	/*simpleclipboard-troubleshooting*
