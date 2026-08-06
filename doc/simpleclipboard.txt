@@ -701,8 +701,13 @@ installing this plugin alone is enough.  Do not edit those files in place: >
   make core-verify
 <
 checks each of them against the sha256 recorded in .simplecore.manifest and
-fails the build when one has drifted.  `make check` depends on it.  To change
-the supervisor, edit .simplecore/core.vim in the suite checkout and re-run
-.simplecore/vendor.sh.
+fails the build when one has drifted.  `make check` depends on it.
+
+The bundle lives at https://github.com/beamiter/simplecore.  To change the
+supervisor, clone it beside the plugins, edit it there, and re-vendor: >
+
+  git clone https://github.com/beamiter/simplecore ../.simplecore
+  ../.simplecore/vendor.sh
+<
 
 vim:tw=78:ts=8:noet:ft=help:norl:

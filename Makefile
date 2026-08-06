@@ -20,16 +20,20 @@ help-tags:
 
 # ---------------------------------------------------------------------------
 # simplecore: the vendored daemon supervisor shared by the simple* suite.
+#   https://github.com/beamiter/simplecore
 # Regenerate with ../.simplecore/vendor.sh; never edit autoload/simpleclipboard/core.vim.
 # ---------------------------------------------------------------------------
 
 # The bundle is copied into each plugin rather than shared by reference, so
 # that every plugin stays independently installable.  Copies drift silently
-# unless something checks them, and one already went unnoticed long enough for
-# the .simplecore directory itself to go missing: .simplecore.manifest pins the
-# sha256 of every vendored file, and this target fails the build when a copy
-# no longer matches.  Run ../.simplecore/vendor.sh --check to see suite-wide
-# drift, or ../.simplecore/vendor.sh to re-vendor.
+# unless something checks them, and one such copy went unnoticed long enough
+# for the whole .simplecore directory to go missing before it had a repository
+# of its own: .simplecore.manifest pins the sha256 of every vendored file, and
+# this target fails the build when a copy no longer matches.
+#
+#   git clone https://github.com/beamiter/simplecore ../.simplecore
+#   ../.simplecore/vendor.sh --check    # suite-wide drift
+#   ../.simplecore/vendor.sh            # re-vendor
 core-verify:
 	@grep -E '^[0-9a-f]{64}  ' .simplecore.manifest | sha256sum -c --quiet
 	@echo "simplecore: bundle v$$(awk '$$1 == "version" { print $$2 }' .simplecore.manifest) verified"
