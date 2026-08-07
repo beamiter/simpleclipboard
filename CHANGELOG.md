@@ -8,6 +8,16 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-05
 
+### 可分享的文件位置
+
+- 新增 `:SimpleCopyPath[!]`、`:SimpleCopyLocation[!]` 以及对应 `<Plug>` target。
+  默认复制相对当前有效 cwd 的路径,`!` 使用绝对路径;location 为 1-based
+  `path:line:column`,多字节文本按字符列计数。
+- 路径中的空格与 UTF-8 原样进入剪贴板,不混入 shell/fname 转义;无名、help、
+  terminal 等非文件 buffer fail closed 并给出明确提示。
+- 两个命令复用原有 daemon ACK、串行外部命令、OSC52 回退与状态可观测性;
+  冒烟测试通过真实 `tee` 后端校验相对/绝对路径、位置与拒绝边界。
+
 ### 精确复制控制
 
 - 新增 `:SimpleCopyRegister [name]`:可直接复制任意 Vim 寄存器,并提供

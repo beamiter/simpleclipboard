@@ -1040,6 +1040,61 @@ export def ClearClipboard(): void
   endif
 enddef
 
+def CurrentFilePath(absolute: bool): string
+  # A URI-like scratch, terminal or help buffer can have a name while still
+  # not representing a filesystem path. Refuse it rather than copying a
+  # plausible-looking value that downstream tools cannot open.
+  var info = getbufinfo(bufnr('%'))
+  var name = get(get(info, 0, {}), 'name', '')
+  if &buftype !=# '' || name ==# ''
+    Notify('Current buffer is not a named file.', 'ErrorMsg')
+    return ''
+  endif
+  # getbufinfo().name is absolute, so a :cd after :edit cannot reinterpret a
+  # relative buffer name against the wrong directory.
+  var path = fnamemodify(name, ':p')
+  if path ==# ''
+    Notify('Current buffer is not a named file.', 'ErrorMsg')
+    return ''
+  endif
+  # `:.` uses the effective window/tab/global cwd and keeps spaces/non-ASCII
+  # verbatim; shell/fname escaping would corrupt the clipboard value.
+  return absolute ? path : fnamemodify(path, ':.')
+enddef
+
+def CopyFileValue(text: string, description: string): void
+  if text ==# ''
+    return
+  endif
+  if CopyToSystemClipboard(text)
+    if last_outcome !=# 'uncertain'
+      Notify(last_outcome ==# 'queued'
+        ? $'Clipboard copy for {description} queued.'
+        : $'Copied {description}.')
+    endif
+  else
+    Notify($'{description} copy failed. Run :SimpleCopyStatus.', 'WarningMsg')
+  endif
+enddef
+
+# Copy the current file path relative to the effective cwd. Bang uses an
+# absolute path, useful when the receiver is outside Vim's project context.
+export def CopyPathToClipboard(absolute: bool = false): void
+  CopyFileValue(CurrentFilePath(absolute), absolute ? 'absolute file path' : 'file path')
+enddef
+
+# Copy an editor/tool-friendly 1-based path:line:column location. Column is a
+# character index, not Vim's byte column, so multibyte text remains portable.
+export def CopyLocationToClipboard(absolute: bool = false): void
+  var path = CurrentFilePath(absolute)
+  if path ==# ''
+    return
+  endif
+  var character_col = strchars(strpart(getline('.'), 0, col('.') - 1)) + 1
+  CopyFileValue($'{path}:{line(".")}:{character_col}',
+    absolute ? 'absolute file location' : 'file location')
+enddef
+
 export def CopyYankedToClipboard(_timer_id: any = 0)
   var text = getreg('"')
   if text ==# ''

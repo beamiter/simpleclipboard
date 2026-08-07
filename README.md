@@ -124,6 +124,8 @@ No configuration is required for a local desktop:
 - Select text and press `<leader>y` to copy the exact Visual selection.
 - Run `:SimpleCopyRegister a` to copy register `a`, or `:SimpleCopyClear` to
   explicitly clear the clipboard.
+- Run `:SimpleCopyPath` / `:SimpleCopyLocation` to share the current file or
+  exact 1-based cursor location; add `!` for an absolute path.
 - Run `:SimpleCopyStatus` to inspect the selected backend and address.
 
 To disable automatic copy while keeping the commands and mappings:
@@ -149,10 +151,18 @@ xmap <leader>Y <Plug>(SimpleCopyVisual)
 | `:SimpleCopyVisual` | Copy the most recent Visual selection exactly. |
 | `:[range]SimpleCopyRange` | Copy complete lines in the range; without a range, copy the whole buffer. |
 | `:SimpleCopyClear` | Clear the system clipboard through the normal confirmed/fallback pipeline. |
+| `:SimpleCopyPath[!]` | Copy the current file path relative to the effective cwd; use `!` for absolute. |
+| `:SimpleCopyLocation[!]` | Copy `path:line:column` with 1-based character positions; use `!` for absolute. |
 | `:SimpleCopyStart` | Start the configured local daemon if needed. |
 | `:SimpleCopyStop` | Stop only the daemon job started by this Vim instance. |
 | `:SimpleCopyStatus` | Always print environment, address, and backend diagnostics. |
 | `:SimpleCopyRefresh` | Clear environment/backend caches and detect them again. |
+
+Path and location commands preserve spaces and UTF-8 literally rather than
+copying shell-escaped text. They fail visibly for unnamed and non-file buffers,
+and use the same acknowledged daemon, serialized external-command, and OSC52
+fallback pipeline as every other explicit copy. Optional Normal-mode mapping
+targets are `<Plug>(SimpleCopyPath)` and `<Plug>(SimpleCopyLocation)`.
 
 ## Configuration
 

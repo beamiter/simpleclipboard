@@ -44,6 +44,8 @@ command! -nargs=? -complete=customlist,simpleclipboard#CompleteRegister SimpleCo
 command! SimpleCopyVisual simpleclipboard#CopyVisualSelection()
 command! -range=% SimpleCopyRange simpleclipboard#CopyRangeToClipboard(<line1>, <line2>)
 command! SimpleCopyClear simpleclipboard#ClearClipboard()
+command! -bang SimpleCopyPath simpleclipboard#CopyPathToClipboard('<bang>' ==# '!')
+command! -bang SimpleCopyLocation simpleclipboard#CopyLocationToClipboard('<bang>' ==# '!')
 command! SimpleCopyStart simpleclipboard#StartDaemon()
 command! SimpleCopyStop simpleclipboard#StopDaemon()
 command! SimpleCopyStatus simpleclipboard#Status()
@@ -55,6 +57,8 @@ command! SimpleCopyRefresh simpleclipboard#Refresh()
 
 nnoremap <silent> <Plug>(SimpleCopyYank) <Cmd>SimpleCopyYank<CR>
 nnoremap <silent> <Plug>(SimpleCopyClear) <Cmd>SimpleCopyClear<CR>
+nnoremap <silent> <Plug>(SimpleCopyPath) <Cmd>SimpleCopyPath<CR>
+nnoremap <silent> <Plug>(SimpleCopyLocation) <Cmd>SimpleCopyLocation<CR>
 xnoremap <silent> <Plug>(SimpleCopyVisual) :<C-U>SimpleCopyVisual<CR>
 
 if !g:simpleclipboard_no_default_mappings

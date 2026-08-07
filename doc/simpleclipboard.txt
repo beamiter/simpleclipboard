@@ -149,6 +149,7 @@ tunnel 端口，也必须同步修改。
 - 普通模式按 <leader>y，复制无名寄存器；
 - 可视模式选中文本后按 <leader>y，复制精确选区；
 - 执行 :SimpleCopyRegister a 可复制寄存器 a，:SimpleCopyClear 可显式清空；
+- 执行 :SimpleCopyPath / :SimpleCopyLocation 可复制当前文件或精确光标位置；
 - 执行 :SimpleCopyStatus 查看环境、地址和当前后端；
 - 隧道、显示服务器或容器网络变化后执行 :SimpleCopyRefresh。
 
@@ -189,6 +190,17 @@ tunnel 端口，也必须同步修改。
 	显式清空系统剪贴板。空文本仍走与普通复制相同的 daemon ACK、外部命令
 	与 OSC52 回退链，不会被误判成“空寄存器”。
 
+						*:SimpleCopyPath*
+:SimpleCopyPath[!]
+	复制当前文件路径；默认相对当前窗口/标签页/全局生效的 cwd，! 改为绝对
+	路径。空格与 UTF-8 原样复制，不做 shell 转义；无名或非文件 buffer 会明确
+	拒绝。
+
+						*:SimpleCopyLocation*
+:SimpleCopyLocation[!]
+	复制 path:line:column。行、列均从 1 开始，列按字符而不是 Vim byte column
+	计数；! 使用绝对路径。与其他显式命令一样走完整确认与回退链。
+
 						*:SimpleCopyStart*
 :SimpleCopyStart
 	按当前配置启动本地守护进程。SSH 或容器场景不会误启动不合适的
@@ -219,6 +231,14 @@ tunnel 端口，也必须同步修改。
 						*<Plug>(SimpleCopyClear)*
 <Plug>(SimpleCopyClear)
 	普通模式清空系统剪贴板；插件不为它设置默认按键。
+
+						*<Plug>(SimpleCopyPath)*
+<Plug>(SimpleCopyPath)
+	普通模式复制 cwd-relative 当前文件路径；插件不设置默认按键。
+
+						*<Plug>(SimpleCopyLocation)*
+<Plug>(SimpleCopyLocation)
+	普通模式复制 cwd-relative 的 1-based path:line:column；无默认按键。
 
 						*<Plug>(SimpleCopyVisual)*
 <Plug>(SimpleCopyVisual)

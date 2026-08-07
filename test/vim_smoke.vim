@@ -8,6 +8,7 @@ let s:slow_fail = s:fake_bin .. '/slow-fail'
 let s:ordered_copy = s:fake_bin .. '/ordered-copy'
 let s:daemon_script = s:tmp_prefix .. '-daemon'
 let s:daemon_log = s:tmp_prefix .. '-daemon-log'
+let s:path_project = s:tmp_prefix .. '-path-project'
 let s:old_path = $PATH
 let s:had_state_home = exists('$XDG_STATE_HOME')
 let s:old_state_home = $XDG_STATE_HOME
@@ -24,6 +25,7 @@ call delete(s:state_home, 'rf')
 call delete(s:fake_bin, 'rf')
 call delete(s:daemon_script)
 call delete(s:daemon_log)
+call delete(s:path_project, 'rf')
 call mkdir(s:fake_bin, 'p', 0700)
 let $XDG_STATE_HOME = s:state_home
 execute 'set runtimepath^=' .. fnameescape(s:root)
@@ -52,11 +54,15 @@ call assert_equal('127.0.0.1', g:simpleclipboard_bind_addr)
 call assert_equal(2, exists(':SimpleCopyVisual'))
 call assert_equal(2, exists(':SimpleCopyRegister'))
 call assert_equal(2, exists(':SimpleCopyClear'))
+call assert_equal(2, exists(':SimpleCopyPath'))
+call assert_equal(2, exists(':SimpleCopyLocation'))
 call assert_equal(2, exists(':SimpleCopyStart'))
 call assert_equal(2, exists(':SimpleCopyStatus'))
 call assert_equal(2, exists(':SimpleCopyRefresh'))
 call assert_equal('<Plug>(SimpleCopyYank)', maparg('<leader>y', 'n'))
 call assert_equal('<Plug>(SimpleCopyVisual)', maparg('<leader>y', 'x'))
+call assert_match('SimpleCopyPath', maparg('<Plug>(SimpleCopyPath)', 'n'))
+call assert_match('SimpleCopyLocation', maparg('<Plug>(SimpleCopyLocation)', 'n'))
 
 new
 call setline(1, ['alpha beta', 'second line', 'third line'])
@@ -354,6 +360,49 @@ call simpleclipboard#StartDaemon(v:true)
 call assert_match('Daemon backend is disabled.', execute('messages'))
 call simpleclipboard#Refresh()
 
+" File path/location copies keep spaces and UTF-8 exact, default to the
+" effective cwd, and use 1-based character columns. Bang selects absolute
+" paths without bypassing the existing asynchronous copy pipeline.
+let g:simpleclipboard_copy_command = ['tee', s:capture]
+call simpleclipboard#Refresh()
+let s:path_cwd = getcwd()
+let s:path_subdir = s:path_project .. '/sub dir'
+let s:path_file = s:path_subdir .. '/名字.rs'
+call mkdir(s:path_subdir, 'p', 0700)
+call writefile(['zero', 'α beta'], s:path_file)
+execute 'edit! ' .. fnameescape(s:path_file)
+execute 'lcd ' .. fnameescape(s:path_project)
+call cursor(2, 1)
+call search('beta')
+
+SimpleCopyPath
+sleep 150m
+call assert_equal('sub dir/名字.rs', join(readfile(s:capture, 'b'), "\n"))
+SimpleCopyPath!
+sleep 150m
+call assert_equal(s:path_file, join(readfile(s:capture, 'b'), "\n"))
+SimpleCopyLocation
+sleep 150m
+call assert_equal('sub dir/名字.rs:2:3', join(readfile(s:capture, 'b'), "\n"))
+SimpleCopyLocation!
+sleep 150m
+call assert_equal(s:path_file .. ':2:3', join(readfile(s:capture, 'b'), "\n"))
+
+execute 'lcd ' .. fnameescape(s:path_cwd)
+enew!
+call delete(s:capture)
+messages clear
+SimpleCopyPath
+call assert_false(filereadable(s:capture), 'unnamed buffers must not copy a fake path')
+call assert_match('Current buffer is not a named file', execute('messages'))
+file clipboard-test
+setlocal buftype=nofile
+messages clear
+SimpleCopyLocation
+call assert_false(filereadable(s:capture), 'non-file buffers must not copy a fake location')
+call assert_match('Current buffer is not a named file', execute('messages'))
+bwipe!
+
 call delete(s:capture)
 bwipe!
 silent help simpleclipboard
@@ -376,6 +425,7 @@ call delete(s:state_home, 'rf')
 call delete(s:fake_bin, 'rf')
 call delete(s:daemon_script)
 call delete(s:daemon_log)
+call delete(s:path_project, 'rf')
 
 if !empty(v:errors)
   for error in v:errors

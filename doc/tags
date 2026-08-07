@@ -1,7 +1,9 @@
 !_TAG_FILE_ENCODING	utf-8	//
 :SimpleCopyClear	simpleclipboard.txt	/*:SimpleCopyClear*
 :SimpleCopyHealth	simpleclipboard.txt	/*:SimpleCopyHealth*
+:SimpleCopyLocation	simpleclipboard.txt	/*:SimpleCopyLocation*
 :SimpleCopyLog	simpleclipboard.txt	/*:SimpleCopyLog*
+:SimpleCopyPath	simpleclipboard.txt	/*:SimpleCopyPath*
 :SimpleCopyRange	simpleclipboard.txt	/*:SimpleCopyRange*
 :SimpleCopyRefresh	simpleclipboard.txt	/*:SimpleCopyRefresh*
 :SimpleCopyRegister	simpleclipboard.txt	/*:SimpleCopyRegister*
@@ -12,6 +14,8 @@
 :SimpleCopyVisual	simpleclipboard.txt	/*:SimpleCopyVisual*
 :SimpleCopyYank	simpleclipboard.txt	/*:SimpleCopyYank*
 <Plug>(SimpleCopyClear)	simpleclipboard.txt	/*<Plug>(SimpleCopyClear)*
+<Plug>(SimpleCopyLocation)	simpleclipboard.txt	/*<Plug>(SimpleCopyLocation)*
+<Plug>(SimpleCopyPath)	simpleclipboard.txt	/*<Plug>(SimpleCopyPath)*
 <Plug>(SimpleCopyVisual)	simpleclipboard.txt	/*<Plug>(SimpleCopyVisual)*
 <Plug>(SimpleCopyYank)	simpleclipboard.txt	/*<Plug>(SimpleCopyYank)*
 g:simpleclipboard_address	simpleclipboard.txt	/*g:simpleclipboard_address*
