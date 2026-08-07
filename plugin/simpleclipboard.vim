@@ -46,6 +46,7 @@ command! -range=% SimpleCopyRange simpleclipboard#CopyRangeToClipboard(<line1>, 
 command! SimpleCopyClear simpleclipboard#ClearClipboard()
 command! -bang SimpleCopyPath simpleclipboard#CopyPathToClipboard('<bang>' ==# '!')
 command! -bang SimpleCopyLocation simpleclipboard#CopyLocationToClipboard('<bang>' ==# '!')
+command! -bang -nargs=* SimpleCopyFormat simpleclipboard#CopyFormatToClipboard(<q-args>, '<bang>' ==# '!')
 command! SimpleCopyStart simpleclipboard#StartDaemon()
 command! SimpleCopyStop simpleclipboard#StopDaemon()
 command! SimpleCopyStatus simpleclipboard#Status()
@@ -59,6 +60,9 @@ nnoremap <silent> <Plug>(SimpleCopyYank) <Cmd>SimpleCopyYank<CR>
 nnoremap <silent> <Plug>(SimpleCopyClear) <Cmd>SimpleCopyClear<CR>
 nnoremap <silent> <Plug>(SimpleCopyPath) <Cmd>SimpleCopyPath<CR>
 nnoremap <silent> <Plug>(SimpleCopyLocation) <Cmd>SimpleCopyLocation<CR>
+# A format needs user input, so this target intentionally opens a prefilled
+# command line instead of silently invoking an unusable parameterized command.
+nnoremap <Plug>(SimpleCopyFormat) :SimpleCopyFormat<Space>
 xnoremap <silent> <Plug>(SimpleCopyVisual) :<C-U>SimpleCopyVisual<CR>
 
 if !g:simpleclipboard_no_default_mappings

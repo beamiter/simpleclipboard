@@ -56,6 +56,7 @@ call assert_equal(2, exists(':SimpleCopyRegister'))
 call assert_equal(2, exists(':SimpleCopyClear'))
 call assert_equal(2, exists(':SimpleCopyPath'))
 call assert_equal(2, exists(':SimpleCopyLocation'))
+call assert_equal(2, exists(':SimpleCopyFormat'))
 call assert_equal(2, exists(':SimpleCopyStart'))
 call assert_equal(2, exists(':SimpleCopyStatus'))
 call assert_equal(2, exists(':SimpleCopyRefresh'))
@@ -63,6 +64,7 @@ call assert_equal('<Plug>(SimpleCopyYank)', maparg('<leader>y', 'n'))
 call assert_equal('<Plug>(SimpleCopyVisual)', maparg('<leader>y', 'x'))
 call assert_match('SimpleCopyPath', maparg('<Plug>(SimpleCopyPath)', 'n'))
 call assert_match('SimpleCopyLocation', maparg('<Plug>(SimpleCopyLocation)', 'n'))
+call assert_equal(':SimpleCopyFormat ', maparg('<Plug>(SimpleCopyFormat)', 'n'))
 
 new
 call setline(1, ['alpha beta', 'second line', 'third line'])
@@ -388,6 +390,32 @@ SimpleCopyLocation!
 sleep 150m
 call assert_equal(s:path_file .. ':2:3', join(readfile(s:capture, 'b'), "\n"))
 
+" Format templates are parsed, never evaluated. Inserted path text is not
+" reparsed as placeholders, and literal braces use {{ / }}.
+let s:format_file = s:path_subdir .. '/名 & {line}.rs'
+call writefile(['zero', 'α beta'], s:format_file)
+execute 'edit! ' .. fnameescape(s:format_file)
+call cursor(2, 1)
+call search('beta')
+execute 'SimpleCopyFormat {file} @ {path} [{dir}] {line}:{column} {{literal}}'
+sleep 150m
+call assert_equal('名 & {line}.rs @ sub dir/名 & {line}.rs [sub dir] 2:3 {literal}',
+      \ join(readfile(s:capture, 'b'), "\n"))
+SimpleCopyFormat! {path}
+sleep 150m
+call assert_equal(s:format_file, join(readfile(s:capture, 'b'), "\n"))
+
+" Empty, unknown, nested, unclosed, and unmatched templates fail before the
+" clipboard pipeline; the previous confirmed clipboard value stays intact.
+for s:bad_format in ['', '{unknown}', '{path', '{pa{th}', '}']
+  messages clear
+  execute 'SimpleCopyFormat ' .. s:bad_format
+  sleep 20m
+  call assert_equal(s:format_file, join(readfile(s:capture, 'b'), "\n"),
+        \ 'malformed format must not copy partial output: ' .. s:bad_format)
+  call assert_match('Format template', execute('messages'))
+endfor
+
 execute 'lcd ' .. fnameescape(s:path_cwd)
 enew!
 call delete(s:capture)
@@ -400,6 +428,10 @@ setlocal buftype=nofile
 messages clear
 SimpleCopyLocation
 call assert_false(filereadable(s:capture), 'non-file buffers must not copy a fake location')
+call assert_match('Current buffer is not a named file', execute('messages'))
+messages clear
+SimpleCopyFormat {path}
+call assert_false(filereadable(s:capture), 'non-file buffers must not copy a formatted reference')
 call assert_match('Current buffer is not a named file', execute('messages'))
 bwipe!
 

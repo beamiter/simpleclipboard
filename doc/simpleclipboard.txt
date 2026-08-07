@@ -201,6 +201,13 @@ tunnel 端口，也必须同步修改。
 	复制 path:line:column。行、列均从 1 开始，列按字符而不是 Vim byte column
 	计数；! 使用绝对路径。与其他显式命令一样走完整确认与回退链。
 
+						*:SimpleCopyFormat*
+:SimpleCopyFormat[!] {template}
+	用 {path}、{dir}、{file}、{line}、{column} 生成并复制自定义文件引用；
+	! 令 path/dir 使用绝对路径。{{ 与 }} 表示字面大括号。空模板、未知
+	占位符、嵌套或不配对大括号会在进入剪贴板流水线之前拒绝，因此不会复制
+	半成品；路径自身包含的占位符样文本不会被二次展开。
+
 						*:SimpleCopyStart*
 :SimpleCopyStart
 	按当前配置启动本地守护进程。SSH 或容器场景不会误启动不合适的
@@ -239,6 +246,10 @@ tunnel 端口，也必须同步修改。
 						*<Plug>(SimpleCopyLocation)*
 <Plug>(SimpleCopyLocation)
 	普通模式复制 cwd-relative 的 1-based path:line:column；无默认按键。
+
+						*<Plug>(SimpleCopyFormat)*
+<Plug>(SimpleCopyFormat)
+	在命令行预填 :SimpleCopyFormat 并等待输入模板；无默认按键。
 
 						*<Plug>(SimpleCopyVisual)*
 <Plug>(SimpleCopyVisual)

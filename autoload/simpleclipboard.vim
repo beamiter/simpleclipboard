@@ -1095,6 +1095,88 @@ export def CopyLocationToClipboard(absolute: bool = false): void
     absolute ? 'absolute file location' : 'file location')
 enddef
 
+def FormatError(message: string): string
+  Notify('Format template ' .. message .. '.', 'ErrorMsg')
+  return message
+enddef
+
+# Expand only documented placeholders. Double braces are literals; every
+# other brace must form one known placeholder. Parsing finishes before the
+# clipboard pipeline is entered, so a malformed template can never copy a
+# partially expanded value (or accidentally clear the clipboard).
+def ExpandFileTemplate(template: string, values: dict<string>): list<string>
+  if template ==# ''
+    return [FormatError('must not be empty')]
+  endif
+  var output = ''
+  var index = 0
+  var length = strchars(template)
+  while index < length
+    var character = strcharpart(template, index, 1)
+    if character ==# '{'
+      if index + 1 < length && strcharpart(template, index + 1, 1) ==# '{'
+        output ..= '{'
+        index += 2
+        continue
+      endif
+      var closing = index + 1
+      while closing < length && strcharpart(template, closing, 1) !=# '}'
+        if strcharpart(template, closing, 1) ==# '{'
+          return [FormatError('contains a nested "{"')]
+        endif
+        closing += 1
+      endwhile
+      if closing >= length
+        return [FormatError('has an unclosed "{"')]
+      endif
+      var name = strcharpart(template, index + 1, closing - index - 1)
+      if !has_key(values, name)
+        return [FormatError($'contains unknown placeholder {{{name}}}')]
+      endif
+      output ..= values[name]
+      index = closing + 1
+      continue
+    elseif character ==# '}'
+      if index + 1 < length && strcharpart(template, index + 1, 1) ==# '}'
+        output ..= '}'
+        index += 2
+        continue
+      endif
+      return [FormatError('contains an unmatched "}"')]
+    endif
+    output ..= character
+    index += 1
+  endwhile
+  return ['', output]
+enddef
+
+# Build shareable file references without evaluating template text. Bang makes
+# {path}/{dir} absolute; {file}, {line}, and the 1-based Unicode {column} are
+# otherwise identical.
+export def CopyFormatToClipboard(template: string, absolute: bool = false): void
+  if template ==# ''
+    FormatError('must not be empty')
+    return
+  endif
+  var path = CurrentFilePath(absolute)
+  if path ==# ''
+    return
+  endif
+  var character_col = strchars(strpart(getline('.'), 0, col('.') - 1)) + 1
+  var values: dict<string> = {
+    path: path,
+    dir: fnamemodify(path, ':h'),
+    file: fnamemodify(path, ':t'),
+    line: string(line('.')),
+    column: string(character_col),
+  }
+  var expanded = ExpandFileTemplate(template, values)
+  if expanded[0] !=# ''
+    return
+  endif
+  CopyFileValue(expanded[1], 'formatted file reference')
+enddef
+
 export def CopyYankedToClipboard(_timer_id: any = 0)
   var text = getreg('"')
   if text ==# ''

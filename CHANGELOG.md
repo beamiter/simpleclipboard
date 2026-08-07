@@ -8,6 +8,17 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-05
 
+### 可组合文件引用
+
+- 新增 `:SimpleCopyFormat[!] {template}` 与 `<Plug>(SimpleCopyFormat)`,可用
+  `{path}`、`{dir}`、`{file}`、`{line}`、`{column}` 组合 issue、聊天或日志所需
+  的文件引用；`!` 让路径字段使用绝对路径。
+- 模板只做白名单解析而不执行表达式,`{{`/`}}` 输出字面大括号；空模板、未知
+  占位符、嵌套或不配对大括号在任何后端运行前 fail closed,路径中形似占位符的
+  文本也不会二次展开。
+- 冒烟测试覆盖含空格、UTF-8、`&` 和大括号的路径、Unicode 字符列、绝对路径、
+  所有拒绝分支及非文件 buffer。
+
 ### 可分享的文件位置
 
 - 新增 `:SimpleCopyPath[!]`、`:SimpleCopyLocation[!]` 以及对应 `<Plug>` target。

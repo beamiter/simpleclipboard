@@ -153,6 +153,7 @@ xmap <leader>Y <Plug>(SimpleCopyVisual)
 | `:SimpleCopyClear` | Clear the system clipboard through the normal confirmed/fallback pipeline. |
 | `:SimpleCopyPath[!]` | Copy the current file path relative to the effective cwd; use `!` for absolute. |
 | `:SimpleCopyLocation[!]` | Copy `path:line:column` with 1-based character positions; use `!` for absolute. |
+| `:SimpleCopyFormat[!] {template}` | Copy a custom file reference using `{path}`, `{dir}`, `{file}`, `{line}`, and `{column}`; `!` makes path fields absolute. |
 | `:SimpleCopyStart` | Start the configured local daemon if needed. |
 | `:SimpleCopyStop` | Stop only the daemon job started by this Vim instance. |
 | `:SimpleCopyStatus` | Always print environment, address, and backend diagnostics. |
@@ -163,6 +164,13 @@ copying shell-escaped text. They fail visibly for unnamed and non-file buffers,
 and use the same acknowledged daemon, serialized external-command, and OSC52
 fallback pipeline as every other explicit copy. Optional Normal-mode mapping
 targets are `<Plug>(SimpleCopyPath)` and `<Plug>(SimpleCopyLocation)`.
+`<Plug>(SimpleCopyFormat)` opens a prefilled command line so a template can be
+entered interactively.
+
+Format templates are literal text plus the five documented placeholders.
+Write `{{` or `}}` for a literal brace. Empty templates, unknown placeholders,
+nested braces, and unmatched braces fail before any clipboard backend runs;
+inserted path text is never evaluated or expanded a second time.
 
 ## Configuration
 
