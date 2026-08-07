@@ -8,6 +8,20 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-05
 
+### 精确复制控制
+
+- 新增 `:SimpleCopyRegister [name]`:可直接复制任意 Vim 寄存器,并提供
+  `unnamed`/`clipboard`/`primary` 易读别名;新增 `:SimpleCopyClear` 与
+  `<Plug>(SimpleCopyClear)`,空文本仍走原有 daemon ACK、外部命令与 OSC52
+  回退链,不会被“空寄存器”短路。
+- 新增 `g:simpleclipboard_auto_copy_registers` 白名单(默认空列表,保持过去的
+  全寄存器行为)与 `g:simpleclipboard_auto_copy_max_bytes`(默认 0,无限制)。两者
+  只限制 `TextYankPost`,用户明确执行的复制永远不会被静默截断。
+- 被白名单排除或超过字节上限的新 yank 会取消仍在防抖中的旧 yank;否则用户
+  已经明确排除的新内容不复制,旧内容却可能在几十毫秒后意外进入系统剪贴板。
+- Vim 冒烟测试覆盖 named/unnamed 白名单、自动上限不影响显式复制、行寄存器
+  末尾换行以及真实外部命令后端的清空行为;`:SimpleCopyStatus` 现在也显示策略。
+
 ### 全套统一
 
 - `.simplecore/` 回来了。10 个仓库里的 supervisor(`autoload/<plugin>/core.vim`

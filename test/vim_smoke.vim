@@ -50,6 +50,8 @@ let g:simpleclipboard_debug_to_file = 0
 
 call assert_equal('127.0.0.1', g:simpleclipboard_bind_addr)
 call assert_equal(2, exists(':SimpleCopyVisual'))
+call assert_equal(2, exists(':SimpleCopyRegister'))
+call assert_equal(2, exists(':SimpleCopyClear'))
 call assert_equal(2, exists(':SimpleCopyStart'))
 call assert_equal(2, exists(':SimpleCopyStatus'))
 call assert_equal(2, exists(':SimpleCopyRefresh'))
@@ -82,6 +84,52 @@ normal! gg0yy
 sleep 200m
 call assert_true(filereadable(s:capture))
 call assert_equal(0z616C7068610A, readblob(s:capture))
+
+" Automatic copy can be restricted to selected Vim registers without changing
+" the historical all-registers default.  A skipped newer yank must not leave
+" an older debounced copy waiting behind it.
+let g:simpleclipboard_auto_copy_registers = ['unnamed']
+call delete(s:capture)
+normal! gg0"ayy
+sleep 100m
+call assert_false(filereadable(s:capture), 'named register a is outside the allow-list')
+
+let g:simpleclipboard_debounce_ms = 200
+call simpleclipboard#CopyYankedToClipboardEvent({
+      \ 'operator': 'y', 'regname': '', 'regcontents': ['pending secret'],
+      \ 'regtype': 'v',
+      \ })
+call simpleclipboard#CopyYankedToClipboardEvent({
+      \ 'operator': 'y', 'regname': 'a', 'regcontents': ['excluded replacement'],
+      \ 'regtype': 'v',
+      \ })
+sleep 300m
+call assert_false(filereadable(s:capture), 'excluded newer yank cancels pending old copy')
+let g:simpleclipboard_debounce_ms = 0
+normal! gg0yy
+sleep 150m
+call assert_equal(0z616C7068610A, readblob(s:capture))
+
+" The byte cap applies only to automatic yanks; explicit register copies keep
+" their exact contents, including a linewise trailing newline.
+let g:simpleclipboard_auto_copy_max_bytes = 4
+call delete(s:capture)
+normal! gg0yy
+sleep 100m
+call assert_false(filereadable(s:capture), 'oversized automatic yank is skipped')
+call setreg('a', "named register\n", 'V')
+SimpleCopyRegister a
+sleep 150m
+call assert_equal(0z6E616D65642072656769737465720A, readblob(s:capture))
+
+" Clearing goes through the same acknowledged/fallback pipeline and is not
+" mistaken for an empty source register.
+SimpleCopyClear
+sleep 150m
+call assert_true(filereadable(s:capture))
+call assert_equal(0z, readblob(s:capture))
+let g:simpleclipboard_auto_copy_registers = []
+let g:simpleclipboard_auto_copy_max_bytes = 0
 
 call delete(s:capture)
 normal! gg0dd

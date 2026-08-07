@@ -20,6 +20,8 @@ commands, and OSC52 as progressively more portable fallbacks.
 - Provides a safe default mapping on `<leader>y` without replacing Vim's `y`.
 - Preserves exact Visual selections, including characterwise and blockwise
   selections.
+- Can explicitly copy any Vim register, clear the system clipboard, and limit
+  automatic copying by source register or payload size.
 - Uses a framed, acknowledged TCP protocol with a 10 MiB message limit.
 - Supports X11, native Wayland data control, macOS, and WSL.
 - Detects local, SSH, container, and nested SSH/container environments.
@@ -120,6 +122,8 @@ No configuration is required for a local desktop:
 - Yank normally with `y`. Successful yank operations are copied automatically.
 - Press `<leader>y` in Normal mode to copy the unnamed register.
 - Select text and press `<leader>y` to copy the exact Visual selection.
+- Run `:SimpleCopyRegister a` to copy register `a`, or `:SimpleCopyClear` to
+  explicitly clear the clipboard.
 - Run `:SimpleCopyStatus` to inspect the selected backend and address.
 
 To disable automatic copy while keeping the commands and mappings:
@@ -141,8 +145,10 @@ xmap <leader>Y <Plug>(SimpleCopyVisual)
 | Command | Description |
 | --- | --- |
 | `:SimpleCopyYank` | Copy the unnamed register. |
+| `:SimpleCopyRegister [name]` | Copy any Vim register (`unnamed`, `clipboard`, and `primary` are accepted aliases). |
 | `:SimpleCopyVisual` | Copy the most recent Visual selection exactly. |
 | `:[range]SimpleCopyRange` | Copy complete lines in the range; without a range, copy the whole buffer. |
+| `:SimpleCopyClear` | Clear the system clipboard through the normal confirmed/fallback pipeline. |
 | `:SimpleCopyStart` | Start the configured local daemon if needed. |
 | `:SimpleCopyStop` | Stop only the daemon job started by this Vim instance. |
 | `:SimpleCopyStatus` | Always print environment, address, and backend diagnostics. |
@@ -160,6 +166,8 @@ Set options before the plugin is loaded, normally in `vimrc`.
 | `g:simpleclipboard_daemon_autostart` | `1` | Start a local daemon on `VimEnter` when appropriate. |
 | `g:simpleclipboard_daemon_autostop` | `0` | On exit, stop only the daemon job owned by this Vim instance. |
 | `g:simpleclipboard_auto_copy` | `1` | Copy successful yank operations from `TextYankPost`. |
+| `g:simpleclipboard_auto_copy_registers` | `[]` | Automatic-copy register allow-list; empty preserves all registers except `_`. Use `['unnamed']` to accept only ordinary yanks. |
+| `g:simpleclipboard_auto_copy_max_bytes` | `0` | Maximum automatic-yank payload in UTF-8 bytes; `0` is unlimited. Explicit copy commands are never capped. |
 | `g:simpleclipboard_debounce_ms` | `50` | Debounce automatic copy by this many milliseconds. |
 | `g:simpleclipboard_no_default_mappings` | `0` | Do not create the `<leader>y` mappings. |
 

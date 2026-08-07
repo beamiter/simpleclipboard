@@ -148,6 +148,7 @@ tunnel 端口，也必须同步修改。
 - 正常使用 y；默认开启的 TextYankPost 自动复制成功的 yank；
 - 普通模式按 <leader>y，复制无名寄存器；
 - 可视模式选中文本后按 <leader>y，复制精确选区；
+- 执行 :SimpleCopyRegister a 可复制寄存器 a，:SimpleCopyClear 可显式清空；
 - 执行 :SimpleCopyStatus 查看环境、地址和当前后端；
 - 隧道、显示服务器或容器网络变化后执行 :SimpleCopyRefresh。
 
@@ -170,6 +171,11 @@ tunnel 端口，也必须同步修改。
 :SimpleCopyYank
 	复制无名寄存器的内容。
 
+						*:SimpleCopyRegister*
+:SimpleCopyRegister [name]
+	复制任意 Vim 寄存器。[name] 可为一个寄存器字符；unnamed、clipboard、
+	primary 分别是 "、+、* 的易读别名。省略时复制无名寄存器。
+
 							*:SimpleCopyVisual*
 :SimpleCopyVisual
 	复制最近一次可视选区，并保留字符、行或块选择的边界。
@@ -177,6 +183,11 @@ tunnel 端口，也必须同步修改。
 						*:SimpleCopyRange*
 :[range]SimpleCopyRange
 	复制 {range} 中的完整行。没有显式范围时，范围为整个缓冲区。
+
+						*:SimpleCopyClear*
+:SimpleCopyClear
+	显式清空系统剪贴板。空文本仍走与普通复制相同的 daemon ACK、外部命令
+	与 OSC52 回退链，不会被误判成“空寄存器”。
 
 						*:SimpleCopyStart*
 :SimpleCopyStart
@@ -204,6 +215,10 @@ tunnel 端口，也必须同步修改。
 						*<Plug>(SimpleCopyYank)*
 <Plug>(SimpleCopyYank)
 	普通模式复制无名寄存器。
+
+						*<Plug>(SimpleCopyClear)*
+<Plug>(SimpleCopyClear)
+	普通模式清空系统剪贴板；插件不为它设置默认按键。
 
 						*<Plug>(SimpleCopyVisual)*
 <Plug>(SimpleCopyVisual)
@@ -244,6 +259,20 @@ g:simpleclipboard_daemon_autostop
 g:simpleclipboard_auto_copy
 	默认：1
 	是否在 TextYankPost 后自动复制成功的 yank。
+
+				*g:simpleclipboard_auto_copy_registers*
+g:simpleclipboard_auto_copy_registers
+	默认：[]
+	自动复制的源寄存器白名单。空列表保持旧行为：除黑洞寄存器 _ 外全部
+	yank 都可复制。非空时只接受列出的寄存器；普通无名 yank 写作
+	'unnamed' 或 '"'。例如 ['unnamed', 'a']。被过滤的新 yank 会取消仍在
+	防抖等待中的旧 yank，避免旧敏感内容稍后意外写入剪贴板。
+
+				*g:simpleclipboard_auto_copy_max_bytes*
+g:simpleclipboard_auto_copy_max_bytes
+	默认：0
+	TextYankPost 自动复制允许的最大 UTF-8 字节数；0 表示不限制。只约束
+	自动复制，:SimpleCopyRegister、:SimpleCopyRange 等显式操作不截断也不拒绝。
 
 					*g:simpleclipboard_debounce_ms*
 g:simpleclipboard_debounce_ms

@@ -963,6 +963,83 @@ export def CopyToSystemClipboard(text: string): bool
   return BeginCopy(text, true)
 enddef
 
+export def CompleteRegister(arglead: string, _cmdline: string,
+    _cursorpos: number): list<string>
+  var candidates = ['unnamed', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+    'clipboard', 'primary', '-', '.', ':', '%', '#', '/', '=']
+  return filter(candidates, (_, name) => stridx(name, arglead) == 0)
+enddef
+
+# Friendly aliases make the command readable while one-character Vim register
+# names keep working exactly as written.  The unnamed register normalizes to
+# `"`; other multi-character values are invalid.
+def NormalizeRegisterName(name: string): string
+  var value = trim(name)
+  if value ==# '' || value ==# 'unnamed'
+    return '"'
+  elseif value ==# 'clipboard'
+    return '+'
+  elseif value ==# 'primary'
+    return '*'
+  elseif strchars(value) == 1
+    return value
+  endif
+  return ''
+enddef
+
+def AutoCopyRegisterAllowed(name: string): bool
+  var configured = get(g:, 'simpleclipboard_auto_copy_registers', [])
+  if type(configured) != v:t_list
+    Log('g:simpleclipboard_auto_copy_registers must be a list; automatic copy skipped.',
+      'WarningMsg')
+    return false
+  endif
+  if empty(configured)
+    return true
+  endif
+  var actual = name ==# '' ? '"' : name
+  for candidate in configured
+    if type(candidate) == v:t_string && NormalizeRegisterName(candidate) ==# actual
+      return true
+    endif
+  endfor
+  return false
+enddef
+
+export def CopyRegisterToClipboard(name: string = ''): void
+  var register = NormalizeRegisterName(name)
+  if register ==# ''
+    Notify('Register must be one character, unnamed, clipboard, or primary.', 'ErrorMsg')
+    return
+  endif
+  var text = getreg(register)
+  if text ==# ''
+    Notify($'Register {name ==# "" ? "unnamed" : name} is empty.', 'Comment')
+    return
+  endif
+  if CopyToSystemClipboard(text)
+    if last_outcome !=# 'uncertain'
+      Notify(last_outcome ==# 'queued'
+        ? $'Clipboard copy for register {name ==# "" ? "unnamed" : name} queued.'
+        : $'Copied register {name ==# "" ? "unnamed" : name}.')
+    endif
+  else
+    Notify('Register copy failed. Run :SimpleCopyStatus.', 'WarningMsg')
+  endif
+enddef
+
+export def ClearClipboard(): void
+  if CopyToSystemClipboard('')
+    if last_outcome !=# 'uncertain'
+      Notify(last_outcome ==# 'queued' ? 'Clipboard clear queued.' : 'Clipboard cleared.')
+    endif
+  else
+    Notify('Clipboard clear failed. Run :SimpleCopyStatus.', 'WarningMsg')
+  endif
+enddef
+
 export def CopyYankedToClipboard(_timer_id: any = 0)
   var text = getreg('"')
   if text ==# ''
@@ -978,6 +1055,9 @@ def TextFromYankEvent(event: any): string
     return ''
   endif
   if get(event, 'regname', '') ==# '_'
+    return ''
+  endif
+  if !AutoCopyRegisterAllowed(get(event, 'regname', ''))
     return ''
   endif
   var contents = get(event, 'regcontents', [])
@@ -1001,15 +1081,28 @@ def FlushPendingYank(_timer_id: number)
 enddef
 
 export def CopyYankedToClipboardEvent(event: any = v:null)
+  # A newer yank supersedes a pending older one even when the newer register is
+  # excluded or its payload is over the automatic-copy limit.
+  if type(event) == v:t_dict && get(event, 'operator', '') ==# 'y'
+    CancelPendingYank()
+  endif
   var text = TextFromYankEvent(event)
   if text ==# ''
     return
   endif
+  var max_bytes = get(g:, 'simpleclipboard_auto_copy_max_bytes', 0)
+  if type(max_bytes) != v:t_number
+    Log('g:simpleclipboard_auto_copy_max_bytes must be a number; automatic copy skipped.',
+      'WarningMsg')
+    return
+  endif
+  if max_bytes > 0 && strlen(text) > max_bytes
+    Log($'Automatic copy skipped: {strlen(text)} bytes exceeds limit {max_bytes}.',
+      'WarningMsg')
+    return
+  endif
   var delay = get(g:, 'simpleclipboard_debounce_ms', 50)
   if exists('*timer_start') && type(delay) == v:t_number && delay > 0
-    if debounce_timer >= 0
-      timer_stop(debounce_timer)
-    endif
     pending_yank = text
     debounce_timer = timer_start(delay, FlushPendingYank)
   else
@@ -1085,6 +1178,19 @@ export def Status(): void
   var command_summary = empty(cached_copy_names) ? 'none' : join(cached_copy_names, ' -> ')
   var osc52_state = get(g:, 'simpleclipboard_disable_osc52', 0) ? 'disabled'
     : executable('base64') == 1 ? 'enabled' : 'unavailable (base64 missing)'
+  var register_policy = 'invalid (expected list)'
+  var configured_registers = get(g:, 'simpleclipboard_auto_copy_registers', [])
+  if type(configured_registers) == v:t_list
+    var names: list<string> = []
+    for value in configured_registers
+      add(names, type(value) == v:t_string ? value : '<invalid>')
+    endfor
+    register_policy = empty(names) ? 'all non-black-hole registers' : join(names, ',')
+  endif
+  var auto_limit = get(g:, 'simpleclipboard_auto_copy_max_bytes', 0)
+  var limit_policy = type(auto_limit) == v:t_number
+    ? (auto_limit <= 0 ? 'unlimited' : string(auto_limit) .. ' bytes')
+    : 'invalid (expected number)'
   var lines = [
     $'SimpleClipboard {VERSION}',
     $'environment: {environment_kind} (ssh={string(IsSSH())}, container={string(InContainer())})',
@@ -1094,6 +1200,7 @@ export def Status(): void
     $'daemon executable: {daemon_exe_path ==# "" ? "not found" : daemon_exe_path}',
     $'external commands: {command_summary}',
     $'OSC52: {osc52_state}',
+    $'automatic copy: registers={register_policy}; max={limit_policy}',
     $'last copy: method={last_method}, outcome={last_outcome}, bytes={last_copy_bytes}, at={last_copy_at ==# "" ? "never" : last_copy_at}',
     $'last error: {last_error ==# "" ? "none" : last_error}',
   ]

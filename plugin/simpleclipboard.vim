@@ -16,6 +16,11 @@ g:simpleclipboard_daemon_enabled = get(g:, 'simpleclipboard_daemon_enabled', 1)
 g:simpleclipboard_daemon_autostart = get(g:, 'simpleclipboard_daemon_autostart', 1)
 g:simpleclipboard_daemon_autostop = get(g:, 'simpleclipboard_daemon_autostop', 0)
 g:simpleclipboard_auto_copy = get(g:, 'simpleclipboard_auto_copy', 1)
+# Empty means every yank register except the black-hole register, preserving
+# the historical behaviour.  A non-empty list is an explicit allow-list.
+g:simpleclipboard_auto_copy_registers = get(g:, 'simpleclipboard_auto_copy_registers', [])
+# 0 keeps automatic yanks unlimited; manual commands are never size-limited.
+g:simpleclipboard_auto_copy_max_bytes = get(g:, 'simpleclipboard_auto_copy_max_bytes', 0)
 g:simpleclipboard_libpath = get(g:, 'simpleclipboard_libpath', '')
 g:simpleclipboard_daemon_path = get(g:, 'simpleclipboard_daemon_path', '')
 g:simpleclipboard_no_default_mappings = get(g:, 'simpleclipboard_no_default_mappings', 0)
@@ -35,8 +40,10 @@ g:simpleclipboard_debounce_ms = get(g:, 'simpleclipboard_debounce_ms', 50)
 g:simpleclipboard_container_host = get(g:, 'simpleclipboard_container_host', '')
 
 command! SimpleCopyYank simpleclipboard#CopyYankedToClipboard()
+command! -nargs=? -complete=customlist,simpleclipboard#CompleteRegister SimpleCopyRegister simpleclipboard#CopyRegisterToClipboard(<q-args>)
 command! SimpleCopyVisual simpleclipboard#CopyVisualSelection()
 command! -range=% SimpleCopyRange simpleclipboard#CopyRangeToClipboard(<line1>, <line2>)
+command! SimpleCopyClear simpleclipboard#ClearClipboard()
 command! SimpleCopyStart simpleclipboard#StartDaemon()
 command! SimpleCopyStop simpleclipboard#StopDaemon()
 command! SimpleCopyStatus simpleclipboard#Status()
@@ -47,6 +54,7 @@ command! SimpleCopyLog simpleclipboard#ShowLog()
 command! SimpleCopyRefresh simpleclipboard#Refresh()
 
 nnoremap <silent> <Plug>(SimpleCopyYank) <Cmd>SimpleCopyYank<CR>
+nnoremap <silent> <Plug>(SimpleCopyClear) <Cmd>SimpleCopyClear<CR>
 xnoremap <silent> <Plug>(SimpleCopyVisual) :<C-U>SimpleCopyVisual<CR>
 
 if !g:simpleclipboard_no_default_mappings
