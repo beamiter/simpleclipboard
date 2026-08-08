@@ -1,6 +1,6 @@
-.PHONY: check rust-check vim-check installer-check help-tags vim-core defcompile core-verify
+.PHONY: check rust-check vim-check installer-check shell-check help-tags vim-core defcompile core-verify
 
-check: core-verify rust-check vim-check installer-check help-tags defcompile vim-core
+check: core-verify rust-check vim-check installer-check shell-check help-tags defcompile vim-core
 
 rust-check:
 	cargo fmt --all -- --check
@@ -14,6 +14,16 @@ vim-check:
 installer-check:
 	bash -n install.sh test/install_args.sh test/tcp_e2e.sh
 	bash test/install_args.sh
+
+# shellcheck is not needed to work on the plugin, so its absence skips instead
+# of failing; CI installs it, which is what keeps this honest.  Having it here
+# rather than only in the workflow is what lets CI run `make check` alone.
+shell-check:
+	@if command -v shellcheck >/dev/null 2>&1; then \
+	  shellcheck install.sh test/install_args.sh test/tcp_e2e.sh; \
+	else \
+	  echo "shellcheck: not installed; skipped"; \
+	fi
 
 help-tags:
 	vim -Nu NONE -i NONE -n -es -c 'helptags doc' -c 'qa!'

@@ -24,6 +24,21 @@ and packaged Rust components.
 - 冒烟测试覆盖:置 0 后 yank 不落盘、toggle 之后落盘、非法的
   `:SimpleCopyPause` 参数不改变状态、暂停期间的 yank 不落盘且到期自动恢复。
 
+### CI 重新变绿
+
+- `.github/workflows/ci.yml` 的 MSRV 任务与 linux matrix 都钉在
+  `dtolnay/rust-toolchain@1.85.0`,而 `Cargo.toml` 声明 `rust-version = "1.88"`。
+  cargo 把"声明的 rust-version 高于当前工具链"当作硬错误,于是每次 push 在编译
+  第一行代码之前就红了。两处都改为 1.88.0,并新增一步从 `Cargo.toml` 读出
+  `rust-version` 与实际 `rustc --version` 比对,不一致直接失败并指出该改哪里,
+  这样两者不会再悄悄分叉。
+- CI 不再手抄 Makefile 目标的子集:Vim 9.0 基线任务改跑 `make vim-check`,
+  macOS 去掉与 `make check` 重复的 `make defcompile` / `make vim-core`,
+  workflow 里的 `bash -n` 与 `shellcheck` 分别由 `make installer-check` 与新的
+  `make shell-check` 覆盖(本机没装 shellcheck 时跳过),后者也进了 `make check`。
+  Makefile 现在是门禁的唯一事实来源。
+- 安装校验的版本号从 `Cargo.toml` 推导,不再硬编码 `0.2.0`。
+
 ### 安装器验证刚构建的二进制,帮助文档不再承诺没有的东西
 
 - `install.sh` 在把任何产物移进 `lib/` 之前先跑 `--self-test`(密钥派生、AEAD

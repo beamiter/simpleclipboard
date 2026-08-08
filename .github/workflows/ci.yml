@@ -13,14 +13,30 @@ jobs:
   # newly used language feature can quietly break it, because every other job
   # runs on stable.  This is the check that caught `ignore` pulling in
   # let-chains and two crates whose own sources had outgrown their declared
-  # MSRV.  Keep the toolchain here in step with rust-version in Cargo.toml.
+  # MSRV.  Keep the toolchain here in step with rust-version in Cargo.toml —
+  # and because those two drifted anyway (the pin sat at 1.85.0 while the crate
+  # declared 1.88, which cargo treats as a hard error, so every run failed
+  # before compiling a line), the step below asserts it instead of trusting it.
   msrv:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Pinned toolchain matches rust-version in Cargo.toml
+        run: |
+          # rust-version may be written as 1.88 while rustc reports 1.88.0, so
+          # compare the minor series rather than the literal strings.
+          declared="$(sed -n 's/^rust-version *= *"\([^"]*\)".*/\1/p' Cargo.toml)"
+          active="$(rustc --version | cut -d' ' -f2)"
+          if [ "$(echo "$declared" | cut -d. -f1,2)" != "$(echo "$active" | cut -d. -f1,2)" ]; then
+            echo "Cargo.toml declares rust-version $declared, this job runs $active." >&2
+            echo "Update dtolnay/rust-toolchain@VERSION here and the linux matrix." >&2
+            exit 1
+          fi
+          echo "Running $active for declared rust-version $declared."
       - name: Build on the declared minimum supported Rust
         run: cargo check --all-targets --locked
+
   vim90:
     name: Vim 9.0 baseline
     runs-on: ubuntu-24.04
@@ -30,7 +46,9 @@ jobs:
         with:
           version: v9.0.0000
       - run: vim --version | head -1 | grep 'Vi IMproved 9.0'
-      - run: vim -Nu NONE -i NONE -n -es -S test/vim_smoke.vim
+      # The Makefile owns which Vim suites run, so a new one is picked up here
+      # without editing this workflow.
+      - run: make vim-check
 
   linux:
     name: Linux / Rust ${{ matrix.rust }}
@@ -38,7 +56,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust: ["1.85.0", stable]
+        rust: ["1.88.0", stable]
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust
@@ -49,20 +67,33 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes vim shellcheck pkg-config libwayland-dev libxkbcommon-dev
+      - name: Pinned toolchain matches rust-version in Cargo.toml
+        if: matrix.rust != 'stable'
+        run: |
+          declared="$(sed -n 's/^rust-version *= *"\([^"]*\)".*/\1/p' Cargo.toml)"
+          active="$(rustc --version | cut -d' ' -f2)"
+          if [ "$(echo "$declared" | cut -d. -f1,2)" != "$(echo "$active" | cut -d. -f1,2)" ]; then
+            echo "Cargo.toml declares rust-version $declared, this matrix row runs $active." >&2
+            echo "Update the matrix entry and the msrv job pin together." >&2
+            exit 1
+          fi
+      # `make check` is the whole gate: fmt, clippy, cargo tests, the Vim smoke
+      # suite, installer checks, shellcheck, help tags, :defcompile and the
+      # simplecore bundle verification.  Listing a subset here is how targets
+      # end up never running in CI.
       - name: Full check suite
         if: matrix.rust == 'stable'
         run: make check
       - name: MSRV compile and tests
-        if: matrix.rust == '1.85.0'
+        if: matrix.rust != 'stable'
         run: |
           cargo test --locked --all-targets
           cargo build --locked --release
-      - run: bash -n install.sh
-      - run: shellcheck install.sh test/install_args.sh test/tcp_e2e.sh
       - name: Install host artifacts
         run: |
           ./install.sh
-          ./lib/simpleclipboard-daemon --version | grep 'simpleclipboard-daemon 0.2.0'
+          version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -1)"
+          ./lib/simpleclipboard-daemon --version | grep -F "simpleclipboard-daemon $version"
       - name: TCP protocol end-to-end
         if: matrix.rust == 'stable'
         run: bash test/tcp_e2e.sh
@@ -79,17 +110,10 @@ jobs:
       - name: Install Vim
         run: brew install vim shellcheck
       - run: make check
-      - run: bash -n install.sh
-      - run: shellcheck install.sh test/install_args.sh test/tcp_e2e.sh
       - name: Install host artifacts
         run: |
           ./install.sh
-          ./lib/simpleclipboard-daemon --version | grep 'simpleclipboard-daemon 0.2.0'
+          version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -1)"
+          ./lib/simpleclipboard-daemon --version | grep -F "simpleclipboard-daemon $version"
       - name: TCP protocol end-to-end
         run: bash test/tcp_e2e.sh
-
-      - name: Compile every Vim9 def (lazy compilation hides cold-branch errors)
-        run: make defcompile
-
-      - name: simplecore supervisor regression suite
-        run: make vim-core

@@ -566,9 +566,13 @@ The source layout is:
 - `doc/simpleclipboard.txt` — Vim help
 
 The GitHub Actions workflow runs a fixed Vim 9.0 baseline smoke test, the Rust
-MSRV compile/tests on Linux, and the full suite on current stable Rust for
-Linux and macOS, including a real host-artifact installation and
-encrypted/plaintext TCP handshake matrix.
+MSRV compile/tests on Linux, and `make check` on current stable Rust for Linux
+and macOS, including a real host-artifact installation and encrypted/plaintext
+TCP handshake matrix. `make check` is the gate in both places, so a target
+added to the Makefile runs in CI without editing the workflow. The MSRV jobs
+assert their pinned toolchain against `rust-version` in `Cargo.toml`: the two
+drifted once, and cargo treats a declared `rust-version` above the active
+toolchain as a hard error, which failed every run before compiling a line.
 
 ## Credits
 
