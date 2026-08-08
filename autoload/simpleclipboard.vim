@@ -62,6 +62,11 @@ const OPTION_SPECS: list<dict<any>> = [
   {name: 'simpleclipboard_osc52_limit', kind: 'number', default: 75000, positive: true,
     note: 'OSC52 is skipped until it is fixed'},
   {name: 'simpleclipboard_osc52_truncate', kind: 'bool', default: 0},
+  {name: 'simpleclipboard_osc52_terminator', kind: 'string', default: 'bel',
+    allowed: ['bel', 'st']},
+  {name: 'simpleclipboard_osc52_selection', kind: 'string', default: 'c',
+    allowed: ['c', 'p']},
+  {name: 'simpleclipboard_osc52_tty', kind: 'string', default: ''},
   {name: 'simpleclipboard_bind_addr', kind: 'string', default: '127.0.0.1'},
   {name: 'simpleclipboard_port', kind: 'number', default: 12343, positive: true},
   {name: 'simpleclipboard_tunnel_port', kind: 'number', default: 12345, positive: true},
@@ -117,6 +122,20 @@ export def StringOption(name: string): string
   var spec = OptionSpec(name)
   var raw = get(g:, name, spec.default)
   return type(raw) == v:t_string ? raw : spec.default
+enddef
+
+# Enumerated options are matched on the trimmed, lower-cased value: 'BEL' and
+# ' bel ' are the same intent, and rejecting them would only produce a warning
+# nobody learns anything from.
+def NormalizeEnum(value: string): string
+  return tolower(trim(value))
+enddef
+
+export def EnumOption(name: string): string
+  var spec = OptionSpec(name)
+  var raw = get(g:, name, spec.default)
+  var value = type(raw) == v:t_string ? NormalizeEnum(raw) : ''
+  return index(spec.allowed, value) >= 0 ? value : spec.default
 enddef
 
 def TypeName(value: any): string
@@ -184,8 +203,16 @@ def OptionProblem(spec: dict<any>, raw: any): string
     ? $'{TypeName(raw)} of {strlen(string(raw))} bytes'
     : $'{TypeName(raw)} ({DescribeValue(raw)})'
   if spec.kind ==# 'string'
-    return type(raw) == v:t_string
-      ? '' : $'{name} must be a string, but is {seen}; {Remedy(spec)}'
+    if type(raw) != v:t_string
+      return $'{name} must be a string, but is {seen}; {Remedy(spec)}'
+    endif
+    # An option with a closed set of values is worth naming the whole set for:
+    # the usual reason a value is wrong here is that the user guessed a synonym.
+    if has_key(spec, 'allowed') && index(spec.allowed, NormalizeEnum(raw)) < 0
+      var choices = join(map(copy(spec.allowed), (_, v) => $'"{v}"'), ', ')
+      return $'{name} must be one of {choices}, but is {seen}; {Remedy(spec)}'
+    endif
+    return ''
   endif
   if spec.kind ==# 'list'
     if type(raw) != v:t_list
@@ -1076,6 +1103,85 @@ def TruncateUtf8(text: string, byte_limit: number): string
   return strcharpart(text, 0, low)
 enddef
 
+const OSC52_TERMINATORS = {bel: "\x07", st: "\x1b\\"}
+
+# GNU screen truncates a DCS string past roughly this many bytes, and it does so
+# without a word: the clipboard ends up holding a prefix of what was copied,
+# which is the exact failure g:simpleclipboard_osc52_truncate exists to refuse.
+# One OSC sequence may be split across several DCS envelopes because screen
+# strips each envelope and forwards the bytes it contains unchanged, so the
+# outer terminal still sees one continuous OSC 52.
+const SCREEN_DCS_CHUNK_BYTES = 768
+
+def InScreen(): bool
+  # $STY is set by screen itself, but a user who runs screen through a wrapper,
+  # or reattaches from a different environment, can end up with only $TERM to
+  # go on - and getting this wrong means a silently truncated clipboard.
+  return $STY !=# '' || &term =~# '^screen' || $TERM =~# '^screen'
+enddef
+
+def ChunkBytes(text: string, size: number): list<string>
+  var chunks: list<string> = []
+  var offset = 0
+  while offset < strlen(text)
+    add(chunks, strpart(text, offset, size))
+    offset += size
+  endwhile
+  return chunks
+enddef
+
+# The terminal-visible OSC 52 write, wrapped for whatever multiplexer is in the
+# way.  base64 is ASCII, so byte-oriented splitting cannot cut a character.
+export def Osc52Sequence(encoded: string): string
+  var selection = EnumOption('simpleclipboard_osc52_selection')
+  var terminator = OSC52_TERMINATORS[EnumOption('simpleclipboard_osc52_terminator')]
+  var direct = $"\x1b]52;{selection};{encoded}{terminator}"
+  if $TMUX !=# ''
+    # tmux passthrough needs each ESC in the payload doubled; OSC 52 contains
+    # exactly one, at the start, so escaping the prefix is sufficient.
+    return "\x1bPtmux;\x1b" .. direct .. "\x1b\\"
+  endif
+  if InScreen()
+    return join(map(ChunkBytes(direct, SCREEN_DCS_CHUNK_BYTES),
+      (_, chunk) => "\x1bP" .. chunk .. "\x1b\\"), '')
+  endif
+  return direct
+enddef
+
+# Where the escape sequence goes.  echoraw() writes to the terminal Vim is
+# actually driving, which /dev/tty is not when Vim's controlling terminal is a
+# different one - under `sudo -u`, inside a `:terminal`, or in some tmux popup
+# configurations.  g:simpleclipboard_osc52_tty overrides both, for the case
+# where the user knows which device is the display and Vim cannot.
+def EmitOsc52(sequence: string): bool
+  var device = StringOption('simpleclipboard_osc52_tty')
+  if device !=# ''
+    return WriteOsc52ToDevice(sequence, expand(device))
+  endif
+  # &term is empty in batch mode (-es), where echoraw has no terminal to reach
+  # and would only write escape bytes into whatever is reading stdout.
+  if exists('*echoraw') && &term !=# ''
+    echoraw(sequence)
+    MarkSuccess('OSC52')
+    return true
+  endif
+  return WriteOsc52ToDevice(sequence, '/dev/tty')
+enddef
+
+def WriteOsc52ToDevice(sequence: string, device: string): bool
+  try
+    # 'b' keeps writefile() from appending the newline that would end up in the
+    # terminal - and, under a multiplexer, inside the DCS envelope.
+    writefile([sequence], device, 'b')
+    MarkSuccess('OSC52')
+    return true
+  catch
+    MarkFailure($'could not write OSC52 to {device}: ' .. v:exception)
+    Log(last_error, 'WarningMsg')
+    return false
+  endtry
+enddef
+
 def CopyViaOsc52(text: string): bool
   if BoolOption('simpleclipboard_disable_osc52')
     return false
@@ -1114,19 +1220,7 @@ def CopyViaOsc52(text: string): bool
     return false
   endif
 
-  var direct = "\x1b]52;c;" .. encoded .. "\x07"
-  var sequence = exists('$TMUX')
-    ? "\x1bPtmux;\x1b" .. direct .. "\x1b\\"
-    : exists('$STY') ? "\x1bP" .. direct .. "\x1b\\" : direct
-  try
-    writefile([sequence], '/dev/tty', 'b')
-    MarkSuccess('OSC52')
-    return true
-  catch
-    MarkFailure('could not write OSC52 to /dev/tty: ' .. v:exception)
-    Log(last_error, 'WarningMsg')
-    return false
-  endtry
+  return EmitOsc52(Osc52Sequence(encoded))
 enddef
 
 # -----------------------------------------------------------------------------

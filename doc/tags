@@ -42,7 +42,10 @@ g:simpleclipboard_disable_osc52	simpleclipboard.txt	/*g:simpleclipboard_disable_
 g:simpleclipboard_libpath	simpleclipboard.txt	/*g:simpleclipboard_libpath*
 g:simpleclipboard_no_default_mappings	simpleclipboard.txt	/*g:simpleclipboard_no_default_mappings*
 g:simpleclipboard_osc52_limit	simpleclipboard.txt	/*g:simpleclipboard_osc52_limit*
+g:simpleclipboard_osc52_selection	simpleclipboard.txt	/*g:simpleclipboard_osc52_selection*
+g:simpleclipboard_osc52_terminator	simpleclipboard.txt	/*g:simpleclipboard_osc52_terminator*
 g:simpleclipboard_osc52_truncate	simpleclipboard.txt	/*g:simpleclipboard_osc52_truncate*
+g:simpleclipboard_osc52_tty	simpleclipboard.txt	/*g:simpleclipboard_osc52_tty*
 g:simpleclipboard_port	simpleclipboard.txt	/*g:simpleclipboard_port*
 g:simpleclipboard_token	simpleclipboard.txt	/*g:simpleclipboard_token*
 g:simpleclipboard_tunnel_port	simpleclipboard.txt	/*g:simpleclipboard_tunnel_port*

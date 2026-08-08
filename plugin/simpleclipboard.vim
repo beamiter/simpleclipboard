@@ -30,6 +30,14 @@ g:simpleclipboard_debug_file = get(g:, 'simpleclipboard_debug_file', '')
 g:simpleclipboard_disable_osc52 = get(g:, 'simpleclipboard_disable_osc52', 0)
 g:simpleclipboard_osc52_limit = get(g:, 'simpleclipboard_osc52_limit', 75000)
 g:simpleclipboard_osc52_truncate = get(g:, 'simpleclipboard_osc52_truncate', 0)
+# 'bel' is what almost every terminal accepts; 'st' (ESC \) is for the ones that
+# want the standard string terminator instead.
+g:simpleclipboard_osc52_terminator = get(g:, 'simpleclipboard_osc52_terminator', 'bel')
+# 'c' is the CLIPBOARD selection, 'p' the X11/Wayland PRIMARY selection.
+g:simpleclipboard_osc52_selection = get(g:, 'simpleclipboard_osc52_selection', 'c')
+# Empty means echoraw() into the terminal Vim is driving, falling back to
+# /dev/tty; set it when only you know which device is the real display.
+g:simpleclipboard_osc52_tty = get(g:, 'simpleclipboard_osc52_tty', '')
 g:simpleclipboard_bind_addr = get(g:, 'simpleclipboard_bind_addr', '127.0.0.1')
 g:simpleclipboard_port = get(g:, 'simpleclipboard_port', 12343)
 g:simpleclipboard_tunnel_port = get(g:, 'simpleclipboard_tunnel_port', 12345)

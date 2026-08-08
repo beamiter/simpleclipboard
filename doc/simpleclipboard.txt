@@ -447,7 +447,35 @@ g:simpleclipboard_osc52_truncate
 	默认：0
 	默认在超限时拒绝 OSC52，避免悄悄复制不完整内容。OSC52 已是 daemon
 	和命令候选之后的最终回退，因此拒绝会让本次复制明确失败。置 1 才允许
-	截断到 osc52_limit。
+	截断到 osc52_limit。截断按字符边界进行，不会切开一个码点。
+
+					*g:simpleclipboard_osc52_terminator*
+g:simpleclipboard_osc52_terminator
+	默认：'bel'
+	OSC 52 序列的结束符：'bel' 是 BEL（0x07），'st' 是标准字符串结束符
+	ESC \。绝大多数终端接受 BEL；少数只认 ST。取值大小写不敏感，
+	写错时报告一次并退回 'bel'。
+
+					*g:simpleclipboard_osc52_selection*
+g:simpleclipboard_osc52_selection
+	默认：'c'
+	OSC 52 写哪个选区：'c' 是 CLIPBOARD，'p' 是 X11/Wayland 的 PRIMARY
+	（鼠标中键粘贴）。只影响 OSC52 这条路径；daemon 与外部命令后端
+	仍然只写 CLIPBOARD。取值大小写不敏感，写错时报告一次并退回 'c'。
+
+					*g:simpleclipboard_osc52_tty*
+g:simpleclipboard_osc52_tty
+	默认：''
+	OSC52 转义序列写到哪里。留空时优先用 |echoraw()| 写进 Vim 正在驱动
+	的终端，没有终端可写（例如 -es 批处理）时退回 /dev/tty。
+	`sudo -u`、`:terminal` 里的 Vim、某些 tmux popup 配置下，
+	/dev/tty 并不是显示用的那个终端；这时把本选项设成正确的设备路径。
+
+	多路复用器会自动处理：$TMUX 非空时套 tmux 透传序列；screen 下
+	（$STY 非空，或 'term'/$TERM 以 screen 开头）套 DCS 封装，并把超过
+	768 字节的序列拆成多个 DCS 分片——screen 会不声不响地截断过长的 DCS
+	字符串，那正是 |g:simpleclipboard_osc52_truncate| 要拒绝的那种
+	"悄悄复制了一半"。
 
 日志 ~
 

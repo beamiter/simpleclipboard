@@ -225,12 +225,24 @@ any other option run `:SimpleCopyRefresh`.
 | `g:simpleclipboard_copy_command` | `[]` | Custom copy command as `list<string>` argv, for example `['wl-copy']`. No shell is used; the process must stay attached until its clipboard write is complete. |
 | `g:simpleclipboard_disable_osc52` | `0` | Disable the OSC52 fallback. |
 | `g:simpleclipboard_osc52_limit` | `75000` | Maximum UTF-8 payload bytes accepted by the OSC52 path. Must be a positive number; `0`, a negative number or a value that cannot be read as one blocks OSC52 entirely rather than falling back to the default. |
-| `g:simpleclipboard_osc52_truncate` | `0` | When `0`, reject oversized OSC52 payloads without data loss; when `1`, truncate to the configured limit. |
+| `g:simpleclipboard_osc52_truncate` | `0` | When `0`, reject oversized OSC52 payloads without data loss; when `1`, truncate to the configured limit on a character boundary. |
+| `g:simpleclipboard_osc52_terminator` | `'bel'` | Terminator for the OSC 52 sequence: `'bel'` (BEL, `0x07`) or `'st'` (the standard string terminator, `ESC \`). |
+| `g:simpleclipboard_osc52_selection` | `'c'` | Which selection OSC 52 writes: `'c'` for CLIPBOARD or `'p'` for the X11/Wayland PRIMARY selection. This affects the OSC52 path only; the daemon and external-command backends still write CLIPBOARD. |
+| `g:simpleclipboard_osc52_tty` | `''` | Where the escape sequence is written. Empty prefers `echoraw()` into the terminal Vim is driving and falls back to `/dev/tty`; set it to a device path when only you know which terminal is the display. |
 
 OSC52 is the final fallback after the daemon and command candidates. If it
 rejects an oversized value, the copy operation therefore fails visibly.
 Truncation is opt-in because a silent partial clipboard is usually worse than
 a clear failure.
+
+Multiplexers are handled automatically. With `$TMUX` set, the sequence is
+wrapped for tmux passthrough. Under screen — detected by `$STY`, `'term'`, or
+`$TERM` beginning with `screen` — it is wrapped in a DCS envelope, and a
+sequence longer than 768 bytes is split across several envelopes: screen
+truncates an over-long DCS string without a word, which is exactly the silent
+half-copy `g:simpleclipboard_osc52_truncate` exists to refuse. Enumerated
+values are matched case-insensitively, and an unusable one is reported once and
+replaced by the documented default.
 
 ### Diagnostics
 

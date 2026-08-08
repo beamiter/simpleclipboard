@@ -8,6 +8,26 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-05
 
+### OSC52 有了第一批测试,顺带修好了它一直没人发现的三个洞
+
+- OSC52 是裸 SSH（没有隧道）下唯一能用的通道,却是唯一一条完全没有测试的
+  通道:冒烟测试全程 `g:simpleclipboard_disable_osc52 = 1`,然后断言它是
+  disabled。现在改为逐字节断言真实发出的序列。
+- screen 的 DCS 封装此前只看 $STY。用 wrapper 启动 screen、或从别的环境
+  重新 attach 的人只剩 $TERM 可依据,漏判的后果是剪贴板被悄悄截断而不是
+  报错。现在 $STY、`'term'` 与 $TERM 三者任一以 screen 开头都会封装。
+- screen 会不声不响地截断超过约 768 字节的 DCS 字符串。现在超长序列被拆成
+  多个 DCS 分片:screen 剥掉每层封装后原样转发,外层终端看到的仍是一条完整
+  的 OSC 52。测试会把分片重新拼回去,逐字节对比原序列。
+- 新增 `g:simpleclipboard_osc52_terminator`（`'bel'` / `'st'`）、
+  `g:simpleclipboard_osc52_selection`（`'c'` / `'p'`,PRIMARY 选区,仅
+  OSC52 这条路径）与 `g:simpleclipboard_osc52_tty`。默认值就是原来的行为。
+- 序列现在优先经 |echoraw()| 写进 Vim 真正驱动的终端;`sudo -u`、
+  `:terminal` 里的 Vim、某些 tmux popup 配置下 /dev/tty 并不是那个终端。
+  没有终端可写时（例如 -es）仍退回 /dev/tty。
+- 枚举型选项按去空格、转小写后匹配,写错时报告一次并退回文档默认值,
+  报错文案会把整套合法取值列出来。
+
 ### `:SimpleCopyStatus` 不再被一个类型写错的 token 打断
 
 - `g:simpleclipboard_token` 写成列表时,`:SimpleCopyStatus` 在拼状态行时用

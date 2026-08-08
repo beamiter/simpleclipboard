@@ -721,6 +721,140 @@ bwipe!
 
 call delete(s:capture)
 bwipe!
+
+" ---------------------------------------------------------------------------
+" OSC52 is the only backend that works over a bare SSH session with no tunnel,
+" and it was the only backend with no test at all: the suite disabled it for
+" the whole run and then asserted it was disabled. Assert the bytes instead.
+" ---------------------------------------------------------------------------
+let s:osc52_tty = s:tmp_prefix .. '-osc52-tty'
+let s:old_tmux = $TMUX
+let s:old_sty = $STY
+let s:old_term_env = $TERM
+let $TMUX = ''
+let $STY = ''
+let $TERM = 'xterm-256color'
+let g:simpleclipboard_disable_osc52 = 0
+
+" A bare terminal gets one OSC 52 with the BEL terminator and the CLIPBOARD
+" selection - the historical output, now pinned byte for byte.
+call assert_equal("\x1b]52;c;aGVsbG8=\x07", simpleclipboard#Osc52Sequence('aGVsbG8='))
+
+" Terminals that want the standard string terminator can ask for it.
+let g:simpleclipboard_osc52_terminator = 'st'
+call assert_equal("\x1b]52;c;aGVsbG8=\x1b\\", simpleclipboard#Osc52Sequence('aGVsbG8='))
+let g:simpleclipboard_osc52_terminator = 'BEL'
+call assert_equal("\x1b]52;c;aGVsbG8=\x07", simpleclipboard#Osc52Sequence('aGVsbG8='),
+      \ 'an enumerated option is matched case-insensitively')
+
+" PRIMARY is a separate selection; OSC 52 addresses it with 'p'.
+let g:simpleclipboard_osc52_selection = 'p'
+call assert_equal("\x1b]52;p;aGVsbG8=\x07", simpleclipboard#Osc52Sequence('aGVsbG8='))
+
+" An unusable value for either falls back to the documented default and says so
+" once, rather than emitting an escape sequence nobody asked for.
+let g:simpleclipboard_osc52_selection = 'secondary'
+let g:simpleclipboard_osc52_terminator = 'st'
+let s:osc52_enum_problems = simpleclipboard#ValidateOptions()
+call assert_equal(['g:simpleclipboard_osc52_selection must be one of "c", "p", '
+      \ .. 'but is a string ("secondary"); using the default "c"'], s:osc52_enum_problems)
+call assert_equal("\x1b]52;c;aGVsbG8=\x1b\\", simpleclipboard#Osc52Sequence('aGVsbG8='))
+let g:simpleclipboard_osc52_selection = 'c'
+let g:simpleclipboard_osc52_terminator = 'bel'
+
+" tmux passthrough wraps the whole sequence and escapes its leading ESC.
+let $TMUX = '/tmp/tmux-1000/default,1,0'
+call assert_equal("\x1bPtmux;\x1b\x1b]52;c;aGVsbG8=\x07\x1b\\",
+      \ simpleclipboard#Osc52Sequence('aGVsbG8='))
+let $TMUX = ''
+
+" screen needs a DCS envelope, and it is detected by $TERM as well as by $STY:
+" a user who reattaches from a different environment has only $TERM left, and
+" getting it wrong means a silently truncated clipboard rather than an error.
+let $STY = '12345.pts-0.host'
+call assert_equal("\x1bP\x1b]52;c;aGVsbG8=\x07\x1b\\", simpleclipboard#Osc52Sequence('aGVsbG8='))
+let $STY = ''
+call assert_equal("\x1b]52;c;aGVsbG8=\x07", simpleclipboard#Osc52Sequence('aGVsbG8='))
+let $TERM = 'screen.xterm-256color'
+call assert_equal("\x1bP\x1b]52;c;aGVsbG8=\x07\x1b\\", simpleclipboard#Osc52Sequence('aGVsbG8='))
+
+" screen truncates a DCS string past ~768 bytes without a word, so a long
+" payload is split across several envelopes. Stripping the envelopes has to
+" reproduce the single OSC 52 exactly - that is what makes the split safe.
+let s:long_b64 = repeat('QUJD', 700)
+let s:screen_sequence = simpleclipboard#Osc52Sequence(s:long_b64)
+let s:envelopes = split(s:screen_sequence, "\x1bP", 1)[1 : ]
+call assert_equal(4, len(s:envelopes), 'a 2802-byte sequence needs four DCS envelopes')
+let s:rebuilt = ''
+for s:envelope in s:envelopes
+  call assert_equal("\x1b\\", strpart(s:envelope, strlen(s:envelope) - 2),
+        \ 'every DCS envelope must be terminated')
+  let s:inner = strpart(s:envelope, 0, strlen(s:envelope) - 2)
+  call assert_true(strlen(s:inner) <= 768, 'DCS chunk exceeds the screen limit')
+  let s:rebuilt ..= s:inner
+endfor
+call assert_equal("\x1b]52;c;" .. s:long_b64 .. "\x07", s:rebuilt)
+let $TERM = 'xterm-256color'
+
+" End to end: with no copy command reachable, a copy really does emit those
+" bytes, and g:simpleclipboard_osc52_tty decides where they land.
+if executable('base64')
+  " base64 has to stay reachable while $PATH is emptied of copy commands.
+  let s:fake_base64 = s:fake_bin .. '/base64'
+  call writefile(['#!/bin/sh', 'exec ' .. shellescape(exepath('base64')) .. ' "$@"'],
+        \ s:fake_base64)
+  call assert_equal(1, setfperm(s:fake_base64, 'rwx------'))
+  let g:simpleclipboard_copy_command = []
+  let g:simpleclipboard_osc52_tty = s:osc52_tty
+  let $PATH = s:fake_bin
+  call simpleclipboard#Refresh()
+  call delete(s:osc52_tty)
+  call assert_true(simpleclipboard#CopyToSystemClipboard('hello'))
+  call assert_equal("\x1b]52;c;aGVsbG8=\x07", join(readfile(s:osc52_tty, 'b'), "\n"))
+  messages clear
+  call simpleclipboard#Status()
+  call assert_match('last copy: method=OSC52, outcome=success', execute('messages'))
+
+  " Oversized payloads are refused rather than silently truncated, and nothing
+  " is written when they are refused.
+  let g:simpleclipboard_osc52_limit = 4
+  call delete(s:osc52_tty)
+  call assert_false(simpleclipboard#CopyToSystemClipboard('hello'))
+  call assert_false(filereadable(s:osc52_tty), 'a refused OSC52 copy writes nothing')
+  messages clear
+  call simpleclipboard#Status()
+  call assert_match('last error: OSC52 refused 5 bytes (limit 4)', execute('messages'))
+
+  " Opting in to truncation must still cut on a character boundary: 'α' is two
+  " bytes, so a 3-byte budget keeps one character and not one and a half.
+  let g:simpleclipboard_osc52_truncate = 1
+  let g:simpleclipboard_osc52_limit = 3
+  call delete(s:osc52_tty)
+  call assert_true(simpleclipboard#CopyToSystemClipboard('αβ'))
+  call assert_equal("\x1b]52;c;zrE=\x07", join(readfile(s:osc52_tty, 'b'), "\n"))
+  let g:simpleclipboard_osc52_truncate = 0
+  let g:simpleclipboard_osc52_limit = 75000
+
+  " A device that cannot be written fails visibly instead of reporting success.
+  let g:simpleclipboard_osc52_tty = s:fake_bin .. '/missing-dir/tty'
+  call assert_false(simpleclipboard#CopyToSystemClipboard('hello'))
+  messages clear
+  call simpleclipboard#Status()
+  call assert_match('last error: could not write OSC52 to .*missing-dir/tty', execute('messages'))
+
+  let $PATH = s:old_path
+  call delete(s:fake_base64)
+  call delete(s:osc52_tty)
+endif
+
+let g:simpleclipboard_osc52_tty = ''
+let g:simpleclipboard_disable_osc52 = 1
+let g:simpleclipboard_copy_command = ['tee', s:capture]
+let $TMUX = s:old_tmux
+let $STY = s:old_sty
+let $TERM = s:old_term_env
+call simpleclipboard#Refresh()
+
 silent help simpleclipboard
 call assert_equal('help', &buftype)
 bwipe!
