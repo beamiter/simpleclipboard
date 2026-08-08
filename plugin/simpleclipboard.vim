@@ -93,9 +93,15 @@ endif
 # g:simpleclipboard_auto_copy takes effect the moment it changes.  Latching it
 # here would mean a user who disables automatic copy right before yanking a
 # credential still has that credential pushed to the system clipboard.
+#
+# The handler reads v:event itself instead of being handed deepcopy(v:event):
+# the argument is evaluated before the handler can look at the flag, so copying
+# it here charged users who had switched automatic copy off for a full copy of
+# every yank's regcontents.  The event is only ever used synchronously, inside
+# this autocommand, so there is nothing to copy for.
 augroup SimpleClipboardYank
   autocmd!
-  autocmd TextYankPost * call simpleclipboard#CopyYankedToClipboardEvent(deepcopy(v:event))
+  autocmd TextYankPost * call simpleclipboard#CopyYankedToClipboardEvent()
 augroup END
 
 if simpleclipboard#BoolOption('simpleclipboard_daemon_enabled')

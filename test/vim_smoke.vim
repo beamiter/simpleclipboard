@@ -182,6 +182,14 @@ let g:simpleclipboard_auto_copy_max_bytes = 0
 call assert_equal(2, exists(':SimpleCopyToggle'))
 call assert_equal(2, exists(':SimpleCopyPause'))
 call assert_match('SimpleCopyToggle', maparg('<Plug>(SimpleCopyToggle)', 'n'))
+
+" The handler reads v:event itself. Handing it deepcopy(v:event) evaluated the
+" copy before the handler could look at the flag, so every yank paid for a full
+" copy of its own regcontents even with automatic copy switched off - a cost
+" that used to be exactly zero, because the autocommand was not installed then.
+call assert_match('call simpleclipboard#CopyYankedToClipboardEvent()',
+      \ execute('autocmd SimpleClipboardYank TextYankPost'))
+
 call delete(s:capture)
 let g:simpleclipboard_auto_copy = 0
 normal! gg0yy

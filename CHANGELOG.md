@@ -8,6 +8,18 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-05
 
+### 关掉自动复制之后,yank 不再为它复制一遍 regcontents
+
+- 让 `g:simpleclipboard_auto_copy` 运行期生效的代价是 `TextYankPost` autocmd
+  无条件挂上,这没问题;但 autocmd 传的是 `deepcopy(v:event)`,而参数在处理函数
+  有机会看一眼开关之前就求值了。于是把自动复制关掉的用户,每次 yank 仍要为
+  整个 regcontents 复制一份。
+- 处理函数改成自己读 `v:event`(事件只在 autocmd 内同步使用,本来就没有复制的
+  理由)。本机实测:300000 行缓冲区 `ggVGy`,关掉自动复制时 0.037s → 0.019s;
+  完全不加载插件是 0.008s,剩下的差额是 Vim 构造 `v:event` 本身,只要挂着
+  `TextYankPost` autocmd 就躲不掉。
+- 显式传事件的调用方(测试,以及任何重放 yank 的代码)不受影响。
+
 ### 文档里的示例输出改成代码真的会打印的那一行
 
 - README.md 与 `doc/simpleclipboard.txt` 引用的选项校验示例写的是

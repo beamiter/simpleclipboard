@@ -1562,12 +1562,20 @@ export def CopyYankedToClipboardEvent(event: any = v:null)
     CancelPendingYank()
     return
   endif
+  # Omitting the argument means "read v:event", which is what the TextYankPost
+  # autocommand does: reading it here rather than deep-copying it into the
+  # autocommand argument keeps the cost of a yank at one dictionary lookup for
+  # users who have automatic copy switched off, instead of a full copy of every
+  # yank's regcontents made before the flag was even consulted.  Callers that
+  # pass an event explicitly - the tests, and anything replaying a yank - are
+  # unaffected.
+  var yanked: any = type(event) == v:t_none ? v:event : event
   # A newer yank supersedes a pending older one even when the newer register is
   # excluded or its payload is over the automatic-copy limit.
-  if type(event) == v:t_dict && get(event, 'operator', '') ==# 'y'
+  if type(yanked) == v:t_dict && get(yanked, 'operator', '') ==# 'y'
     CancelPendingYank()
   endif
-  var text = TextFromYankEvent(event)
+  var text = TextFromYankEvent(yanked)
   if text ==# ''
     return
   endif
