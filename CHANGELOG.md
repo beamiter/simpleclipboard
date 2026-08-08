@@ -24,6 +24,24 @@ and packaged Rust components.
 - 冒烟测试覆盖:置 0 后 yank 不落盘、toggle 之后落盘、非法的
   `:SimpleCopyPause` 参数不改变状态、暂停期间的 yank 不落盘且到期自动恢复。
 
+### 选项写错不再炸掉复制
+
+- 14 个 `g:` 选项此前只有 4 个做类型检查。`let g:simpleclipboard_port = '12343'`
+  这种常见写法会让 `DetectEnvironment()` 抛 `E1013: Argument 2: type mismatch`,
+  而它位于每次 yank、每次显式复制以及 `:SimpleCopyStatus` 的必经路径上——
+  唯一能解释故障的命令,以同样的方式失败。
+- 新增 `simpleclipboard#ValidateOptions()`:按声明顺序逐条给出期望类型、
+  实际取值与随之采取的行为。插件加载、`:SimpleCopyRefresh` 与
+  `:SimpleCopyStatus`(新增 `configuration:` 行)都会报告。
+- 所有消费点改为在使用处强制类型:数字字符串按十进制解释,其余无法解释的
+  取值退回文档中的默认值,因此坏选项的代价是一条警告而不是整条流水线。
+  `g:simpleclipboard_auto_copy_registers` 与
+  `g:simpleclipboard_auto_copy_max_bytes` 例外——它们决定什么可以离开 Vim,
+  写错时仍然跳过自动复制,而不是猜一个更宽松的默认值。
+- `g:simpleclipboard_token` 只按类型和长度报告,不回显取值。
+- 冒烟测试覆盖:带引号的端口仍然能通过回退链完成复制并给出一条可执行的
+  警告、非正数的 OSC52 上限退回默认值、错误类型的 token 不被回显。
+
 ### 可组合文件引用
 
 - 新增 `:SimpleCopyFormat[!] {template}` 与 `<Plug>(SimpleCopyFormat)`,可用

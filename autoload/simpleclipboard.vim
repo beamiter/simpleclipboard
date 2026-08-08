@@ -21,6 +21,167 @@ def TokenValidationError(token: any): string
 enddef
 
 # -----------------------------------------------------------------------------
+# Options
+# -----------------------------------------------------------------------------
+
+# Every documented option, the type its consumers may assume, and the value
+# used when the configured one cannot be honoured.
+#
+# Vim9 checks argument types at run time, so an option read straight out of g:
+# and handed to a typed function is a stack trace waiting for a vimrc typo: a
+# quoted port (`let g:simpleclipboard_port = '12343'`, a common habit) used to
+# throw E1013 out of DetectEnvironment(), and that function is on the path of
+# every yank, every explicit copy and :SimpleCopyStatus itself — so the one
+# command that could explain the failure failed the same way.  Nothing here
+# throws: ValidateOptions() reports each problem once, the accessors below
+# coerce at the point of use, and a bad option costs a warning instead of the
+# whole clipboard pipeline.
+#
+# `note` replaces the default "using the default X" remedy for the two options
+# whose consumers deliberately fail closed rather than fall back: guessing
+# "copy everything" for a malformed allow-list or byte cap would push exactly
+# the payload the user was trying to exclude.
+const OPTION_SPECS: list<dict<any>> = [
+  {name: 'simpleclipboard_daemon_enabled', kind: 'bool', default: 1},
+  {name: 'simpleclipboard_daemon_autostart', kind: 'bool', default: 1},
+  {name: 'simpleclipboard_daemon_autostop', kind: 'bool', default: 0},
+  {name: 'simpleclipboard_auto_copy', kind: 'bool', default: 1},
+  {name: 'simpleclipboard_auto_copy_registers', kind: 'list', default: [],
+    note: 'automatic copy is skipped until it is fixed'},
+  {name: 'simpleclipboard_auto_copy_max_bytes', kind: 'number', default: 0,
+    note: 'automatic copy is skipped until it is fixed'},
+  {name: 'simpleclipboard_libpath', kind: 'string', default: ''},
+  {name: 'simpleclipboard_daemon_path', kind: 'string', default: ''},
+  {name: 'simpleclipboard_no_default_mappings', kind: 'bool', default: 0},
+  {name: 'simpleclipboard_debug', kind: 'bool', default: 0},
+  {name: 'simpleclipboard_debug_to_file', kind: 'bool', default: 0},
+  {name: 'simpleclipboard_debug_file', kind: 'string', default: ''},
+  {name: 'simpleclipboard_disable_osc52', kind: 'bool', default: 0},
+  {name: 'simpleclipboard_osc52_limit', kind: 'number', default: 75000, positive: true},
+  {name: 'simpleclipboard_osc52_truncate', kind: 'bool', default: 0},
+  {name: 'simpleclipboard_bind_addr', kind: 'string', default: '127.0.0.1'},
+  {name: 'simpleclipboard_port', kind: 'number', default: 12343, positive: true},
+  {name: 'simpleclipboard_tunnel_port', kind: 'number', default: 12345, positive: true},
+  # The token is the one option whose value must never be echoed back.
+  {name: 'simpleclipboard_token', kind: 'string', default: '', secret: true},
+  {name: 'simpleclipboard_address', kind: 'string', default: ''},
+  {name: 'simpleclipboard_copy_command', kind: 'list', default: [],
+    note: 'the configured command is ignored'},
+  {name: 'simpleclipboard_debounce_ms', kind: 'number', default: 50},
+  {name: 'simpleclipboard_container_host', kind: 'string', default: ''},
+]
+
+var option_specs_by_name: dict<dict<any>> = {}
+
+def OptionSpec(name: string): dict<any>
+  if empty(option_specs_by_name)
+    for spec in OPTION_SPECS
+      option_specs_by_name[spec.name] = spec
+    endfor
+  endif
+  return option_specs_by_name[name]
+enddef
+
+const NUMERIC_STRING = '^\s*-\?\d\+\s*$'
+
+def EffectiveNumber(spec: dict<any>, raw: any): number
+  var fallback: number = spec.default
+  var positive = get(spec, 'positive', false)
+  var value = fallback
+  if type(raw) == v:t_number
+    value = raw
+  elseif type(raw) == v:t_bool
+    value = raw == v:true ? 1 : 0
+  elseif type(raw) == v:t_string && raw =~# NUMERIC_STRING
+    # A quoted number is a vimrc habit, not a different intent.
+    value = str2nr(trim(raw), 10)
+  else
+    return fallback
+  endif
+  return positive && value <= 0 ? fallback : value
+enddef
+
+export def NumberOption(name: string): number
+  var spec = OptionSpec(name)
+  return EffectiveNumber(spec, get(g:, name, spec.default))
+enddef
+
+export def BoolOption(name: string): bool
+  return NumberOption(name) != 0
+enddef
+
+export def StringOption(name: string): string
+  var spec = OptionSpec(name)
+  var raw = get(g:, name, spec.default)
+  return type(raw) == v:t_string ? raw : spec.default
+enddef
+
+def TypeName(value: any): string
+  var names = {
+    [v:t_number]: 'a number', [v:t_string]: 'a string', [v:t_func]: 'a funcref',
+    [v:t_list]: 'a list', [v:t_dict]: 'a dictionary', [v:t_float]: 'a float',
+    [v:t_bool]: 'a boolean', [v:t_none]: 'null', [v:t_job]: 'a job',
+    [v:t_channel]: 'a channel', [v:t_blob]: 'a blob',
+  }
+  return get(names, type(value), 'an unsupported value')
+enddef
+
+def DescribeValue(value: any): string
+  var text = type(value) == v:t_string ? $'"{value}"' : string(value)
+  return strchars(text) > 48 ? strcharpart(text, 0, 45) .. '...' : text
+enddef
+
+def Remedy(spec: dict<any>): string
+  return get(spec, 'note', $'using the default {DescribeValue(spec.default)}')
+enddef
+
+def OptionProblem(spec: dict<any>, raw: any): string
+  var name = 'g:' .. spec.name
+  # A wrong token still must not be printed; its length is enough to identify.
+  var seen = get(spec, 'secret', false)
+    ? $'{TypeName(raw)} of {strlen(string(raw))} bytes'
+    : $'{TypeName(raw)} ({DescribeValue(raw)})'
+  if spec.kind ==# 'string'
+    return type(raw) == v:t_string
+      ? '' : $'{name} must be a string, but is {seen}; {Remedy(spec)}'
+  endif
+  if spec.kind ==# 'list'
+    return type(raw) == v:t_list
+      ? '' : $'{name} must be a list, but is {seen}; {Remedy(spec)}'
+  endif
+  var positive = get(spec, 'positive', false)
+  var wanted = positive ? 'a positive number' : 'a number'
+  if type(raw) == v:t_number || (spec.kind ==# 'bool' && type(raw) == v:t_bool)
+    if !positive || (type(raw) == v:t_number && raw > 0)
+      return ''
+    endif
+    return $'{name} must be {wanted}, but is {seen}; {Remedy(spec)}'
+  endif
+  var effective = EffectiveNumber(spec, raw)
+  if type(raw) == v:t_string && raw =~# NUMERIC_STRING
+      && (!positive || effective > 0)
+    return $'{name} must be {wanted}, but is {seen}; using {effective}'
+  endif
+  return $'{name} must be {wanted}, but is {seen}; {Remedy(spec)}'
+enddef
+
+# One actionable line per misconfigured option, in declaration order, naming
+# the expected type, the value actually seen, and what happens instead.
+export def ValidateOptions(): list<string>
+  var problems: list<string> = []
+  for spec in OPTION_SPECS
+    if !has_key(g:, spec.name)
+      continue
+    endif
+    var problem = OptionProblem(spec, g:[spec.name])
+    if problem !=# ''
+      add(problems, problem)
+    endif
+  endfor
+  return problems
+enddef
+
+# -----------------------------------------------------------------------------
 # Messages and paths
 # -----------------------------------------------------------------------------
 
@@ -33,14 +194,13 @@ def StateDir(): string
 enddef
 
 def UsesDefaultDebugFile(): bool
-  var configured = get(g:, 'simpleclipboard_debug_file', '')
-  return type(configured) != v:t_string || configured ==# ''
+  return StringOption('simpleclipboard_debug_file') ==# ''
 enddef
 
 def DebugFile(): string
   return UsesDefaultDebugFile()
     ? StateDir() .. '/simpleclipboard.log'
-    : expand(get(g:, 'simpleclipboard_debug_file', ''))
+    : expand(StringOption('simpleclipboard_debug_file'))
 enddef
 
 def PrepareDefaultDebugFile(path: string): void
@@ -64,10 +224,10 @@ def PrepareDefaultDebugFile(path: string): void
 enddef
 
 def Log(msg: string, hl: string = 'None')
-  if get(g:, 'simpleclipboard_debug', 0) == 0
+  if !BoolOption('simpleclipboard_debug')
     return
   endif
-  if get(g:, 'simpleclipboard_debug_to_file', 0)
+  if BoolOption('simpleclipboard_debug_to_file')
     try
       var path = DebugFile()
       PrepareDefaultDebugFile(path)
@@ -132,8 +292,8 @@ def TryLoadLib(): void
   if client_lib !=# ''
     return
   endif
-  var override = get(g:, 'simpleclipboard_libpath', '')
-  if type(override) == v:t_string && override !=# '' && filereadable(override)
+  var override = StringOption('simpleclipboard_libpath')
+  if override !=# '' && filereadable(override)
     client_lib = override
   else
     client_lib = FindInRuntimepath('lib/' .. LibName())
@@ -149,8 +309,8 @@ def FindDaemonExe(): void
   if daemon_exe_path !=# ''
     return
   endif
-  var override = get(g:, 'simpleclipboard_daemon_path', '')
-  if type(override) == v:t_string && override !=# '' && executable(override) == 1
+  var override = StringOption('simpleclipboard_daemon_path')
+  if override !=# '' && executable(override) == 1
     daemon_exe_path = override
     return
   endif
@@ -247,8 +407,8 @@ def IsTcpOpen(address: string): bool
 enddef
 
 def ResolveContainerHostIP(): string
-  var configured = get(g:, 'simpleclipboard_container_host', '')
-  if type(configured) == v:t_string && configured !=# ''
+  var configured = StringOption('simpleclipboard_container_host')
+  if configured !=# ''
     return configured
   endif
 
@@ -301,13 +461,13 @@ export def DetectEnvironment(): void
     environment_kind = IsWSL() ? 'wsl' : 'local'
   endif
 
-  if !get(g:, 'simpleclipboard_daemon_enabled', 1) || !has('libcall')
+  if !BoolOption('simpleclipboard_daemon_enabled') || !has('libcall')
     daemon_address = ''
     Log(environment_kind .. ': daemon routing disabled; skipping network probes.', 'Comment')
     return
   endif
 
-  var override = get(g:, 'simpleclipboard_address', '')
+  var override = StringOption('simpleclipboard_address')
   var token = get(g:, 'simpleclipboard_token', '')
   var token_error = TokenValidationError(token)
   if token_error !=# ''
@@ -316,7 +476,7 @@ export def DetectEnvironment(): void
     Log(token_error .. '; daemon routing blocked.', 'ErrorMsg')
     return
   endif
-  if type(override) == v:t_string && override !=# ''
+  if override !=# ''
     custom_address = true
     environment_kind = 'custom'
     if type(token) != v:t_string || token ==# ''
@@ -338,8 +498,8 @@ export def DetectEnvironment(): void
     return
   endif
 
-  var daemon_port = get(g:, 'simpleclipboard_port', 12343)
-  var tunnel_port = get(g:, 'simpleclipboard_tunnel_port', 12345)
+  var daemon_port = NumberOption('simpleclipboard_port')
+  var tunnel_port = NumberOption('simpleclipboard_tunnel_port')
   if !is_remote
     if IsWSL()
       environment_kind = 'wsl'
@@ -347,7 +507,7 @@ export def DetectEnvironment(): void
       return
     endif
     environment_kind = 'local'
-    var configured_host = get(g:, 'simpleclipboard_bind_addr', '127.0.0.1')
+    var configured_host = StringOption('simpleclipboard_bind_addr')
     var client_host = configured_host ==# '0.0.0.0' ? '127.0.0.1'
       : configured_host ==# '::' || configured_host ==# '[::]' ? '::1' : configured_host
     if !IsLoopbackHost(client_host) && (type(token) != v:t_string || token ==# '')
@@ -520,7 +680,7 @@ def StopOwnedDaemon(): bool
 enddef
 
 export def StartDaemon(interactive: bool = true, wait_for_ready: bool = true): void
-  if !get(g:, 'simpleclipboard_daemon_enabled', 1)
+  if !BoolOption('simpleclipboard_daemon_enabled')
     LifecycleMessage('Daemon backend is disabled.', 'Comment', interactive)
     return
   endif
@@ -559,13 +719,9 @@ export def StartDaemon(interactive: bool = true, wait_for_ready: bool = true): v
     return
   endif
 
-  var port = get(g:, 'simpleclipboard_port', 12343)
-  var bind_host = get(g:, 'simpleclipboard_bind_addr', '127.0.0.1')
+  var port = NumberOption('simpleclipboard_port')
+  var bind_host = StringOption('simpleclipboard_bind_addr')
   var token = get(g:, 'simpleclipboard_token', '')
-  if type(bind_host) != v:t_string
-    LifecycleMessage('g:simpleclipboard_bind_addr must be a string.', 'ErrorMsg', interactive)
-    return
-  endif
   var token_error = TokenValidationError(token)
   if token_error !=# ''
     LifecycleMessage(token_error .. '; daemon start refused.', 'ErrorMsg', interactive)
@@ -829,7 +985,7 @@ def TruncateUtf8(text: string, byte_limit: number): string
 enddef
 
 def CopyViaOsc52(text: string): bool
-  if get(g:, 'simpleclipboard_disable_osc52', 0)
+  if BoolOption('simpleclipboard_disable_osc52')
     return false
   endif
   if executable('base64') != 1
@@ -837,14 +993,10 @@ def CopyViaOsc52(text: string): bool
     return false
   endif
 
-  var limit = get(g:, 'simpleclipboard_osc52_limit', 75000)
-  if type(limit) != v:t_number || limit <= 0
-    MarkFailure('simpleclipboard_osc52_limit must be a positive number')
-    return false
-  endif
+  var limit = NumberOption('simpleclipboard_osc52_limit')
   var payload = text
   if strlen(payload) > limit
-    if !get(g:, 'simpleclipboard_osc52_truncate', 0)
+    if !BoolOption('simpleclipboard_osc52_truncate')
       MarkFailure($'OSC52 refused {strlen(payload)} bytes (limit {limit})')
       Log(last_error, 'WarningMsg')
       return false
@@ -911,7 +1063,7 @@ def BeginCopy(text: string, cancel_pending_yank: bool): bool
 
   DetectEnvironment()
 
-  if get(g:, 'simpleclipboard_daemon_enabled', 1) && daemon_address !=# ''
+  if BoolOption('simpleclipboard_daemon_enabled') && daemon_address !=# ''
     var daemon_method = is_remote || custom_address ? 'daemon (routed)' : 'daemon'
     var daemon_result = DaemonRequest('set', text)
     if daemon_result == DAEMON_SUCCESS
@@ -925,9 +1077,9 @@ def BeginCopy(text: string, cancel_pending_yank: bool): bool
   endif
 
   if !is_remote
-      if get(g:, 'simpleclipboard_daemon_enabled', 1)
+      if BoolOption('simpleclipboard_daemon_enabled')
         && has('libcall')
-        && get(g:, 'simpleclipboard_daemon_autostart', 1)
+        && BoolOption('simpleclipboard_daemon_autostart')
         && !custom_address && !IsWSL() && !daemon_start_attempted
       # Unlike the proactive VimEnter start, this path retries the copy
       # immediately, so do not race the daemon's listener initialization.
@@ -1196,11 +1348,7 @@ const MAX_PAUSE_SECONDS = 86400
 # guards.  A non-numeric value keeps the default rather than throwing out of an
 # autocommand; :SimpleCopyStatus reports the coercion.
 def AutoCopyEnabled(): bool
-  var configured = get(g:, 'simpleclipboard_auto_copy', 1)
-  if type(configured) == v:t_bool
-    return configured == v:true
-  endif
-  return type(configured) == v:t_number ? configured != 0 : true
+  return BoolOption('simpleclipboard_auto_copy')
 enddef
 
 def CancelAutoCopyPause(): void
@@ -1334,8 +1482,8 @@ export def CopyYankedToClipboardEvent(event: any = v:null)
       'WarningMsg')
     return
   endif
-  var delay = get(g:, 'simpleclipboard_debounce_ms', 50)
-  if exists('*timer_start') && type(delay) == v:t_number && delay > 0
+  var delay = NumberOption('simpleclipboard_debounce_ms')
+  if exists('*timer_start') && delay > 0
     pending_yank = text
     debounce_timer = timer_start(delay, FlushPendingYank)
   else
@@ -1401,7 +1549,7 @@ export def Status(): void
   FindDaemonExe()
   DetectCopyCmd()
   var daemon_health = 'disabled'
-  if get(g:, 'simpleclipboard_daemon_enabled', 1)
+  if BoolOption('simpleclipboard_daemon_enabled')
     daemon_health = !has('libcall') ? 'unavailable (+libcall missing)'
       : daemon_route_error !=# '' ? 'blocked (configuration)'
       : daemon_address ==# '' ? 'no route'
@@ -1409,7 +1557,7 @@ export def Status(): void
   endif
   var token_state = get(g:, 'simpleclipboard_token', '') ==# '' ? 'off' : 'configured'
   var command_summary = empty(cached_copy_names) ? 'none' : join(cached_copy_names, ' -> ')
-  var osc52_state = get(g:, 'simpleclipboard_disable_osc52', 0) ? 'disabled'
+  var osc52_state = BoolOption('simpleclipboard_disable_osc52') ? 'disabled'
     : executable('base64') == 1 ? 'enabled' : 'unavailable (base64 missing)'
   var register_policy = 'invalid (expected list)'
   var configured_registers = get(g:, 'simpleclipboard_auto_copy_registers', [])
@@ -1437,12 +1585,24 @@ export def Status(): void
     $'last copy: method={last_method}, outcome={last_outcome}, bytes={last_copy_bytes}, at={last_copy_at ==# "" ? "never" : last_copy_at}',
     $'last error: {last_error ==# "" ? "none" : last_error}',
   ]
-  for line in lines
+  var problems = ValidateOptions()
+  add(lines, $'configuration: {empty(problems) ? "ok" : len(problems) .. " problem(s)"}')
+  for line in lines + problems
     Notify(line)
   endfor
 enddef
 
+# Reporting is separated from validating so that plugin load can warn without
+# routing through the log ring before it exists, and so that a caller such as
+# Refresh() reports the same text a user already saw at startup.
+export def ReportOptionProblems(): void
+  for problem in ValidateOptions()
+    Notify(problem, 'WarningMsg')
+  endfor
+enddef
+
 export def Refresh(): void
+  ReportOptionProblems()
   var restart_owned = DaemonJobRunning()
   if restart_owned && !StopOwnedDaemon()
     Notify('Refresh aborted because the owned daemon did not stop.', 'ErrorMsg')
@@ -1468,7 +1628,7 @@ export def Refresh(): void
   daemon_start_attempted = false
   DetectEnvironment()
   if restart_owned
-    if get(g:, 'simpleclipboard_daemon_enabled', 1) && has('libcall')
+    if BoolOption('simpleclipboard_daemon_enabled') && has('libcall')
         && !is_remote && !IsWSL() && !custom_address
       StartDaemon(true)
     else

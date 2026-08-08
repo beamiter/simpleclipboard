@@ -238,6 +238,22 @@ For a custom debug path, create a private regular file and parent directory
 yourself; custom paths are not permission- or symlink-checked. Write failures
 fall back to `:messages`.
 
+A mistyped option is reported, not fatal. Plugin load, `:SimpleCopyRefresh` and
+`:SimpleCopyStatus` each print one line per problem naming the expected type,
+the value seen, and what happens instead:
+
+~~~
+g:simpleclipboard_port must be a number, but is a string ("12343"); using 12343
+g:simpleclipboard_debounce_ms must be a number, but is a string ("soon"); using the default 50
+~~~
+
+Numeric strings are read as decimal, since quoting a port is a common habit;
+anything else falls back to the documented default. The two options that decide
+what may leave Vim — `g:simpleclipboard_auto_copy_registers` and
+`g:simpleclipboard_auto_copy_max_bytes` — instead skip automatic copy rather
+than guessing a more permissive default, and `g:simpleclipboard_token` is
+reported by type and length only, never by value.
+
 `:SimpleCopyStatus` is intentionally visible even when debug logging is off.
 Its daemon health is a real protocol ping; command and OSC52 entries only show
 detected candidates or basic prerequisites, not a guaranteed clipboard write.

@@ -39,6 +39,18 @@ g:simpleclipboard_copy_command = get(g:, 'simpleclipboard_copy_command', [])
 g:simpleclipboard_debounce_ms = get(g:, 'simpleclipboard_debounce_ms', 50)
 g:simpleclipboard_container_host = get(g:, 'simpleclipboard_container_host', '')
 
+# Report a misconfigured option once, at the moment it can still be fixed,
+# instead of letting it surface as a failed copy much later.  Every consumer
+# coerces the value it reads, so nothing here aborts the plugin.
+var option_problems = simpleclipboard#ValidateOptions()
+if !empty(option_problems)
+  echohl WarningMsg
+  for problem in option_problems
+    echom '[SimpleClipboard] ' .. problem
+  endfor
+  echohl None
+endif
+
 command! SimpleCopyYank simpleclipboard#CopyYankedToClipboard()
 command! -nargs=? -complete=customlist,simpleclipboard#CompleteRegister SimpleCopyRegister simpleclipboard#CopyRegisterToClipboard(<q-args>)
 command! SimpleCopyVisual simpleclipboard#CopyVisualSelection()
@@ -68,7 +80,7 @@ nnoremap <silent> <Plug>(SimpleCopyToggle) <Cmd>SimpleCopyToggle<CR>
 nnoremap <Plug>(SimpleCopyFormat) :SimpleCopyFormat<Space>
 xnoremap <silent> <Plug>(SimpleCopyVisual) :<C-U>SimpleCopyVisual<CR>
 
-if !g:simpleclipboard_no_default_mappings
+if !simpleclipboard#BoolOption('simpleclipboard_no_default_mappings')
   if maparg('<leader>y', 'n') ==# '' && !hasmapto('<Plug>(SimpleCopyYank)', 'n')
     nmap <silent> <leader>y <Plug>(SimpleCopyYank)
   endif
@@ -86,17 +98,17 @@ augroup SimpleClipboardYank
   autocmd TextYankPost * call simpleclipboard#CopyYankedToClipboardEvent(deepcopy(v:event))
 augroup END
 
-if g:simpleclipboard_daemon_enabled
+if simpleclipboard#BoolOption('simpleclipboard_daemon_enabled')
   augroup SimpleClipboardDaemon
     autocmd!
-    if g:simpleclipboard_daemon_autostart
+    if simpleclipboard#BoolOption('simpleclipboard_daemon_autostart')
       if v:vim_did_enter
         call timer_start(0, (_) => simpleclipboard#StartDaemon(false, false))
       else
         autocmd VimEnter * call timer_start(0, (_) => simpleclipboard#StartDaemon(false, false))
       endif
     endif
-    if g:simpleclipboard_daemon_autostop
+    if simpleclipboard#BoolOption('simpleclipboard_daemon_autostop')
       autocmd VimLeave * call simpleclipboard#StopDaemon(false)
     endif
   augroup END

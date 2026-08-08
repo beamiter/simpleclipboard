@@ -186,6 +186,49 @@ normal! gg0yy
 sleep 150m
 call assert_equal(0z616C7068610A, readblob(s:capture))
 
+" A quoted port is a common vimrc habit, and it used to throw E1013 out of
+" DetectEnvironment(), which sits on the path of every yank, every explicit
+" copy and :SimpleCopyStatus itself. Every option is now coerced at the point
+" of use and reported once, so a copy still completes through the fallback.
+let g:simpleclipboard_daemon_enabled = 1
+let g:simpleclipboard_daemon_autostart = 0
+let g:simpleclipboard_port = '1'
+let g:simpleclipboard_debounce_ms = 'soon'
+let g:simpleclipboard_osc52_limit = 0
+messages clear
+call simpleclipboard#Refresh()
+let s:coerced = execute('messages')
+call assert_match('g:simpleclipboard_port must be a positive number, but is a string ("1"); using 1', s:coerced)
+call assert_match('g:simpleclipboard_debounce_ms must be a number, but is a string ("soon"); using the default 50', s:coerced)
+call assert_match('g:simpleclipboard_osc52_limit must be a positive number, but is a number (0); using the default 75000', s:coerced)
+call delete(s:capture)
+call assert_true(simpleclipboard#CopyToSystemClipboard('quoted port'))
+sleep 300m
+call assert_equal(['quoted port'], readfile(s:capture, 'b'))
+messages clear
+call simpleclipboard#Status()
+let s:coerced_status = execute('messages')
+call assert_match('configuration: 3 problem(s)', s:coerced_status)
+call assert_match('address=127.0.0.1:1', s:coerced_status)
+
+" A token is never echoed back, however wrong its type is.
+let g:simpleclipboard_token = ['not', 'a', 'string']
+messages clear
+call simpleclipboard#Refresh()
+let s:token_type_problem = execute('messages')
+call assert_match('g:simpleclipboard_token must be a string, but is a list of', s:token_type_problem)
+call assert_notmatch('not.*a.*string', s:token_type_problem)
+
+let g:simpleclipboard_token = ''
+let g:simpleclipboard_port = 12343
+let g:simpleclipboard_debounce_ms = 0
+let g:simpleclipboard_osc52_limit = 75000
+let g:simpleclipboard_daemon_enabled = 0
+let g:simpleclipboard_daemon_autostart = 1
+messages clear
+call simpleclipboard#Refresh()
+call assert_equal([], simpleclipboard#ValidateOptions())
+
 call delete(s:capture)
 normal! gg0dd
 sleep 100m

@@ -292,6 +292,20 @@ tunnel 端口，也必须同步修改。
 例外是 |g:simpleclipboard_auto_copy|：它在每次 yank 时重新读取，运行期修改
 立即生效。改动其他选项后执行 |:SimpleCopyRefresh|。
 
+						*simpleclipboard-option-validation*
+类型写错不会让复制崩掉。插件加载时、|:SimpleCopyRefresh| 与 |:SimpleCopyStatus|
+都会逐条报告有问题的选项，说明期望类型、实际看到的值以及随之采取的行为，
+例如： >
+
+  g:simpleclipboard_port must be a number, but is a string ("12343"); using 12343
+  g:simpleclipboard_debounce_ms must be a number, but is a string ("soon"); using the default 50
+<
+数字字符串按十进制解释（引号包住端口是常见写法），其余无法解释的取值退回
+文档中的默认值。例外是 |g:simpleclipboard_auto_copy_registers| 与
+|g:simpleclipboard_auto_copy_max_bytes|：它们控制哪些内容可以离开 Vim，
+写错时跳过自动复制而不是猜一个更宽松的默认值。
+|g:simpleclipboard_token| 只报告类型和长度，不回显取值。
+
 守护进程与自动复制 ~
 
 					*g:simpleclipboard_daemon_enabled*
@@ -621,7 +635,8 @@ unit 文件。
 - 当前是否为 SSH、容器或 WSL；
 - 最终 daemon 地址；
 - daemon 是否启用、是否可达；
-- 当前检测到的命令和 OSC52 条件。
+- 当前检测到的命令和 OSC52 条件；
+- configuration: 一行汇总选项校验结果，ok 或 N problem(s) 加逐条说明。
 
 daemon 的 reachable 来自真实协议 ping；命令与 OSC52 仅表示检测到候选或
 基本条件，不保证实际剪贴板写入一定成功。

@@ -56,6 +56,7 @@ simpleclipboard-diagnostics	simpleclipboard.txt	/*simpleclipboard-diagnostics*
 simpleclipboard-install	simpleclipboard.txt	/*simpleclipboard-install*
 simpleclipboard-logging	simpleclipboard.txt	/*simpleclipboard-logging*
 simpleclipboard-mappings	simpleclipboard.txt	/*simpleclipboard-mappings*
+simpleclipboard-option-validation	simpleclipboard.txt	/*simpleclipboard-option-validation*
 simpleclipboard-options	simpleclipboard.txt	/*simpleclipboard-options*
 simpleclipboard-quick-start	simpleclipboard.txt	/*simpleclipboard-quick-start*
 simpleclipboard-refresh	simpleclipboard.txt	/*simpleclipboard-refresh*
