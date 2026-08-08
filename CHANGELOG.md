@@ -8,6 +8,16 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-05
 
+### 文档里的示例输出改成代码真的会打印的那一行
+
+- README.md 与 `doc/simpleclipboard.txt` 引用的选项校验示例写的是
+  `g:simpleclipboard_port must be a number, but is a string ("12343"); using
+  12343`,而 `g:simpleclipboard_port` 声明为正数,真实文案是 `must be a positive
+  number ... using the default 12343`。照着文档去 grep 自己刚看到的报错、或者
+  照着文档写匹配规则的人,一条都对不上。
+- 冒烟测试现在从两份文档里读出示例行,再让 `ValidateOptions()` 原样复现它,
+  所以下一次漂移会挂在这里而不是挂在用户的终端里。
+
 ### `g:simpleclipboard_osc52_limit` 重新失败关闭
 
 - 上一轮把所有选项统一改成"读不出就退回默认值"时,把这个选项也一起卷了进去:

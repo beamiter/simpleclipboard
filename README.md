@@ -250,7 +250,7 @@ A mistyped option is reported, not fatal. Plugin load, `:SimpleCopyRefresh` and
 the value seen, and what happens instead:
 
 ~~~
-g:simpleclipboard_port must be a number, but is a string ("12343"); using 12343
+g:simpleclipboard_port must be a positive number, but is a string ("12343"); using the default 12343
 g:simpleclipboard_debounce_ms must be a number, but is a string ("soon"); using the default 50
 ~~~
 

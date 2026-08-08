@@ -316,6 +316,27 @@ messages clear
 call simpleclipboard#Refresh()
 call assert_equal([], simpleclipboard#ValidateOptions())
 
+" The sample validation output quoted in README.md and doc/simpleclipboard.txt
+" must be text the code can really produce. Someone who grepped the docs for
+" the message they had just seen found nothing, because the sample said "must
+" be a number" for an option declared positive-only. Read the sample out of
+" both documents and make the code reproduce it verbatim, so the next drift
+" fails here instead of in a user's terminal.
+let s:sample_pattern = '^g:simpleclipboard_\%(port\|debounce_ms\) must be '
+let s:readme_samples = filter(readfile(s:root .. '/README.md'),
+      \ 'v:val =~# s:sample_pattern')
+call assert_equal(2, len(s:readme_samples), 'README.md validation sample not found')
+let s:help_samples = map(readfile(s:root .. '/doc/simpleclipboard.txt'), 'trim(v:val)')
+call assert_equal(s:readme_samples, filter(s:help_samples, 'v:val =~# s:sample_pattern'),
+      \ 'README.md and doc/simpleclipboard.txt quote different sample output')
+let g:simpleclipboard_port = '12343'
+let g:simpleclipboard_debounce_ms = 'soon'
+call assert_equal(s:readme_samples, simpleclipboard#ValidateOptions())
+let g:simpleclipboard_port = 12343
+let g:simpleclipboard_debounce_ms = 0
+call simpleclipboard#Refresh()
+call assert_equal([], simpleclipboard#ValidateOptions())
+
 call delete(s:capture)
 normal! gg0dd
 sleep 100m
