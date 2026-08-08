@@ -531,6 +531,17 @@ if executable('python3')
   messages clear
   call simpleclipboard#StartDaemon(v:true, v:false)
   call assert_match('Another process already owns the daemon address', execute('messages'))
+  " job_start() returns long before the forked shell has run its first command,
+  " so reading the log the instant it returns wins a race and would pass just
+  " as happily against a build that does fork. Give the fork a real chance to
+  " show up - breaking out the moment it does, so a regression fails fast
+  " instead of costing the whole budget - and only then assert it never did.
+  for s:attempt in range(50)
+    if filereadable(s:daemon_log)
+      break
+    endif
+    sleep 20m
+  endfor
   call assert_false(filereadable(s:daemon_log),
         \ 'an occupied daemon address must not be forked onto')
   call simpleclipboard#StopDaemon(v:false)
