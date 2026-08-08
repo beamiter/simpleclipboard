@@ -314,6 +314,19 @@ let s:token_type_problem = execute('messages')
 call assert_match('g:simpleclipboard_token must be a string, but is a list of', s:token_type_problem)
 call assert_notmatch('not.*a.*string', s:token_type_problem)
 
+" ...and :SimpleCopyStatus survives it. Comparing a list token against '' threw
+" E691 out of the one command whose job is to explain a misconfiguration, so
+" every line below the daemon summary - including the configuration report that
+" names the bad token - was never printed.
+messages clear
+call simpleclipboard#Status()
+let s:token_type_status = execute('messages')
+call assert_match('token=invalid (must be a string)', s:token_type_status)
+call assert_match('configuration: \d\+ problem(s)', s:token_type_status)
+call assert_match('g:simpleclipboard_token must be a string, but is a list of', s:token_type_status)
+call assert_notmatch('E691', s:token_type_status)
+call assert_notmatch('not.*a.*string', s:token_type_status)
+
 let g:simpleclipboard_token = ''
 let g:simpleclipboard_port = 12343
 let g:simpleclipboard_debounce_ms = 0

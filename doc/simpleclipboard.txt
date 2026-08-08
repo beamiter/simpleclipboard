@@ -240,6 +240,9 @@ tunnel 端口，也必须同步修改。
 :SimpleCopyStatus
 	输出当前环境、路由地址、守护进程状态和可用后端。无论
 	g:simpleclipboard_debug 是否开启，本命令都会显示结果。
+	它本身不会因为选项写错而失败——最需要它的时候正是配置坏了的
+	时候。token 只报告状态，不回显取值：`token=off`、
+	`token=configured` 或 `token=invalid (must be a string)`。
 
 						*:SimpleCopyRefresh*
 :SimpleCopyRefresh

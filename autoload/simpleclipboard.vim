@@ -1663,7 +1663,15 @@ export def Status(): void
       : daemon_address ==# '' ? 'no route'
       : PingDaemon(daemon_address) ? 'reachable' : 'unreachable'
   endif
-  var token_state = get(g:, 'simpleclipboard_token', '') ==# '' ? 'off' : 'configured'
+  # A non-string token used to throw E691 right here, out of the one command
+  # whose whole job is to explain a misconfiguration - so the configuration
+  # summary, the token warning and every line below this one went unprinted.
+  # Classify it instead, still without echoing the value.
+  var configured_token = get(g:, 'simpleclipboard_token', '')
+  var token_problem = TokenValidationError(configured_token)
+  var token_state = token_problem !=# ''
+    ? $'invalid ({substitute(token_problem, "^g:simpleclipboard_token ", "", "")})'
+    : configured_token ==# '' ? 'off' : 'configured'
   var command_summary = empty(cached_copy_names) ? 'none' : join(cached_copy_names, ' -> ')
   var osc52_state = BoolOption('simpleclipboard_disable_osc52') ? 'disabled'
     : !Osc52Limit().valid ? 'blocked (invalid limit)'

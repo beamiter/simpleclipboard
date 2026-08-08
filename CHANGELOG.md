@@ -8,6 +8,17 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-05
 
+### `:SimpleCopyStatus` 不再被一个类型写错的 token 打断
+
+- `g:simpleclipboard_token` 写成列表时,`:SimpleCopyStatus` 在拼状态行时用
+  `==#` 拿它和 `''` 比较,直接抛 `E691: Can only compare List with List`。于是
+  最该解释这次配置错误的那条命令,自己以同样的方式失败了:守护进程摘要往下
+  的每一行——包括点名这个 token 的 `configuration:` 报告——一行都没打出来。
+- 现在按 token 校验规则分类,依旧不回显取值:
+  `token=off` / `token=configured` / `token=invalid (must be a string)`。
+- 冒烟测试覆盖:列表 token 下 `:SimpleCopyStatus` 打完整状态、点名问题、
+  不出现 `E691`,也不出现 token 的内容。
+
 ### 关掉自动复制之后,yank 不再为它复制一遍 regcontents
 
 - 让 `g:simpleclipboard_auto_copy` 运行期生效的代价是 `TextYankPost` autocmd

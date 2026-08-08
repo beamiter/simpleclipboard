@@ -268,7 +268,11 @@ reported by type and length only, never by value. List elements are checked
 too: `g:simpleclipboard_copy_command` must be a list of non-empty strings and
 `g:simpleclipboard_auto_copy_registers` a list of strings.
 
-`:SimpleCopyStatus` is intentionally visible even when debug logging is off.
+`:SimpleCopyStatus` is intentionally visible even when debug logging is off,
+and it does not itself fail on a misconfigured option — the moment you need it
+most is the moment the configuration is broken. The token is reported by state
+only, never by value: `token=off`, `token=configured`, or
+`token=invalid (must be a string)`.
 Its daemon health is a real protocol ping; command and OSC52 entries only show
 detected candidates or basic prerequisites, not a guaranteed clipboard write.
 Use `:SimpleCopyRefresh` after changing routing options or after an SSH tunnel,
