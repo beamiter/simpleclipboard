@@ -229,7 +229,7 @@ tunnel 端口，也必须同步修改。
 						*:SimpleCopyStart*
 :SimpleCopyStart
 	按当前配置启动本地守护进程。SSH 或容器场景不会误启动不合适的
-	远端进程。
+	远端进程；地址已被占用时复用而不是再启动一个。
 
 						*:SimpleCopyStop*
 :SimpleCopyStop
@@ -756,6 +756,10 @@ What that gives you:
   daemon is left alone.
 - |:SimpleCopyStop| waits for the daemon to drain an in-flight clipboard write
   before giving up on it.
+- A daemon is never started onto an address something else already owns: it
+  could only fail to bind, and with its stderr discarded that failure would
+  show up as nothing but a slow yank.  The second and later Vim instances use
+  the daemon that is already running.
 - One copy triggers at most one daemon start attempt.  When that does not
   produce a reachable daemon, the copy continues down the external-command and
   OSC52 fallback chain instead of forking again.

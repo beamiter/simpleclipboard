@@ -24,6 +24,15 @@ and packaged Rust components.
 - 冒烟测试覆盖:置 0 后 yank 不落盘、toggle 之后落盘、非法的
   `:SimpleCopyPause` 参数不改变状态、暂停期间的 yank 不落盘且到期自动恢复。
 
+### 第二个 Vim 不再 fork 一个注定失败的守护进程
+
+- VimEnter 自动启动走的是 `StartDaemon(false, false)`,而"探测地址是否已被占用"
+  和"启动后等待就绪"此前是同一个参数,于是自动启动把两者一起跳过了:第一个
+  Vim(或 systemd unit)已经持有 127.0.0.1:12343 时,之后每个 Vim 都会 fork 一个
+  只能在 bind 上失败的守护进程,而 `err_io: 'null'` 让失败悄无声息。
+- 现在启动前总会做一次 loopback 探测(端口真的空闲时连接立即被拒,几乎不花
+  时间),已被占用就直接复用。冒烟测试用一个占住端口的监听进程覆盖这一点。
+
 ### CI 重新变绿
 
 - `.github/workflows/ci.yml` 的 MSRV 任务与 linux matrix 都钉在

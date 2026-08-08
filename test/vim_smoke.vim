@@ -422,6 +422,50 @@ finally
   call simpleclipboard#StopDaemon(v:false)
 endtry
 
+" Another Vim, or a systemd unit, may already own the address. Forking then can
+" only lose the bind, and with the daemon's stderr discarded the user sees
+" nothing but a slow yank. The VimEnter autostart shape - StartDaemon(false,
+" false) - used to skip the reachability probe entirely.
+if executable('python3')
+  let s:listener_port = s:first_port + 2
+  let s:listener_script = s:fake_bin .. '/listener.py'
+  call writefile([
+        \ 'import socket, sys, time',
+        \ 'server = socket.socket()',
+        \ 'server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)',
+        \ 'server.bind(("127.0.0.1", int(sys.argv[1])))',
+        \ 'server.listen(1)',
+        \ 'time.sleep(30)',
+        \ ], s:listener_script)
+  let s:listener = job_start(['python3', s:listener_script, string(s:listener_port)])
+  let s:listening = 0
+  for s:attempt in range(50)
+    try
+      let s:probe = ch_open('127.0.0.1:' .. s:listener_port, {'waittime': 100, 'mode': 'raw'})
+      if ch_status(s:probe) ==# 'open'
+        call ch_close(s:probe)
+        let s:listening = 1
+        break
+      endif
+    catch
+    endtry
+    sleep 20m
+  endfor
+  call assert_true(s:listening, 'the test listener never came up')
+
+  let g:simpleclipboard_port = s:listener_port
+  call simpleclipboard#Refresh()
+  call delete(s:daemon_log)
+  messages clear
+  call simpleclipboard#StartDaemon(v:true, v:false)
+  call assert_match('Another process already owns the daemon address', execute('messages'))
+  call assert_false(filereadable(s:daemon_log),
+        \ 'an occupied daemon address must not be forked onto')
+  call simpleclipboard#StopDaemon(v:false)
+  call job_stop(s:listener, 'kill')
+  call delete(s:listener_script)
+endif
+
 " A copy-triggered lazy start must wait for daemon readiness before retrying.
 " This deliberately non-listening daemon makes the bounded readiness wait
 " observable without relying on a desktop clipboard being available in CI.

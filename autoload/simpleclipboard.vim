@@ -702,6 +702,17 @@ export def StartDaemon(interactive: bool = true, wait_for_ready: bool = true): v
     LifecycleMessage('Daemon is already reachable.', 'MoreMsg', interactive)
     return
   endif
+  # Probing for a listener is not the same thing as waiting for readiness, and
+  # the VimEnter autostart passes wait_for_ready false, so it used to skip both:
+  # every Vim after the first forked a daemon that could only lose the bind,
+  # exit 1 on EADDRINUSE, and — with err_io null — say nothing about why.  One
+  # loopback connect attempt is cheap, and refusal is immediate when the port
+  # really is free.
+  if !DaemonJobRunning() && IsTcpOpen(GetDaemonAddress())
+    LifecycleMessage('Another process already owns the daemon address; not starting a second one.',
+      'MoreMsg', interactive)
+    return
+  endif
   if DaemonJobRunning()
     LifecycleMessage('Restarting an owned daemon that failed its health check.',
       'WarningMsg', interactive)

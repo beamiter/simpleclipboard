@@ -196,7 +196,7 @@ any other option run `:SimpleCopyRefresh`.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `g:simpleclipboard_daemon_enabled` | `1` | Enable the Rust daemon backend. |
-| `g:simpleclipboard_daemon_autostart` | `1` | Start a local daemon on `VimEnter` when appropriate. |
+| `g:simpleclipboard_daemon_autostart` | `1` | Start a local daemon on `VimEnter` when appropriate. A Vim that finds the address already taken uses that daemon instead of forking a second one. |
 | `g:simpleclipboard_daemon_autostop` | `0` | On exit, stop only the daemon job owned by this Vim instance. |
 | `g:simpleclipboard_auto_copy` | `1` | Copy successful yank operations from `TextYankPost`. Re-read on every yank, so runtime changes apply immediately; see `:SimpleCopyToggle` and `:SimpleCopyPause`. |
 | `g:simpleclipboard_auto_copy_registers` | `[]` | Automatic-copy register allow-list; empty preserves all registers except `_`. Use `['unnamed']` to accept only ordinary yanks. |
