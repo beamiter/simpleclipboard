@@ -237,7 +237,7 @@ call simpleclipboard#Refresh()
 let s:coerced = execute('messages')
 call assert_match('g:simpleclipboard_port must be a positive number, but is a string ("1"); using 1', s:coerced)
 call assert_match('g:simpleclipboard_debounce_ms must be a number, but is a string ("soon"); using the default 50', s:coerced)
-call assert_match('g:simpleclipboard_osc52_limit must be a positive number, but is a number (0); using the default 75000', s:coerced)
+call assert_match('g:simpleclipboard_osc52_limit must be a positive number, but is a number (0); OSC52 is skipped until it is fixed', s:coerced)
 call delete(s:capture)
 call assert_true(simpleclipboard#CopyToSystemClipboard('quoted port'))
 sleep 300m
@@ -247,6 +247,31 @@ call simpleclipboard#Status()
 let s:coerced_status = execute('messages')
 call assert_match('configuration: 3 problem(s)', s:coerced_status)
 call assert_match('address=127.0.0.1:1', s:coerced_status)
+
+" An OSC52 limit nobody can read blocks the terminal write rather than quietly
+" reinstating the 75000-byte default. Coercing this one to a default fails
+" open: the escape sequence is the only backend whose output cannot be taken
+" back, having already crossed into the terminal emulator - and under tmux or
+" screen into whatever is logging the outer session.
+let g:simpleclipboard_copy_command = []
+let g:simpleclipboard_disable_osc52 = 0
+let $PATH = s:fake_bin
+call simpleclipboard#Refresh()
+messages clear
+call simpleclipboard#Status()
+call assert_match('OSC52: blocked (invalid limit)', execute('messages'))
+call delete(s:capture)
+call assert_false(simpleclipboard#CopyToSystemClipboard('unreadable osc52 limit'))
+sleep 100m
+call assert_false(filereadable(s:capture), 'a blocked OSC52 copy writes nothing at all')
+messages clear
+call simpleclipboard#Status()
+call assert_match('last error: g:simpleclipboard_osc52_limit must be a positive number; OSC52 skipped',
+      \ execute('messages'))
+let $PATH = s:old_path
+let g:simpleclipboard_disable_osc52 = 1
+let g:simpleclipboard_copy_command = ['tee', s:capture]
+call simpleclipboard#Refresh()
 
 " A boolean is coerced to 0/1 like any other numeric value, so the warning has
 " to name the number really in force instead of a default that is not.

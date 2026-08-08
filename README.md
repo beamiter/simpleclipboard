@@ -224,7 +224,7 @@ any other option run `:SimpleCopyRefresh`.
 | --- | --- | --- |
 | `g:simpleclipboard_copy_command` | `[]` | Custom copy command as `list<string>` argv, for example `['wl-copy']`. No shell is used; the process must stay attached until its clipboard write is complete. |
 | `g:simpleclipboard_disable_osc52` | `0` | Disable the OSC52 fallback. |
-| `g:simpleclipboard_osc52_limit` | `75000` | Maximum UTF-8 payload bytes accepted by the OSC52 path. |
+| `g:simpleclipboard_osc52_limit` | `75000` | Maximum UTF-8 payload bytes accepted by the OSC52 path. Must be a positive number; `0`, a negative number or a value that cannot be read as one blocks OSC52 entirely rather than falling back to the default. |
 | `g:simpleclipboard_osc52_truncate` | `0` | When `0`, reject oversized OSC52 payloads without data loss; when `1`, truncate to the configured limit. |
 
 OSC52 is the final fallback after the daemon and command candidates. If it
@@ -257,11 +257,13 @@ g:simpleclipboard_debounce_ms must be a number, but is a string ("soon"); using 
 Numeric strings are read as decimal, since quoting a port is a common habit,
 and a boolean is read as the 0 or 1 it coerces to; anything else falls back to
 the documented default. Each message names the value really in force, never a
-default that is not. The two options that decide what may leave Vim —
-`g:simpleclipboard_auto_copy_registers` and
-`g:simpleclipboard_auto_copy_max_bytes` — skip automatic copy rather than guess
-a more permissive default when their value cannot be read at all; a quoted byte
-cap is still a byte cap and is applied as one. `g:simpleclipboard_token` is
+default that is not. The three options that decide what may leave Vim —
+`g:simpleclipboard_auto_copy_registers`, `g:simpleclipboard_auto_copy_max_bytes`
+and `g:simpleclipboard_osc52_limit` — fail closed rather than guess a more
+permissive default when their value cannot be read at all: the first two skip
+automatic copy, and an unreadable or non-positive OSC52 limit blocks the OSC52
+path. A quoted byte cap is still a byte cap and is applied as one.
+`g:simpleclipboard_token` is
 reported by type and length only, never by value. List elements are checked
 too: `g:simpleclipboard_copy_command` must be a list of non-empty strings and
 `g:simpleclipboard_auto_copy_registers` a list of strings.

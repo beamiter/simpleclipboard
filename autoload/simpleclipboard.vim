@@ -37,10 +37,12 @@ enddef
 # coerce at the point of use, and a bad option costs a warning instead of the
 # whole clipboard pipeline.
 #
-# `note` replaces the default "using the default X" remedy for the two options
-# whose consumers deliberately fail closed rather than fall back: guessing
-# "copy everything" for a malformed allow-list or byte cap would push exactly
-# the payload the user was trying to exclude.
+# `note` replaces the default "using the default X" remedy for the options whose
+# consumers deliberately fail closed rather than fall back: guessing "copy
+# everything" for a malformed allow-list or byte cap would push exactly the
+# payload the user was trying to exclude, and quietly restoring the 75000-byte
+# OSC52 default for an unusable limit would write to the terminal on behalf of
+# someone whose configuration said, however clumsily, "do not".
 const OPTION_SPECS: list<dict<any>> = [
   {name: 'simpleclipboard_daemon_enabled', kind: 'bool', default: 1},
   {name: 'simpleclipboard_daemon_autostart', kind: 'bool', default: 1},
@@ -57,7 +59,8 @@ const OPTION_SPECS: list<dict<any>> = [
   {name: 'simpleclipboard_debug_to_file', kind: 'bool', default: 0},
   {name: 'simpleclipboard_debug_file', kind: 'string', default: ''},
   {name: 'simpleclipboard_disable_osc52', kind: 'bool', default: 0},
-  {name: 'simpleclipboard_osc52_limit', kind: 'number', default: 75000, positive: true},
+  {name: 'simpleclipboard_osc52_limit', kind: 'number', default: 75000, positive: true,
+    note: 'OSC52 is skipped until it is fixed'},
   {name: 'simpleclipboard_osc52_truncate', kind: 'bool', default: 0},
   {name: 'simpleclipboard_bind_addr', kind: 'string', default: '127.0.0.1'},
   {name: 'simpleclipboard_port', kind: 'number', default: 12343, positive: true},
@@ -154,6 +157,24 @@ def AutoCopyLimit(): dict<any>
     return {valid: false, bytes: 0}
   endif
   return {valid: true, bytes: raw}
+enddef
+
+# The OSC52 byte cap, coerced the same way and for the same reason.  This one
+# fails closed rather than reverting to the 75000-byte default: writing an
+# escape sequence to the terminal is the one backend that cannot be taken back
+# once emitted - it has already crossed into the terminal emulator, and under
+# tmux or screen into whatever is logging the outer session - so `0`, a
+# negative number or a value nobody can read blocks OSC52 instead of quietly
+# granting it a limit its owner never chose.
+def Osc52Limit(): dict<any>
+  var raw = get(g:, 'simpleclipboard_osc52_limit', 75000)
+  var bytes = -1
+  if type(raw) == v:t_number
+    bytes = raw
+  elseif type(raw) == v:t_string && raw =~# NUMERIC_STRING
+    bytes = str2nr(trim(raw), 10)
+  endif
+  return bytes > 0 ? {valid: true, bytes: bytes} : {valid: false, bytes: 0}
 enddef
 
 def OptionProblem(spec: dict<any>, raw: any): string
@@ -1059,20 +1080,28 @@ def CopyViaOsc52(text: string): bool
   if BoolOption('simpleclipboard_disable_osc52')
     return false
   endif
+  # Configuration is checked before the environment, so a limit nobody can read
+  # is reported as itself rather than as whatever the machine happens to be
+  # missing today.
+  var limit = Osc52Limit()
+  if !limit.valid
+    MarkFailure('g:simpleclipboard_osc52_limit must be a positive number; OSC52 skipped')
+    Log(last_error, 'WarningMsg')
+    return false
+  endif
   if executable('base64') != 1
     MarkFailure('base64 is unavailable for OSC52')
     return false
   endif
 
-  var limit = NumberOption('simpleclipboard_osc52_limit')
   var payload = text
-  if strlen(payload) > limit
+  if strlen(payload) > limit.bytes
     if !BoolOption('simpleclipboard_osc52_truncate')
-      MarkFailure($'OSC52 refused {strlen(payload)} bytes (limit {limit})')
+      MarkFailure($'OSC52 refused {strlen(payload)} bytes (limit {limit.bytes})')
       Log(last_error, 'WarningMsg')
       return false
     endif
-    payload = TruncateUtf8(payload, limit)
+    payload = TruncateUtf8(payload, limit.bytes)
     Trace($'OSC52 payload truncated to {strlen(payload)} bytes.', 'WarningMsg')
   endif
 
@@ -1629,7 +1658,9 @@ export def Status(): void
   var token_state = get(g:, 'simpleclipboard_token', '') ==# '' ? 'off' : 'configured'
   var command_summary = empty(cached_copy_names) ? 'none' : join(cached_copy_names, ' -> ')
   var osc52_state = BoolOption('simpleclipboard_disable_osc52') ? 'disabled'
-    : executable('base64') == 1 ? 'enabled' : 'unavailable (base64 missing)'
+    : !Osc52Limit().valid ? 'blocked (invalid limit)'
+    : executable('base64') != 1 ? 'unavailable (base64 missing)'
+    : 'enabled'
   var register_policy = 'invalid (expected list)'
   var configured_registers = get(g:, 'simpleclipboard_auto_copy_registers', [])
   if type(configured_registers) == v:t_list

@@ -8,6 +8,21 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-05
 
+### `g:simpleclipboard_osc52_limit` 重新失败关闭
+
+- 上一轮把所有选项统一改成"读不出就退回默认值"时,把这个选项也一起卷了进去:
+  置 0(或负数、或读不出数字)此前会挡住整条 OSC52 通道,改完之后却悄悄按
+  75000 继续,把 payload 写进终端。一个原本失败关闭的选项变成了失败开放——
+  恰好是最不该这样处理的那个:转义序列一旦发出就收不回来,它已经进了终端
+  模拟器,在 tmux/screen 下还会进外层会话的日志。
+- 现在它和 `g:simpleclipboard_auto_copy_registers`、
+  `g:simpleclipboard_auto_copy_max_bytes` 一样失败关闭:取值无法解释时
+  OSC52 直接跳过,`last error` 写明是哪个选项的问题,`:SimpleCopyStatus` 显示
+  `OSC52: blocked (invalid limit)`。带引号的数字仍按十进制解释。
+- `CopyViaOsc52()` 先查配置再查环境,所以坏掉的上限报告的是它自己,而不是这台
+  机器今天恰好缺的 `base64`。
+- 冒烟测试覆盖:上限为 0 时状态行显示 blocked、复制失败、且什么都没写出去。
+
 ### 自动复制可以当场关掉
 
 - `g:simpleclipboard_auto_copy` 现在每次 yank 都重新读取,不再只在插件加载时
