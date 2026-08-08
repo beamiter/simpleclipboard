@@ -134,6 +134,11 @@ To disable automatic copy while keeping the commands and mappings:
 let g:simpleclipboard_auto_copy = 0
 ~~~
 
+That option is re-read on every yank, so a runtime change takes effect at once.
+`:SimpleCopyToggle` flips it and reports the new state, and `:SimpleCopyPause
+60` suspends automatic copy for a minute before restoring the previous value —
+what you want one keystroke before yanking a credential.
+
 To provide your own mappings:
 
 ~~~vim
@@ -154,6 +159,8 @@ xmap <leader>Y <Plug>(SimpleCopyVisual)
 | `:SimpleCopyPath[!]` | Copy the current file path relative to the effective cwd; use `!` for absolute. |
 | `:SimpleCopyLocation[!]` | Copy `path:line:column` with 1-based character positions; use `!` for absolute. |
 | `:SimpleCopyFormat[!] {template}` | Copy a custom file reference using `{path}`, `{dir}`, `{file}`, `{line}`, and `{column}`; `!` makes path fields absolute. |
+| `:SimpleCopyToggle` | Turn automatic copy on or off immediately and report the new state. |
+| `:SimpleCopyPause {seconds}` | Suspend automatic copy for 1..86400 seconds, then restore the previous value. |
 | `:SimpleCopyStart` | Start the configured local daemon if needed. |
 | `:SimpleCopyStop` | Stop only the daemon job started by this Vim instance. |
 | `:SimpleCopyStatus` | Always print environment, address, and backend diagnostics. |
@@ -165,7 +172,7 @@ and use the same acknowledged daemon, serialized external-command, and OSC52
 fallback pipeline as every other explicit copy. Optional Normal-mode mapping
 targets are `<Plug>(SimpleCopyPath)` and `<Plug>(SimpleCopyLocation)`.
 `<Plug>(SimpleCopyFormat)` opens a prefilled command line so a template can be
-entered interactively.
+entered interactively, and `<Plug>(SimpleCopyToggle)` switches automatic copy.
 
 Format templates are literal text plus the five documented placeholders.
 Write `{{` or `}}` for a literal brace. Empty templates, unknown placeholders,
@@ -174,7 +181,9 @@ inserted path text is never evaluated or expanded a second time.
 
 ## Configuration
 
-Set options before the plugin is loaded, normally in `vimrc`.
+Set options before the plugin is loaded, normally in `vimrc`. The exception is
+`g:simpleclipboard_auto_copy`, which is re-read on every yank; after changing
+any other option run `:SimpleCopyRefresh`.
 
 ### Core behavior
 
@@ -183,7 +192,7 @@ Set options before the plugin is loaded, normally in `vimrc`.
 | `g:simpleclipboard_daemon_enabled` | `1` | Enable the Rust daemon backend. |
 | `g:simpleclipboard_daemon_autostart` | `1` | Start a local daemon on `VimEnter` when appropriate. |
 | `g:simpleclipboard_daemon_autostop` | `0` | On exit, stop only the daemon job owned by this Vim instance. |
-| `g:simpleclipboard_auto_copy` | `1` | Copy successful yank operations from `TextYankPost`. |
+| `g:simpleclipboard_auto_copy` | `1` | Copy successful yank operations from `TextYankPost`. Re-read on every yank, so runtime changes apply immediately; see `:SimpleCopyToggle` and `:SimpleCopyPause`. |
 | `g:simpleclipboard_auto_copy_registers` | `[]` | Automatic-copy register allow-list; empty preserves all registers except `_`. Use `['unnamed']` to accept only ordinary yanks. |
 | `g:simpleclipboard_auto_copy_max_bytes` | `0` | Maximum automatic-yank payload in UTF-8 bytes; `0` is unlimited. Explicit copy commands are never capped. |
 | `g:simpleclipboard_debounce_ms` | `50` | Debounce automatic copy by this many milliseconds. |

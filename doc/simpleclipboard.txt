@@ -157,6 +157,11 @@ tunnel 端口，也必须同步修改。
 
   let g:simpleclipboard_auto_copy = 0
 <
+该选项在每次 yank 时重新读取，运行期改动立即生效。临时关闭还可以用： >
+
+  :SimpleCopyToggle
+  :SimpleCopyPause 60
+<
 
 关闭默认映射并自定义： >
 
@@ -208,6 +213,19 @@ tunnel 端口，也必须同步修改。
 	占位符、嵌套或不配对大括号会在进入剪贴板流水线之前拒绝，因此不会复制
 	半成品；路径自身包含的占位符样文本不会被二次展开。
 
+						*:SimpleCopyToggle*
+:SimpleCopyToggle
+	开关 |g:simpleclipboard_auto_copy| 并报告新状态。该选项在每次 yank
+	时重新读取，因此立即生效；关闭时还会丢弃仍在防抖等待中的旧 yank。
+	显式命令与映射不受影响。
+
+						*:SimpleCopyPause*
+:SimpleCopyPause {seconds}
+	暂停自动复制 {seconds} 秒（1..86400），到期后恢复暂停前的取值。
+	适合在处理凭据、令牌等敏感文本前临时关闭。重复执行会重新计时并
+	保留第一次暂停之前的取值；|:SimpleCopyToggle| 会取消进行中的暂停。
+	需要 |+timers|：没有定时器时命令拒绝执行，而不是永久关闭自动复制。
+
 						*:SimpleCopyStart*
 :SimpleCopyStart
 	按当前配置启动本地守护进程。SSH 或容器场景不会误启动不合适的
@@ -247,6 +265,10 @@ tunnel 端口，也必须同步修改。
 <Plug>(SimpleCopyLocation)
 	普通模式复制 cwd-relative 的 1-based path:line:column；无默认按键。
 
+						*<Plug>(SimpleCopyToggle)*
+<Plug>(SimpleCopyToggle)
+	普通模式开关自动复制；插件不为它设置默认按键。
+
 						*<Plug>(SimpleCopyFormat)*
 <Plug>(SimpleCopyFormat)
 	在命令行预填 :SimpleCopyFormat 并等待输入模板；无默认按键。
@@ -267,6 +289,8 @@ tunnel 端口，也必须同步修改。
 7. 选项						*simpleclipboard-options*
 
 所有选项应在插件加载前设置，一般放在 vimrc 中。
+例外是 |g:simpleclipboard_auto_copy|：它在每次 yank 时重新读取，运行期修改
+立即生效。改动其他选项后执行 |:SimpleCopyRefresh|。
 
 守护进程与自动复制 ~
 
@@ -289,7 +313,11 @@ g:simpleclipboard_daemon_autostop
 					*g:simpleclipboard_auto_copy*
 g:simpleclipboard_auto_copy
 	默认：1
-	是否在 TextYankPost 后自动复制成功的 yank。
+	是否在 TextYankPost 后自动复制成功的 yank。与其他选项不同，它在每次
+	yank 时重新读取，运行期修改立即生效：在 yank 凭据之前执行
+	`:let g:simpleclipboard_auto_copy = 0`（或 |:SimpleCopyPause|）确实能挡住
+	这一次 yank。关闭时仍在防抖等待中的旧 yank 也会被丢弃。
+	另见 |:SimpleCopyToggle|。
 
 				*g:simpleclipboard_auto_copy_registers*
 g:simpleclipboard_auto_copy_registers

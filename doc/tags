@@ -5,6 +5,7 @@
 :SimpleCopyLocation	simpleclipboard.txt	/*:SimpleCopyLocation*
 :SimpleCopyLog	simpleclipboard.txt	/*:SimpleCopyLog*
 :SimpleCopyPath	simpleclipboard.txt	/*:SimpleCopyPath*
+:SimpleCopyPause	simpleclipboard.txt	/*:SimpleCopyPause*
 :SimpleCopyRange	simpleclipboard.txt	/*:SimpleCopyRange*
 :SimpleCopyRefresh	simpleclipboard.txt	/*:SimpleCopyRefresh*
 :SimpleCopyRegister	simpleclipboard.txt	/*:SimpleCopyRegister*
@@ -12,12 +13,14 @@
 :SimpleCopyStart	simpleclipboard.txt	/*:SimpleCopyStart*
 :SimpleCopyStatus	simpleclipboard.txt	/*:SimpleCopyStatus*
 :SimpleCopyStop	simpleclipboard.txt	/*:SimpleCopyStop*
+:SimpleCopyToggle	simpleclipboard.txt	/*:SimpleCopyToggle*
 :SimpleCopyVisual	simpleclipboard.txt	/*:SimpleCopyVisual*
 :SimpleCopyYank	simpleclipboard.txt	/*:SimpleCopyYank*
 <Plug>(SimpleCopyClear)	simpleclipboard.txt	/*<Plug>(SimpleCopyClear)*
 <Plug>(SimpleCopyFormat)	simpleclipboard.txt	/*<Plug>(SimpleCopyFormat)*
 <Plug>(SimpleCopyLocation)	simpleclipboard.txt	/*<Plug>(SimpleCopyLocation)*
 <Plug>(SimpleCopyPath)	simpleclipboard.txt	/*<Plug>(SimpleCopyPath)*
+<Plug>(SimpleCopyToggle)	simpleclipboard.txt	/*<Plug>(SimpleCopyToggle)*
 <Plug>(SimpleCopyVisual)	simpleclipboard.txt	/*<Plug>(SimpleCopyVisual)*
 <Plug>(SimpleCopyYank)	simpleclipboard.txt	/*<Plug>(SimpleCopyYank)*
 g:simpleclipboard_address	simpleclipboard.txt	/*g:simpleclipboard_address*

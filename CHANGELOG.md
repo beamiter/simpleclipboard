@@ -8,6 +8,22 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-05
 
+### 自动复制可以当场关掉
+
+- `g:simpleclipboard_auto_copy` 现在每次 yank 都重新读取,不再只在插件加载时
+  latch 一次。此前把它置 0 之后再 yank 密码,`TextYankPost` autocmd 仍然挂着,
+  凭据照样被推进系统剪贴板——而文档一直把这个变量写成关闭自动复制的办法。
+  兄弟选项 `g:simpleclipboard_auto_copy_registers` 本来就是运行期生效的,这种
+  不对称本身就误导人。
+- 新增 `:SimpleCopyToggle`、`:SimpleCopyPause {seconds}` 与
+  `<Plug>(SimpleCopyToggle)`。暂停由一次性定时器恢复暂停前的取值:重复暂停
+  会重新计时但保留最初的取值,toggle 取消进行中的暂停,没有 `+timers` 时命令
+  拒绝执行而不是永久关闭自动复制。
+- 关闭自动复制还会丢弃仍在防抖窗口里的旧 yank,否则刚被关掉的通道仍会在几十
+  毫秒后再写一次剪贴板。
+- 冒烟测试覆盖:置 0 后 yank 不落盘、toggle 之后落盘、非法的
+  `:SimpleCopyPause` 参数不改变状态、暂停期间的 yank 不落盘且到期自动恢复。
+
 ### 可组合文件引用
 
 - 新增 `:SimpleCopyFormat[!] {template}` 与 `<Plug>(SimpleCopyFormat)`,可用

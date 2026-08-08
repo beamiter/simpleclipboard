@@ -53,6 +53,8 @@ command! SimpleCopyStatus simpleclipboard#Status()
 # Suite-wide convention: every simple* plugin answers to :<Plugin>Health.
 command! SimpleCopyHealth simpleclipboard#Status()
 command! SimpleCopyRestart simpleclipboard#RestartDaemon()
+command! SimpleCopyToggle simpleclipboard#ToggleAutoCopy()
+command! -nargs=1 SimpleCopyPause simpleclipboard#PauseAutoCopy(<q-args>)
 command! SimpleCopyLog simpleclipboard#ShowLog()
 command! SimpleCopyRefresh simpleclipboard#Refresh()
 
@@ -60,6 +62,7 @@ nnoremap <silent> <Plug>(SimpleCopyYank) <Cmd>SimpleCopyYank<CR>
 nnoremap <silent> <Plug>(SimpleCopyClear) <Cmd>SimpleCopyClear<CR>
 nnoremap <silent> <Plug>(SimpleCopyPath) <Cmd>SimpleCopyPath<CR>
 nnoremap <silent> <Plug>(SimpleCopyLocation) <Cmd>SimpleCopyLocation<CR>
+nnoremap <silent> <Plug>(SimpleCopyToggle) <Cmd>SimpleCopyToggle<CR>
 # A format needs user input, so this target intentionally opens a prefilled
 # command line instead of silently invoking an unusable parameterized command.
 nnoremap <Plug>(SimpleCopyFormat) :SimpleCopyFormat<Space>
@@ -74,12 +77,14 @@ if !g:simpleclipboard_no_default_mappings
   endif
 endif
 
-if g:simpleclipboard_auto_copy
-  augroup SimpleClipboardYank
-    autocmd!
-    autocmd TextYankPost * call simpleclipboard#CopyYankedToClipboardEvent(deepcopy(v:event))
-  augroup END
-endif
+# The autocommand is always installed and the handler decides per yank, so
+# g:simpleclipboard_auto_copy takes effect the moment it changes.  Latching it
+# here would mean a user who disables automatic copy right before yanking a
+# credential still has that credential pushed to the system clipboard.
+augroup SimpleClipboardYank
+  autocmd!
+  autocmd TextYankPost * call simpleclipboard#CopyYankedToClipboardEvent(deepcopy(v:event))
+augroup END
 
 if g:simpleclipboard_daemon_enabled
   augroup SimpleClipboardDaemon

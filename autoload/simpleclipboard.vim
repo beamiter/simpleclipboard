@@ -1177,6 +1177,91 @@ export def CopyFormatToClipboard(template: string, absolute: bool = false): void
   CopyFileValue(expanded[1], 'formatted file reference')
 enddef
 
+# -----------------------------------------------------------------------------
+# Automatic copy policy
+# -----------------------------------------------------------------------------
+
+var auto_copy_pause_timer = -1
+var auto_copy_before_pause: any = 1
+
+# The longest pause that is still a pause rather than a disable; anything
+# longer is almost certainly a typo (":SimpleCopyPause 3600000") that would
+# otherwise silently switch automatic copy off for the rest of the session.
+const MAX_PAUSE_SECONDS = 86400
+
+# Re-read on every yank instead of latched when the plugin loads.  A user who
+# runs `:let g:simpleclipboard_auto_copy = 0` — or `:SimpleCopyPause 30` — one
+# keystroke before yanking a credential expects that yank to stay inside Vim,
+# and a single dictionary lookup costs far less than the debounce timer it
+# guards.  A non-numeric value keeps the default rather than throwing out of an
+# autocommand; :SimpleCopyStatus reports the coercion.
+def AutoCopyEnabled(): bool
+  var configured = get(g:, 'simpleclipboard_auto_copy', 1)
+  if type(configured) == v:t_bool
+    return configured == v:true
+  endif
+  return type(configured) == v:t_number ? configured != 0 : true
+enddef
+
+def CancelAutoCopyPause(): void
+  if auto_copy_pause_timer >= 0
+    timer_stop(auto_copy_pause_timer)
+  endif
+  auto_copy_pause_timer = -1
+enddef
+
+def ResumeAutoCopy(timer_id: number): void
+  # A pause that was superseded by an explicit toggle or by a newer pause must
+  # not resurrect automatic copying behind the user's back.
+  if timer_id != auto_copy_pause_timer
+    return
+  endif
+  auto_copy_pause_timer = -1
+  g:simpleclipboard_auto_copy = auto_copy_before_pause
+  Notify(AutoCopyEnabled()
+    ? 'Automatic clipboard copy resumed.'
+    : 'Automatic clipboard copy pause ended; it was already disabled.')
+enddef
+
+export def ToggleAutoCopy(): void
+  # Toggling is an explicit decision and therefore outranks a running pause.
+  CancelAutoCopyPause()
+  var enabled = !AutoCopyEnabled()
+  g:simpleclipboard_auto_copy = enabled ? 1 : 0
+  Notify(enabled
+    ? 'Automatic clipboard copy enabled.'
+    : 'Automatic clipboard copy disabled.')
+enddef
+
+export def PauseAutoCopy(argument: string): void
+  var value = trim(argument)
+  if value !~# '^\d\+$'
+    Notify('Usage: :SimpleCopyPause {seconds}', 'ErrorMsg')
+    return
+  endif
+  var seconds = str2nr(value, 10)
+  if seconds <= 0 || seconds > MAX_PAUSE_SECONDS
+    Notify($'Pause seconds must be between 1 and {MAX_PAUSE_SECONDS}.', 'ErrorMsg')
+    return
+  endif
+  # Without timers nothing would ever restore the flag, so refuse the pause
+  # instead of disabling automatic copy for the rest of the session.
+  if !exists('*timer_start')
+    Notify('Pausing needs +timers; use :SimpleCopyToggle instead.', 'ErrorMsg')
+    return
+  endif
+  # Pausing twice keeps the value from before the first pause, so resuming
+  # cannot re-enable automatic copy for someone who had switched it off.
+  if auto_copy_pause_timer < 0
+    auto_copy_before_pause = get(g:, 'simpleclipboard_auto_copy', 1)
+  endif
+  CancelAutoCopyPause()
+  g:simpleclipboard_auto_copy = 0
+  auto_copy_pause_timer = timer_start(seconds * 1000, ResumeAutoCopy)
+  CancelPendingYank()
+  Notify($'Automatic clipboard copy paused for {seconds}s.')
+enddef
+
 export def CopyYankedToClipboard(_timer_id: any = 0)
   var text = getreg('"')
   if text ==# ''
@@ -1212,12 +1297,23 @@ def FlushPendingYank(_timer_id: number)
   debounce_timer = -1
   var text = pending_yank
   pending_yank = ''
+  # The flag is re-read here as well: a yank that is still inside the debounce
+  # window when automatic copy is switched off must not reach the clipboard.
+  if !AutoCopyEnabled()
+    return
+  endif
   if text !=# '' && !BeginCopy(text, false)
     Notify('Automatic copy failed. Run :SimpleCopyStatus.', 'WarningMsg')
   endif
 enddef
 
 export def CopyYankedToClipboardEvent(event: any = v:null)
+  if !AutoCopyEnabled()
+    # Dropping the pending yank too, so that disabling automatic copy stops
+    # everything that has not left Vim yet rather than only future yanks.
+    CancelPendingYank()
+    return
+  endif
   # A newer yank supersedes a pending older one even when the newer register is
   # excluded or its payload is over the automatic-copy limit.
   if type(event) == v:t_dict && get(event, 'operator', '') ==# 'y'

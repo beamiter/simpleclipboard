@@ -139,6 +139,53 @@ call assert_equal(0z, readblob(s:capture))
 let g:simpleclipboard_auto_copy_registers = []
 let g:simpleclipboard_auto_copy_max_bytes = 0
 
+" g:simpleclipboard_auto_copy is honoured per yank rather than latched when the
+" plugin loaded, so disabling it immediately before yanking a credential really
+" does keep that credential inside Vim.
+call assert_equal(2, exists(':SimpleCopyToggle'))
+call assert_equal(2, exists(':SimpleCopyPause'))
+call assert_match('SimpleCopyToggle', maparg('<Plug>(SimpleCopyToggle)', 'n'))
+call delete(s:capture)
+let g:simpleclipboard_auto_copy = 0
+normal! gg0yy
+sleep 100m
+call assert_false(filereadable(s:capture), 'disabling automatic copy takes effect at once')
+
+messages clear
+SimpleCopyToggle
+call assert_equal(1, g:simpleclipboard_auto_copy)
+call assert_match('Automatic clipboard copy enabled.', execute('messages'))
+normal! gg0yy
+sleep 150m
+call assert_equal(0z616C7068610A, readblob(s:capture))
+messages clear
+SimpleCopyToggle
+call assert_equal(0, g:simpleclipboard_auto_copy)
+call assert_match('Automatic clipboard copy disabled.', execute('messages'))
+SimpleCopyToggle
+
+" A pause is bounded and self-restoring; a malformed one changes nothing.
+messages clear
+SimpleCopyPause 0
+call assert_match('Pause seconds must be between 1 and 86400', execute('messages'))
+call assert_equal(1, g:simpleclipboard_auto_copy)
+messages clear
+SimpleCopyPause soon
+call assert_match('Usage: :SimpleCopyPause', execute('messages'))
+call assert_equal(1, g:simpleclipboard_auto_copy)
+
+call delete(s:capture)
+SimpleCopyPause 1
+call assert_equal(0, g:simpleclipboard_auto_copy)
+normal! gg0yy
+sleep 100m
+call assert_false(filereadable(s:capture), 'a paused yank must not reach the clipboard')
+sleep 1200m
+call assert_equal(1, g:simpleclipboard_auto_copy)
+normal! gg0yy
+sleep 150m
+call assert_equal(0z616C7068610A, readblob(s:capture))
+
 call delete(s:capture)
 normal! gg0dd
 sleep 100m
