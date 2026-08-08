@@ -24,6 +24,23 @@ and packaged Rust components.
 - 冒烟测试覆盖:置 0 后 yank 不落盘、toggle 之后落盘、非法的
   `:SimpleCopyPause` 参数不改变状态、暂停期间的 yank 不落盘且到期自动恢复。
 
+### 安装器验证刚构建的二进制,帮助文档不再承诺没有的东西
+
+- `install.sh` 在把任何产物移进 `lib/` 之前先跑 `--self-test`(密钥派生、AEAD
+  封装、分帧与 ack 绑定各一遍,不碰桌面剪贴板)。此前只检查文件存在与可执行,
+  于是一个能链接但跑不起来的二进制会替掉正常安装,并且没有回滚。失败时旧的
+  `lib/` 原封不动,消息说明失败原因。帮助文档此前就写着安装器会这么做。
+- `install.sh` 现在还会生成 helptags,`:help simpleclipboard` 装完即可用。
+- 更正帮助文档中不成立的描述:daemon 不是"由 simplecore 管理"、也不"用
+  stdin/stdout 上的 JSON 通信"——插件自己用 `job_start()` 持有 job,请求走
+  TCP 上的定长帧二进制协议;没有指数退避重启、崩溃循环断路器,也没有请求
+  id 关联与超时;`:SimpleCopyHealth` 是 `:SimpleCopyStatus` 的别名,不报告
+  协商到的协议版本、uptime 或崩溃计数;`:SimpleCopyLog` 显示的是插件自己的
+  通知记录,而不是 daemon stderr(daemon 输出被丢弃)。文档现在写这些真实
+  保证,以及明确"不做的事"。
+- `test/install_args.sh` 用 stub 工具链在临时目录里跑一次安装器:`--self-test`
+  失败时安装必须失败、`lib/` 必须没有被动过。
+
 ### 选项写错不再炸掉复制
 
 - 14 个 `g:` 选项此前只有 4 个做类型检查。`let g:simpleclipboard_port = '12343'`

@@ -739,67 +739,86 @@ daemon 协议消息上限为 10 MiB。OSC52 默认上限是 75000 个 UTF-8 字�
 ==============================================================================
 
 ==============================================================================
-DAEMON SUPERVISION                                    *simpleclipboard-daemon*
+DAEMON LIFECYCLE                                      *simpleclipboard-daemon*
 
-The Rust daemon is managed by simplecore, the supervisor shared by the whole
-simple* plugin suite. It is vendored into this repository at
-autoload/simpleclipboard/core.vim; that file is generated, do not edit it in place.
+The plugin starts and owns the daemon itself with |job_start()|.  The daemon's
+stdout and stderr go to null, and requests do not travel over them at all:
+they are framed binary messages on a TCP connection, sent synchronously by the
+Rust client library through |libcall()|.  See |simpleclipboard-architecture|.
 
-What it guarantees:
+What that gives you:
 
 - Liveness is always read from |job_status()|. job_start() returns a job
   object even when the exec itself failed, so a daemon that cannot start is
   never mistaken for one that is running.
-- A superseded daemon's late exit callback cannot clear the state of the
-  replacement that already took its place.
-- Output still queued when you stop the daemon is discarded, so an explicit
-  stop cannot be undone by an event that was already in flight.
-- A daemon that dies is restarted automatically with exponential backoff.
-  If it keeps crashing, the supervisor reports it once and stops trying
-  rather than respawning forever; :SimpleCopyRestart re-arms it.
-- Requests are correlated to replies by id and can time out, so a wedged
-  daemon never leaves a callback hanging.
+- Only the job this Vim instance started is ever stopped.  No daemon is killed
+  by PID file or by port, so another Vim, a systemd unit or a hand-started
+  daemon is left alone.
+- |:SimpleCopyStop| waits for the daemon to drain an in-flight clipboard write
+  before giving up on it.
+- One copy triggers at most one daemon start attempt.  When that does not
+  produce a reachable daemon, the copy continues down the external-command and
+  OSC52 fallback chain instead of forking again.
+
+What it deliberately does not do:
+
+- No automatic restart, no exponential backoff, no crash-loop breaker.  After a
+  daemon dies, copies use the fallback chain; run |:SimpleCopyRestart| to get
+  the preferred path back.
+- No request/reply correlation or per-request timeout in Vim: the client call
+  is synchronous, and the connect and I/O deadlines live in the Rust client.
+- No daemon stderr transcript.  Daemon output is discarded, so |:SimpleCopyLog|
+  shows this plugin's own notifications rather than the daemon's.
 
                                                       *:SimpleCopyHealth*
 :SimpleCopyHealth
-        Report daemon path, run state, negotiated protocol and capabilities,
-        uptime, crash and restart counts, and whether the crash-loop breaker
-        has tripped, alongside this plugin's own diagnostics.
+        An alias for |:SimpleCopyStatus|, following the suite-wide
+        :<Plugin>Health convention.  It prints exactly the same report:
+        environment, route address, daemon reachability, detected backends,
+        option validation and the last copy's outcome.
 
                                                       *:SimpleCopyRestart*
 :SimpleCopyRestart
-        Stop the daemon and start a fresh one. Clears the crash-loop breaker,
-        so this is the way back after repeated failures.
+        Stop the daemon owned by this Vim instance, then start a fresh one with
+        the current configuration.
 
                                                       *:SimpleCopyLog*
 :SimpleCopyLog
-        Open the daemon transcript in a scratch buffer: start and exit events,
-        restarts, protocol handshakes, send failures and stderr.
+        Open this plugin's notification transcript in a scratch buffer: the
+        most recent few hundred messages, including daemon lifecycle events,
+        failed backends and the reason a copy took the route it took.  Unlike
+        |g:simpleclipboard_debug| output, it is recorded unconditionally.
 
 
 ==============================================================================
 DAEMON COMMAND LINE                               *simpleclipboard-daemon-cli*
 
-The daemon takes no arguments in normal use: the plugin starts it and speaks
-JSON over its stdin and stdout.  For diagnosis it also answers: >
+The daemon takes no arguments in normal use: the plugin starts it with
+|job_start()| and then speaks the framed binary TCP protocol to it, configured
+entirely through the SIMPLECLIPBOARD_ADDR and SIMPLECLIPBOARD_TOKEN environment
+variables.  For diagnosis it also answers: >
 
   simpleclipboard-daemon --version
   simpleclipboard-daemon --help
   simpleclipboard-daemon --self-test
 <
---self-test runs one authenticated request through the protocol, and prints
-"ok".
+--self-test runs one authenticated request through key derivation, AEAD
+sealing, framing and the response binding in-process, and prints "ok".  It
+never touches the desktop clipboard, so it works over SSH and in containers.
 install.sh runs it on the freshly built binary before replacing a working one,
-so a build that compiles but does not work never reaches lib/.
+so a build that compiles but does not work never reaches lib/; the previous
+lib/ is left untouched when it fails.
 
 Every daemon in the simple* suite answers these three the same way.
 
 VENDORED SUPERVISOR                               *simpleclipboard-simplecore*
 
-The daemon supervisor in autoload/simpleclipboard/core.vim, and the test
-harness beside it, are vendored from the suite's shared .simplecore bundle
-rather than written here — each plugin carries its own copy so that
-installing this plugin alone is enough.  Do not edit those files in place: >
+autoload/simpleclipboard/core.vim is the suite's shared daemon supervisor and
+the test harness beside it is its regression suite.  Both are vendored from the
+.simplecore bundle rather than written here — each plugin carries its own copy
+so that installing this plugin alone is enough.  This plugin's own daemon path
+does not route through the supervisor yet: it manages the job directly, as
+|simpleclipboard-daemon| describes.  Do not edit those files in place: >
 
   make core-verify
 <

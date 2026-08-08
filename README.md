@@ -71,7 +71,6 @@ git clone https://github.com/beamiter/simpleclipboard.git \
   ~/.vim/pack/plugins/start/simpleclipboard
 cd ~/.vim/pack/plugins/start/simpleclipboard
 ./install.sh
-vim -Nu NONE -n -es -c 'helptags ~/.vim/pack/plugins/start/simpleclipboard/doc' -c 'qa!'
 ~~~
 
 The installer builds the release daemon and client library and places them in
@@ -79,6 +78,13 @@ the plugin's `lib/` directory:
 
 - Linux: `lib/libsimpleclipboard.so` and `lib/simpleclipboard-daemon`
 - macOS: `lib/libsimpleclipboard.dylib` and `lib/simpleclipboard-daemon`
+
+Before either artifact is moved into place, the installer runs
+`simpleclipboard-daemon --self-test` on the binary it just built — one
+authenticated request through key derivation, sealing, framing and the response
+binding, without touching the desktop clipboard. A build that compiles but does
+not run therefore never replaces a working `lib/`. It also generates the help
+tags, so `:help simpleclipboard` works immediately.
 
 The plugin must remain on Vim's `runtimepath` so it can discover these files.
 You can instead set absolute paths with `g:simpleclipboard_libpath` and

@@ -108,6 +108,19 @@ if [[ ! -f "$library_source" || ! -x "$daemon_source" ]]; then
   echo "Build completed but expected artifacts were not found in $release_dir" >&2
   exit 1
 fi
+# A binary that links but does not run is worse than no new binary at all: it
+# replaces a working install and then fails at the next yank, far away from
+# anything that points back at the build.  --self-test drives one authenticated
+# request through key derivation, AEAD sealing, framing and the response
+# binding in-process, and deliberately never touches the desktop clipboard,
+# which an installer cannot assume is reachable.  Nothing has moved yet at this
+# point, so a failure here leaves the previous lib/ exactly as it was.
+if ! self_test_output="$("$daemon_source" --self-test 2>&1)"; then
+  echo "Freshly built daemon failed --self-test; keeping the existing lib/" >&2
+  echo "$self_test_output" >&2
+  exit 1
+fi
+
 if [[ -L "$repo_root/lib" || (-e "$repo_root/lib" && ! -d "$repo_root/lib") ]]; then
   echo "Refusing to replace non-directory or symlinked lib path: $repo_root/lib" >&2
   exit 1
@@ -158,6 +171,16 @@ fi
 
 echo "Installed $("$repo_root/lib/simpleclipboard-daemon" --version)"
 echo "Artifacts: $repo_root/lib/$library_name and $repo_root/lib/simpleclipboard-daemon"
+
+# :help simpleclipboard only resolves once tags exist, and looking up the help
+# is the first thing a new user does after installing.
+if [[ -d "$repo_root/doc" ]] && command -v vim >/dev/null 2>&1; then
+  if vim -Nu NONE -i NONE -n -es -c 'helptags doc' -c 'qa!'; then
+    echo "Help tags: $repo_root/doc/tags"
+  else
+    echo "Could not generate help tags; run :helptags $repo_root/doc yourself." >&2
+  fi
+fi
 
 setup_ssh_tunnel() {
   local ssh_dir="$HOME/.ssh"
