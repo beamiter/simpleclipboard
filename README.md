@@ -258,7 +258,9 @@ anything else falls back to the documented default. The two options that decide
 what may leave Vim — `g:simpleclipboard_auto_copy_registers` and
 `g:simpleclipboard_auto_copy_max_bytes` — instead skip automatic copy rather
 than guessing a more permissive default, and `g:simpleclipboard_token` is
-reported by type and length only, never by value.
+reported by type and length only, never by value. List elements are checked
+too: `g:simpleclipboard_copy_command` must be a list of non-empty strings and
+`g:simpleclipboard_auto_copy_registers` a list of strings.
 
 `:SimpleCopyStatus` is intentionally visible even when debug logging is off.
 Its daemon health is a real protocol ping; command and OSC52 entries only show

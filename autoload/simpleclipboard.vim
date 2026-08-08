@@ -47,7 +47,7 @@ const OPTION_SPECS: list<dict<any>> = [
   {name: 'simpleclipboard_daemon_autostop', kind: 'bool', default: 0},
   {name: 'simpleclipboard_auto_copy', kind: 'bool', default: 1},
   {name: 'simpleclipboard_auto_copy_registers', kind: 'list', default: [],
-    note: 'automatic copy is skipped until it is fixed'},
+    elements: 'string', note: 'automatic copy is skipped until it is fixed'},
   {name: 'simpleclipboard_auto_copy_max_bytes', kind: 'number', default: 0,
     note: 'automatic copy is skipped until it is fixed'},
   {name: 'simpleclipboard_libpath', kind: 'string', default: ''},
@@ -66,7 +66,7 @@ const OPTION_SPECS: list<dict<any>> = [
   {name: 'simpleclipboard_token', kind: 'string', default: '', secret: true},
   {name: 'simpleclipboard_address', kind: 'string', default: ''},
   {name: 'simpleclipboard_copy_command', kind: 'list', default: [],
-    note: 'the configured command is ignored'},
+    elements: 'argv', note: 'the configured command is ignored'},
   {name: 'simpleclipboard_debounce_ms', kind: 'number', default: 50},
   {name: 'simpleclipboard_container_host', kind: 'string', default: ''},
 ]
@@ -146,8 +146,24 @@ def OptionProblem(spec: dict<any>, raw: any): string
       ? '' : $'{name} must be a string, but is {seen}; {Remedy(spec)}'
   endif
   if spec.kind ==# 'list'
-    return type(raw) == v:t_list
-      ? '' : $'{name} must be a list, but is {seen}; {Remedy(spec)}'
+    if type(raw) != v:t_list
+      return $'{name} must be a list, but is {seen}; {Remedy(spec)}'
+    endif
+    # A list of the wrong things is as unusable as a non-list: both consumers
+    # drop the offending entry without a word, which is how a mistyped copy
+    # command becomes "my clipboard silently stopped working".
+    var elements = get(spec, 'elements', '')
+    if elements ==# ''
+      return ''
+    endif
+    for part in raw
+      if type(part) != v:t_string || (elements ==# 'argv' && part ==# '')
+        var wanted_element = elements ==# 'argv' ? 'non-empty strings' : 'strings'
+        return $'{name} must be a list of {wanted_element}, but contains '
+          .. $'{TypeName(part)} ({DescribeValue(part)}); {Remedy(spec)}'
+      endif
+    endfor
+    return ''
   endif
   var positive = get(spec, 'positive', false)
   var wanted = positive ? 'a positive number' : 'a number'

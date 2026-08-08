@@ -80,6 +80,9 @@ and packaged Rust components.
   `g:simpleclipboard_auto_copy_max_bytes` 例外——它们决定什么可以离开 Vim,
   写错时仍然跳过自动复制,而不是猜一个更宽松的默认值。
 - `g:simpleclipboard_token` 只按类型和长度报告,不回显取值。
+- 列表选项还会校验元素类型:`g:simpleclipboard_copy_command` 必须是非空字符串
+  列表,`g:simpleclipboard_auto_copy_registers` 必须是字符串列表。此前元素写错
+  只是被静默丢弃,表现为"剪贴板莫名其妙不工作了"。
 - 冒烟测试覆盖:带引号的端口仍然能通过回退链完成复制并给出一条可执行的
   警告、非正数的 OSC52 上限退回默认值、错误类型的 token 不被回显。
 

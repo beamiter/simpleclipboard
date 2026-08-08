@@ -304,7 +304,9 @@ tunnel 端口，也必须同步修改。
 文档中的默认值。例外是 |g:simpleclipboard_auto_copy_registers| 与
 |g:simpleclipboard_auto_copy_max_bytes|：它们控制哪些内容可以离开 Vim，
 写错时跳过自动复制而不是猜一个更宽松的默认值。
-|g:simpleclipboard_token| 只报告类型和长度，不回显取值。
+|g:simpleclipboard_token| 只报告类型和长度，不回显取值。列表选项的元素也会
+校验：|g:simpleclipboard_copy_command| 必须是非空字符串列表，
+|g:simpleclipboard_auto_copy_registers| 必须是字符串列表。
 
 守护进程与自动复制 ~
 

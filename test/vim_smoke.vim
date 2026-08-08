@@ -211,6 +211,18 @@ let s:coerced_status = execute('messages')
 call assert_match('configuration: 3 problem(s)', s:coerced_status)
 call assert_match('address=127.0.0.1:1', s:coerced_status)
 
+" A list of the wrong things is as unusable as a non-list: both consumers drop
+" the offending entry silently.
+let g:simpleclipboard_copy_command = ['tee', '']
+let g:simpleclipboard_auto_copy_registers = ['unnamed', 7]
+messages clear
+call simpleclipboard#Refresh()
+let s:element_problems = execute('messages')
+call assert_match('g:simpleclipboard_copy_command must be a list of non-empty strings, but contains a string ("")', s:element_problems)
+call assert_match('g:simpleclipboard_auto_copy_registers must be a list of strings, but contains a number (7)', s:element_problems)
+let g:simpleclipboard_copy_command = ['tee', s:capture]
+let g:simpleclipboard_auto_copy_registers = []
+
 " A token is never echoed back, however wrong its type is.
 let g:simpleclipboard_token = ['not', 'a', 'string']
 messages clear
