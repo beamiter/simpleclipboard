@@ -8,6 +8,32 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-05
 
+### 协议学会了读剪贴板,并且多了一个 Vim 能异步驱动的客户端程序
+
+- SCB1 新增 `get` 请求(tag `0x04`,后跟一个选区字节:`0x00` CLIPBOARD、
+  `0x01` PRIMARY)与一种带数据的 ack body(tag `0x02`,在 `ok` 和 detail
+  之后再跟一段长度前缀的 UTF-8 文本)。原有 ping/set/legacy 的字节布局
+  一个字节都没变,握手、AEAD 封装与 ack 绑定也完全复用。
+- ack 的长度上界按种类区分:状态 ack 仍是 4 KiB,数据 ack 才允许到帧上限。
+  客户端按自己发出的请求决定愿意读回多少,所以一个 ping 不可能被回一个
+  十兆字节的应答。
+- 新增 `lib/simpleclipboard-client`。同一个 `send_request` 逐字复用,只是
+  搬到了子进程里:Vim 用 `job_start()` 驱动它,守护进程慢、或剪贴板卡在一个
+  永远不会回话的显示服务器上时,不再冻住编辑器的 UI 线程;而且
+  `libcallnr()` 只能返回数字,`get` 的文本本来也无处可回。
+- token 走环境变量、剪贴板正文走标准输入,都不进 argv——Linux 上
+  `/proc/<pid>/cmdline` 是全局可读的。
+- 安全边界:**tokenless 的守护进程拒绝 `get`**(`get_requires_authentication`)。
+  往别人的剪贴板里写是骚扰,能随时读走别人刚复制的密码则是另一回事,而
+  loopback 在共享主机上等于"机器上的每个账号"。写入的语义不变。
+- 守护进程的剪贴板工作线程改为读写共用一条连接:arboard 的 X11 后端由取得
+  选区的那个线程负责提供内容,另开连接去读有死锁的可能。
+- 读超时就是读失败:写有可能已经写了一半,所以要告诉调用方别去 fallback;
+  读不会改变任何东西,于是不再复用 `clipboard_outcome_unknown` 这个代码。
+- `test/tcp_e2e.sh` 现在跑真正的 set/get 往返(无显示服务器时跳过而不是
+  失败)、断言错误 token 被拒、断言剪贴板正文不能当命令行参数传,
+  并断言 tokenless 守护进程拒绝 `get` 且不回任何数据。
+
 ### OSC52 有了第一批测试,顺带修好了它一直没人发现的三个洞
 
 - OSC52 是裸 SSH（没有隧道）下唯一能用的通道,却是唯一一条完全没有测试的

@@ -3,12 +3,13 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 daemon="$repo_root/lib/simpleclipboard-daemon"
+client="$repo_root/lib/simpleclipboard-client"
 case "$(uname -s)" in
   Darwin) library="$repo_root/lib/libsimpleclipboard.dylib" ;;
   *) library="$repo_root/lib/libsimpleclipboard.so" ;;
 esac
 
-if [[ ! -x "$daemon" || ! -f "$library" ]]; then
+if [[ ! -x "$daemon" || ! -x "$client" || ! -f "$library" ]]; then
   echo "Run ./install.sh before test/tcp_e2e.sh" >&2
   exit 1
 fi
@@ -71,6 +72,43 @@ vim_ping "$authenticated_port" 'definitely-wrong-token' "$temporary/wrong"
 [[ "$(<"$temporary/correct")" == 1 ]]
 [[ "$(<"$temporary/wrong")" == 0 ]]
 
+# The client binary is the transport Vim drives with job_start(), so it is
+# exercised here rather than only through the in-process library.  A ping needs
+# no display server, so it is asserted unconditionally; a real set/get round
+# trip does, and is skipped rather than failed on a headless runner.
+SIMPLECLIPBOARD_TOKEN="$token" \
+  "$client" --address "127.0.0.1:$authenticated_port" --action ping
+if ! SIMPLECLIPBOARD_TOKEN='definitely-wrong-token' \
+  "$client" --address "127.0.0.1:$authenticated_port" --action ping 2>/dev/null; then
+  : # A wrong token must not be accepted.
+else
+  echo 'client accepted a wrong token' >&2
+  exit 1
+fi
+
+# The clipboard payload never appears in argv, where every process on the host
+# could read it out of /proc; assert the option that would carry it is refused.
+if "$client" --address "127.0.0.1:$authenticated_port" --action set \
+  --text secret >/dev/null 2>&1; then
+  echo 'client accepted clipboard text as a command-line argument' >&2
+  exit 1
+fi
+
+clipboard_text=$'round trip\n第二行\ttab'
+if printf '%s' "$clipboard_text" | SIMPLECLIPBOARD_TOKEN="$token" \
+  "$client" --address "127.0.0.1:$authenticated_port" --action set 2>"$temporary/set.err"; then
+  SIMPLECLIPBOARD_TOKEN="$token" \
+    "$client" --address "127.0.0.1:$authenticated_port" --action get \
+    >"$temporary/get.out"
+  if [[ "$(<"$temporary/get.out")" != "$clipboard_text" ]]; then
+    echo 'clipboard round trip did not preserve the text' >&2
+    exit 1
+  fi
+  echo 'Clipboard set/get round trip passed'
+else
+  echo "Skipping the set/get round trip: $(<"$temporary/set.err")"
+fi
+
 kill -TERM "$daemon_pid"
 wait "$daemon_pid"
 daemon_pid=''
@@ -86,6 +124,18 @@ daemon_pid=$!
 plaintext_port="$(wait_for_port "$plaintext_log")"
 vim_ping "$plaintext_port" '' "$temporary/plaintext"
 [[ "$(<"$temporary/plaintext")" == 1 ]]
+
+# Writing to a tokenless daemon is a nuisance; reading from one would let every
+# account that can reach loopback poll for whatever the user last copied.  The
+# refusal is part of the protocol, not of the plugin, so it is asserted here.
+if env -u SIMPLECLIPBOARD_TOKEN "$client" \
+  --address "127.0.0.1:$plaintext_port" --action get \
+  >"$temporary/open_get.out" 2>"$temporary/open_get.err"; then
+  echo 'tokenless daemon answered a clipboard read' >&2
+  exit 1
+fi
+grep -q 'get_requires_authentication' "$temporary/open_get.err"
+[[ ! -s "$temporary/open_get.out" ]]
 
 kill -TERM "$daemon_pid"
 wait "$daemon_pid"

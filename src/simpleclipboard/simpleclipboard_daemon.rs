@@ -1,9 +1,10 @@
 use arboard::Clipboard;
 use log::{debug, info, warn};
 use simpleclipboard::protocol::{
-    Ack, AuthKeys, Challenge, FRAME_HEADER_BYTES, Nonce, PlainRequest, ProtocolError, ServerHello,
-    WireAck, WireRequest, decode_request_payload, derive_auth_keys, encode_ack_frame,
-    encode_hello_frame, new_server_hello, open_request, parse_header, seal_ack,
+    Ack, AuthKeys, Challenge, FRAME_HEADER_BYTES, MAX_ACK_BYTES, Nonce, PlainRequest,
+    ProtocolError, Selection, ServerHello, WireAck, WireRequest, decode_request_payload,
+    derive_auth_keys, encode_ack_frame, encode_hello_frame, new_server_hello, open_request,
+    parse_header, seal_ack,
 };
 use std::collections::{HashSet, VecDeque};
 use std::env;
@@ -40,22 +41,32 @@ struct ClipboardWorker {
     sender: SyncSender<ClipboardCommand>,
 }
 
+// Reads and writes share one worker thread, and therefore one connection to the
+// display server: arboard's X11 backend serves the selection it owns from the
+// thread that took it, so a Get on a second connection could otherwise deadlock
+// against a Set this daemon is still serving.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClipboardOp {
+    Set { selection: Selection, text: String },
+    Get { selection: Selection },
+}
+
 struct ClipboardCommand {
-    text: String,
+    operation: ClipboardOp,
     deadline: Instant,
     phase: Arc<AtomicU8>,
-    reply: oneshot::Sender<Result<(), &'static str>>,
+    reply: oneshot::Sender<Result<Option<String>, &'static str>>,
 }
 
 impl ClipboardWorker {
     fn start() -> io::Result<Self> {
         let mut clipboard = None;
-        Self::start_with(move |text| set_clipboard_text(&mut clipboard, text))
+        Self::start_with(move |operation| run_clipboard_op(&mut clipboard, operation))
     }
 
     fn start_with<F>(mut operation: F) -> io::Result<Self>
     where
-        F: FnMut(String) -> Result<(), &'static str> + Send + 'static,
+        F: FnMut(ClipboardOp) -> Result<Option<String>, &'static str> + Send + 'static,
     {
         let (sender, receiver) = mpsc::sync_channel::<ClipboardCommand>(CLIPBOARD_QUEUE);
         std::thread::Builder::new()
@@ -85,7 +96,7 @@ impl ClipboardWorker {
                         let _ = command.reply.send(Err("clipboard_expired"));
                         continue;
                     }
-                    let result = operation(command.text);
+                    let result = operation(command.operation);
                     command.phase.store(COMMAND_FINISHED, Ordering::Release);
                     let _ = command.reply.send(result);
                 }
@@ -93,20 +104,20 @@ impl ClipboardWorker {
         Ok(Self { sender })
     }
 
-    async fn set_text(&self, text: String) -> Result<(), &'static str> {
-        self.set_text_with_timeout(text, CLIPBOARD_TIMEOUT).await
+    async fn run(&self, operation: ClipboardOp) -> Result<Option<String>, &'static str> {
+        self.run_with_timeout(operation, CLIPBOARD_TIMEOUT).await
     }
 
-    async fn set_text_with_timeout(
+    async fn run_with_timeout(
         &self,
-        text: String,
+        operation: ClipboardOp,
         operation_timeout: Duration,
-    ) -> Result<(), &'static str> {
+    ) -> Result<Option<String>, &'static str> {
         let (reply, mut result) = oneshot::channel();
         let phase = Arc::new(AtomicU8::new(COMMAND_QUEUED));
         self.sender
             .try_send(ClipboardCommand {
-                text,
+                operation,
                 deadline: Instant::now() + operation_timeout,
                 phase: phase.clone(),
                 reply,
@@ -143,22 +154,124 @@ fn worker_disconnect_detail(phase: u8) -> &'static str {
     }
 }
 
-fn set_clipboard_text(clipboard: &mut Option<Clipboard>, text: String) -> Result<(), &'static str> {
+// X11 and Wayland expose PRIMARY next to CLIPBOARD; arboard reaches it through
+// its Linux extension traits, which exist on exactly these targets.  Everywhere
+// else there is one selection, and asking for the other is an error rather than
+// a silent write to the wrong place.
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))
+))]
+mod selections {
+    use super::{Clipboard, Selection};
+    use arboard::{GetExtLinux, LinuxClipboardKind, SetExtLinux};
+
+    fn kind(selection: Selection) -> LinuxClipboardKind {
+        match selection {
+            Selection::Clipboard => LinuxClipboardKind::Clipboard,
+            Selection::Primary => LinuxClipboardKind::Primary,
+        }
+    }
+
+    pub(super) fn set(
+        clipboard: &mut Clipboard,
+        selection: Selection,
+        text: String,
+    ) -> Result<(), &'static str> {
+        clipboard
+            .set()
+            .clipboard(kind(selection))
+            .text(text)
+            .map_err(|_| "clipboard_set_failed")
+    }
+
+    pub(super) fn get(
+        clipboard: &mut Clipboard,
+        selection: Selection,
+    ) -> Result<String, &'static str> {
+        match clipboard.get().clipboard(kind(selection)).text() {
+            Ok(text) => Ok(text),
+            // An empty selection is a legitimate answer, not a failure: nothing
+            // has been copied yet, so the paste is an empty paste.
+            Err(arboard::Error::ContentNotAvailable) => Ok(String::new()),
+            Err(_) => Err("clipboard_get_failed"),
+        }
+    }
+}
+
+#[cfg(not(all(
+    unix,
+    not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))
+)))]
+mod selections {
+    use super::{Clipboard, Selection};
+
+    fn only_clipboard(selection: Selection) -> Result<(), &'static str> {
+        match selection {
+            Selection::Clipboard => Ok(()),
+            Selection::Primary => Err("selection_unsupported"),
+        }
+    }
+
+    pub(super) fn set(
+        clipboard: &mut Clipboard,
+        selection: Selection,
+        text: String,
+    ) -> Result<(), &'static str> {
+        only_clipboard(selection)?;
+        clipboard.set_text(text).map_err(|_| "clipboard_set_failed")
+    }
+
+    pub(super) fn get(
+        clipboard: &mut Clipboard,
+        selection: Selection,
+    ) -> Result<String, &'static str> {
+        only_clipboard(selection)?;
+        match clipboard.get_text() {
+            Ok(text) => Ok(text),
+            Err(arboard::Error::ContentNotAvailable) => Ok(String::new()),
+            Err(_) => Err("clipboard_get_failed"),
+        }
+    }
+}
+
+fn run_clipboard_op(
+    clipboard: &mut Option<Clipboard>,
+    operation: ClipboardOp,
+) -> Result<Option<String>, &'static str> {
     if clipboard.is_none() {
         *clipboard = Clipboard::new().ok();
     }
     let Some(active) = clipboard.as_mut() else {
         return Err("clipboard_unavailable");
     };
-    if active.set_text(text.clone()).is_ok() {
-        return Ok(());
+    // A cached connection outlives the display server that owns it, so one
+    // retry on a fresh connection is what makes a resumed session work without
+    // restarting the daemon.  An unsupported selection is not that kind of
+    // failure and must not cost a reconnect.
+    match attempt(active, operation.clone()) {
+        Ok(value) => return Ok(value),
+        Err("selection_unsupported") => return Err("selection_unsupported"),
+        Err(_) => {}
     }
 
     *clipboard = Clipboard::new().ok();
     let Some(retry) = clipboard.as_mut() else {
         return Err("clipboard_unavailable");
     };
-    retry.set_text(text).map_err(|_| "clipboard_set_failed")
+    attempt(retry, operation)
+}
+
+fn attempt(
+    clipboard: &mut Clipboard,
+    operation: ClipboardOp,
+) -> Result<Option<String>, &'static str> {
+    match operation {
+        ClipboardOp::Set { selection, text } => {
+            selections::set(clipboard, selection, text).map(|()| None)
+        }
+        ClipboardOp::Get { selection } => selections::get(clipboard, selection).map(Some),
+    }
 }
 
 struct ReplayCache {
@@ -198,31 +311,60 @@ struct AppState {
 }
 
 fn ack(ok: bool, detail: &'static str) -> Ack {
-    Ack {
-        ok,
-        detail: Some(detail.to_owned()),
+    Ack::status(ok, Some(detail.to_owned()))
+}
+
+async fn set_and_ack(state: &AppState, text: String) -> Ack {
+    let operation = ClipboardOp::Set {
+        selection: Selection::Clipboard,
+        text,
+    };
+    match state.clipboard.run(operation).await {
+        Ok(_) => ack(true, "clipboard_set_ok"),
+        Err(detail) => {
+            warn!("Clipboard operation failed: {detail}");
+            ack(false, detail)
+        }
     }
 }
 
-async fn handle_plain_request(state: &AppState, request: PlainRequest) -> Ack {
+async fn handle_plain_request(state: &AppState, request: PlainRequest, authenticated: bool) -> Ack {
     match request {
         PlainRequest::Ping => ack(true, "ping_ok"),
         PlainRequest::Set { text } => {
             debug!("Set request accepted ({} bytes)", text.len());
-            match state.clipboard.set_text(text).await {
-                Ok(()) => ack(true, "clipboard_set_ok"),
-                Err(detail) => {
-                    warn!("Clipboard operation failed: {detail}");
-                    ack(false, detail)
-                }
-            }
+            set_and_ack(state, text).await
         }
         PlainRequest::Legacy { text } => {
             debug!("Legacy set request accepted ({} bytes)", text.len());
-            match state.clipboard.set_text(text).await {
-                Ok(()) => ack(true, "clipboard_set_ok"),
+            set_and_ack(state, text).await
+        }
+        // Reading is not the mirror image of writing.  Writing to someone
+        // else's clipboard is a nuisance; reading it on demand turns the daemon
+        // into an oracle for whatever the user last copied — a password, a
+        // token — for every account that can reach loopback, which on a shared
+        // host is every account on the machine.  A token is what distinguishes
+        // "the user's own editor" from "anything that can open a socket", so a
+        // tokenless daemon answers Get with a refusal.  Every route where the
+        // daemon is the only way to reach the clipboard already requires one.
+        PlainRequest::Get { selection } => {
+            if !authenticated {
+                warn!("Get request rejected on an unauthenticated listener");
+                return ack(false, "get_requires_authentication");
+            }
+            debug!(
+                "Get request accepted for the {} selection",
+                selection.name()
+            );
+            match state.clipboard.run(ClipboardOp::Get { selection }).await {
+                Ok(Some(text)) => Ack::data(text, Some("clipboard_get_ok".to_owned())),
+                Ok(None) => ack(false, "clipboard_get_failed"),
+                // A read that times out mid-flight is simply a failed read:
+                // unlike a write, it cannot have changed anything, so there is
+                // nothing for the client to be careful about afterwards.
+                Err("clipboard_outcome_unknown") => ack(false, "clipboard_get_failed"),
                 Err(detail) => {
-                    warn!("Clipboard operation failed: {detail}");
+                    warn!("Clipboard read failed: {detail}");
                     ack(false, detail)
                 }
             }
@@ -236,9 +378,9 @@ async fn process_request(
     request: WireRequest,
 ) -> Result<WireAck, ProtocolError> {
     match (state.auth_keys.as_ref(), request) {
-        (None, WireRequest::Plain(request)) => {
-            Ok(WireAck::Plain(handle_plain_request(state, request).await))
-        }
+        (None, WireRequest::Plain(request)) => Ok(WireAck::Plain(
+            handle_plain_request(state, request, false).await,
+        )),
         (Some(_), WireRequest::Plain(_)) => {
             warn!("Plaintext request rejected while authentication is enabled");
             Ok(WireAck::Plain(ack(false, "authentication_required")))
@@ -256,7 +398,7 @@ async fn process_request(
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .insert_if_new(nonce);
             let response = if fresh {
-                handle_plain_request(state, request).await
+                handle_plain_request(state, request, true).await
             } else {
                 warn!("Authenticated request replay rejected");
                 ack(false, "replay_rejected")
@@ -565,15 +707,17 @@ fn self_test() -> io::Result<()> {
     }
 
     // And the ack back, including the binding that stops a replayed response.
-    let ack = Ack {
-        ok: true,
-        detail: None,
-    };
+    let ack = Ack::status(true, None);
     let sealed_ack = seal_ack(&keys, &challenge, request_nonce, &ack)
         .map_err(|error| fail("sealing the ack", error))?;
-    let returned =
-        simpleclipboard::protocol::open_ack(&keys, &challenge, &request_nonce, &sealed_ack)
-            .map_err(|error| fail("opening the ack", error))?;
+    let returned = simpleclipboard::protocol::open_ack(
+        &keys,
+        &challenge,
+        &request_nonce,
+        &sealed_ack,
+        MAX_ACK_BYTES,
+    )
+    .map_err(|error| fail("opening the ack", error))?;
     if returned != ack {
         return Err(io::Error::other("the ack did not survive the round trip"));
     }
@@ -699,15 +843,28 @@ async fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use simpleclipboard::protocol::{CHALLENGE_BYTES, open_ack, seal_request};
+    use simpleclipboard::protocol::{CHALLENGE_BYTES, MAX_DATA_ACK_BYTES, open_ack, seal_request};
     use std::ffi::OsString;
     use std::net::IpAddr;
 
+    // A worker that accepts every write and answers every read with a fixed
+    // string, so the request plumbing can be tested without a display server.
     fn test_state(auth_keys: Option<AuthKeys>) -> AppState {
         AppState {
             auth_keys,
-            clipboard: ClipboardWorker::start_with(|_| Ok(())).unwrap(),
+            clipboard: ClipboardWorker::start_with(|operation| match operation {
+                ClipboardOp::Set { .. } => Ok(None),
+                ClipboardOp::Get { selection } => Ok(Some(format!("stored:{}", selection.name()))),
+            })
+            .unwrap(),
             replay: Mutex::new(ReplayCache::new(8)),
+        }
+    }
+
+    fn set_op(text: &str) -> ClipboardOp {
+        ClipboardOp::Set {
+            selection: Selection::Clipboard,
+            text: text.to_owned(),
         }
     }
 
@@ -721,11 +878,11 @@ mod tests {
         let first = process_request(&state, &challenge, request.clone())
             .await
             .unwrap();
-        let first_ack = open_ack(&keys, &challenge, &nonce, &first).unwrap();
+        let first_ack = open_ack(&keys, &challenge, &nonce, &first, MAX_ACK_BYTES).unwrap();
         assert!(first_ack.ok);
 
         let replay = process_request(&state, &challenge, request).await.unwrap();
-        let replay_ack = open_ack(&keys, &challenge, &nonce, &replay).unwrap();
+        let replay_ack = open_ack(&keys, &challenge, &nonce, &replay, MAX_ACK_BYTES).unwrap();
         assert!(!replay_ack.ok);
         assert_eq!(replay_ack.detail.as_deref(), Some("replay_rejected"));
     }
@@ -747,6 +904,77 @@ mod tests {
             panic!("expected plaintext rejection");
         };
         assert_eq!(response.detail.as_deref(), Some("authentication_required"));
+    }
+
+    // Reading the clipboard is what turns the daemon into an oracle for the
+    // last thing the user copied, so it is the one request that a token gates.
+    #[tokio::test(flavor = "current_thread")]
+    async fn get_is_answered_only_for_an_authenticated_request() {
+        let keys = derive_auth_keys("secret");
+        let state = test_state(Some(keys.clone()));
+        let challenge = [7_u8; CHALLENGE_BYTES];
+        for selection in [Selection::Clipboard, Selection::Primary] {
+            let (request, nonce) =
+                seal_request(&keys, &challenge, &PlainRequest::Get { selection }).unwrap();
+            let sealed = process_request(&state, &challenge, request).await.unwrap();
+            let ack = open_ack(&keys, &challenge, &nonce, &sealed, MAX_DATA_ACK_BYTES).unwrap();
+            assert!(ack.ok);
+            assert_eq!(ack.detail.as_deref(), Some("clipboard_get_ok"));
+            assert_eq!(
+                ack.text.as_deref(),
+                Some(format!("stored:{}", selection.name()).as_str())
+            );
+        }
+
+        let open = test_state(None);
+        let refused = process_request(
+            &open,
+            &challenge,
+            WireRequest::Plain(PlainRequest::Get {
+                selection: Selection::Clipboard,
+            }),
+        )
+        .await
+        .unwrap();
+        let WireAck::Plain(refused) = refused else {
+            panic!("expected a plaintext refusal");
+        };
+        assert!(!refused.ok);
+        assert_eq!(
+            refused.detail.as_deref(),
+            Some("get_requires_authentication")
+        );
+        // A refusal must not leak the clipboard through the data field either.
+        assert_eq!(refused.text, None);
+    }
+
+    // A write can be half-done when it times out, so its caller is warned off a
+    // fallback; a read cannot, so it is reported as the plain failure it is.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_read_that_times_out_is_a_failure_rather_than_an_uncertain_outcome() {
+        let keys = derive_auth_keys("secret");
+        let state = AppState {
+            auth_keys: Some(keys.clone()),
+            clipboard: ClipboardWorker::start_with(|_| {
+                std::thread::sleep(CLIPBOARD_TIMEOUT + Duration::from_millis(200));
+                Ok(Some(String::new()))
+            })
+            .unwrap(),
+            replay: Mutex::new(ReplayCache::new(8)),
+        };
+        let challenge = [8_u8; CHALLENGE_BYTES];
+        let (request, nonce) = seal_request(
+            &keys,
+            &challenge,
+            &PlainRequest::Get {
+                selection: Selection::Clipboard,
+            },
+        )
+        .unwrap();
+        let sealed = process_request(&state, &challenge, request).await.unwrap();
+        let ack = open_ack(&keys, &challenge, &nonce, &sealed, MAX_DATA_ACK_BYTES).unwrap();
+        assert!(!ack.ok);
+        assert_eq!(ack.detail.as_deref(), Some("clipboard_get_failed"));
     }
 
     #[test]
@@ -791,7 +1019,10 @@ mod tests {
         let worker_seen = seen.clone();
         let (started, started_rx) = mpsc::sync_channel(1);
         let (release, release_rx) = mpsc::sync_channel(1);
-        let worker = ClipboardWorker::start_with(move |text| {
+        let worker = ClipboardWorker::start_with(move |operation| {
+            let ClipboardOp::Set { text, .. } = operation else {
+                panic!("expected a write");
+            };
             worker_seen
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -800,7 +1031,7 @@ mod tests {
                 let _ = started.send(());
                 let _ = release_rx.recv();
             }
-            Ok(())
+            Ok(None)
         })
         .unwrap();
 
@@ -808,7 +1039,7 @@ mod tests {
         worker
             .sender
             .try_send(ClipboardCommand {
-                text: "first".to_owned(),
+                operation: set_op("first"),
                 deadline: Instant::now() + Duration::from_secs(2),
                 phase: Arc::new(AtomicU8::new(COMMAND_QUEUED)),
                 reply: first_reply,
@@ -816,13 +1047,13 @@ mod tests {
             .unwrap();
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         let second = worker
-            .set_text_with_timeout("expired".to_owned(), Duration::from_millis(30))
+            .run_with_timeout(set_op("expired"), Duration::from_millis(30))
             .await;
         assert_eq!(second, Err("clipboard_expired"));
         release.send(()).unwrap();
-        assert_eq!(first_result.await.unwrap(), Ok(()));
+        assert_eq!(first_result.await.unwrap(), Ok(None));
         worker
-            .set_text_with_timeout("barrier".to_owned(), Duration::from_secs(1))
+            .run_with_timeout(set_op("barrier"), Duration::from_secs(1))
             .await
             .unwrap();
 
@@ -839,13 +1070,13 @@ mod tests {
         let worker = ClipboardWorker::start_with(move |_| {
             worker_executed.store(1, Ordering::Release);
             std::thread::sleep(Duration::from_millis(400));
-            Ok(())
+            Ok(None)
         })
         .unwrap();
 
         let started = Instant::now();
         let result = worker
-            .set_text_with_timeout("slow".to_owned(), Duration::from_millis(150))
+            .run_with_timeout(set_op("slow"), Duration::from_millis(150))
             .await;
         assert_eq!(result, Err("clipboard_outcome_unknown"));
         assert_eq!(executed.load(Ordering::Acquire), 1);

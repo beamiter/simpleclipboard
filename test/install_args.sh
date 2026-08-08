@@ -41,19 +41,28 @@ cat >"$scratch/stub-bin/rustc" <<'STUB'
 printf 'host: stub-target\n'
 STUB
 
+# $SELF_TEST_EXIT lets the same stub stand in for a build that works and one
+# that links but does not run.
 cat >"$scratch/stub-bin/cargo" <<STUB
 #!/bin/sh
 release="\$CARGO_TARGET_DIR/stub-target/release"
 mkdir -p "\$release"
 : >"\$release/$stub_library"
-cat >"\$release/simpleclipboard-daemon" <<'DAEMON'
+cat >"\$release/simpleclipboard-daemon" <<DAEMON
 #!/bin/sh
-case "\$1" in
-  --self-test) echo "sealing the request: stub failure" >&2; exit 1 ;;
+case "\\\$1" in
+  --self-test)
+    if [ "\\\${SELF_TEST_EXIT:-1}" -ne 0 ]; then
+      echo "sealing the request: stub failure" >&2
+      exit "\\\$SELF_TEST_EXIT"
+    fi
+    echo ok
+    ;;
   --version) echo "simpleclipboard-daemon 0.0.0-stub" ;;
 esac
 DAEMON
-chmod 755 "\$release/simpleclipboard-daemon"
+: >"\$release/simpleclipboard-client"
+chmod 755 "\$release/simpleclipboard-daemon" "\$release/simpleclipboard-client"
 STUB
 
 chmod 755 "$scratch/stub-bin/rustc" "$scratch/stub-bin/cargo"
@@ -77,3 +86,19 @@ if ! grep -q 'failed --self-test' "$scratch/output"; then
   cat "$scratch/output" >&2
   exit 1
 fi
+
+# Vim drives simpleclipboard-client with job_start(), so an install that ships
+# only the daemon leaves the asynchronous transport and every paste unavailable
+# with nothing to point at.  A successful install must place all three
+# artifacts, and none of them may be left behind by the failed attempt above.
+mkdir -p "$scratch/ok-root/lib"
+cp "$repo_root/install.sh" "$scratch/ok-root/install.sh"
+PATH="$scratch/stub-bin:$PATH" CARGO_TARGET_DIR="$scratch/ok-target" \
+  SELF_TEST_EXIT=0 "$scratch/ok-root/install.sh" >"$scratch/ok-output" 2>&1
+for artifact in "$stub_library" simpleclipboard-daemon simpleclipboard-client; do
+  if [[ ! -e "$scratch/ok-root/lib/$artifact" ]]; then
+    echo "install.sh did not install $artifact" >&2
+    cat "$scratch/ok-output" >&2
+    exit 1
+  fi
+done

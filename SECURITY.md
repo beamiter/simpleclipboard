@@ -63,6 +63,20 @@ With no token, loopback SCB1 payloads are plaintext. The daemon refuses a
 non-loopback listener without a token, and Vim refuses remote, container, or
 explicit custom daemon routing without one.
 
+Reading the clipboard is not the mirror image of writing it. Writing to a
+tokenless loopback daemon is a nuisance; reading from one would let every
+account that can reach loopback poll for whatever the user last copied — a
+password, a recovery code, an access token. The daemon therefore answers a
+`get` request only when that request is authenticated, and otherwise refuses it
+with `get_requires_authentication`. Set `g:simpleclipboard_token` to read the
+clipboard through the daemon; without one, a paste falls back to the local
+`pbpaste`/`wl-paste`/`xclip`/`xsel` commands, which are already subject to the
+display server's own access control.
+
+The pre-shared key reaches `simpleclipboard-client` through the environment and
+the clipboard payload through its standard input. Neither is ever a command-line
+argument, because `/proc/<pid>/cmdline` is world-readable on Linux.
+
 - Keep the daemon on loopback whenever possible.
 - Use SSH port forwarding, a VPN, or another trusted encrypted transport
   across machine boundaries as defense in depth.

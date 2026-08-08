@@ -2,9 +2,9 @@ pub mod protocol;
 
 use libc::c_char;
 use protocol::{
-    Ack, AuthKeys, FRAME_HEADER_BYTES, PlainRequest, ServerHello, WireAck, WireRequest,
-    decode_ack_payload, decode_hello_payload, derive_auth_keys, encode_request_frame, open_ack,
-    parse_header, seal_request, validate_ack_length,
+    Ack, AuthKeys, FRAME_HEADER_BYTES, MAX_ACK_BYTES, PlainRequest, ServerHello, WireAck,
+    WireRequest, ack_limit, decode_ack_payload, decode_hello_payload, derive_auth_keys,
+    encode_request_frame, open_ack, parse_header, seal_request, validate_ack_length,
 };
 use std::ffi::CStr;
 use std::fmt;
@@ -46,13 +46,14 @@ static RESOLVER: LazyLock<Option<SyncSender<ResolveJob>>> = LazyLock::new(|| {
         .map(|_| sender)
 });
 
-struct ClientRequest {
+/// One request plus the keys derived from the caller's token, if any.
+pub struct ClientRequest {
     request: PlainRequest,
     keys: Option<AuthKeys>,
 }
 
 impl ClientRequest {
-    fn new(request: PlainRequest, token: &str) -> Self {
+    pub fn new(request: PlainRequest, token: &str) -> Self {
         Self {
             request,
             keys: (!token.is_empty()).then(|| derive_auth_keys(token)),
@@ -68,7 +69,7 @@ impl ClientRequest {
 }
 
 #[derive(Debug)]
-enum ClientError {
+pub enum ClientError {
     InvalidPayload,
     Io(std::io::Error),
     Protocol(protocol::ProtocolError),
@@ -176,7 +177,12 @@ fn connect_with_timeout(address: &str) -> Result<TcpStream, ClientError> {
     })))
 }
 
-fn send_request(address: &str, request: &ClientRequest) -> Result<Ack, ClientError> {
+/// Sends one request and returns the daemon's answer.
+///
+/// Shared verbatim by the in-process `libcall` entry points and by the
+/// `simpleclipboard-client` binary the plugin drives with `job_start()`, so the
+/// two can never drift on framing, sealing or response binding.
+pub fn send_request(address: &str, request: &ClientRequest) -> Result<Ack, ClientError> {
     if address.is_empty() {
         return Err(ClientError::InvalidPayload);
     }
@@ -198,11 +204,12 @@ fn send_request(address: &str, request: &ClientRequest) -> Result<Ack, ClientErr
         stream.flush()?;
         stream.shutdown(Shutdown::Write)?;
 
-        let response = read_ack_from_stream(&mut stream, deadline)?;
+        let limit = ack_limit(&request.request);
+        let response = read_ack_from_stream(&mut stream, deadline, limit)?;
         match (request.keys.as_ref(), request_nonce, response) {
             (None, None, WireAck::Plain(ack)) => Ok(ack),
             (Some(keys), Some(nonce), response) => {
-                Ok(open_ack(keys, &hello.challenge, &nonce, &response)?)
+                Ok(open_ack(keys, &hello.challenge, &nonce, &response, limit)?)
             }
             _ => Err(protocol::ProtocolError::UnexpectedProtection.into()),
         }
@@ -224,20 +231,26 @@ fn read_ack(reader: &mut impl Read) -> Result<WireAck, ClientError> {
     let mut header = [0_u8; FRAME_HEADER_BYTES];
     reader.read_exact(&mut header)?;
     let payload_length = parse_header(&header)?;
-    validate_ack_length(payload_length)?;
+    validate_ack_length(payload_length, MAX_ACK_BYTES)?;
     let mut payload = vec![0_u8; payload_length];
     reader.read_exact(&mut payload)?;
-    Ok(decode_ack_payload(&payload)?)
+    Ok(decode_ack_payload(&payload, MAX_ACK_BYTES)?)
 }
 
-fn read_ack_from_stream(stream: &mut TcpStream, deadline: Instant) -> Result<WireAck, ClientError> {
+fn read_ack_from_stream(
+    stream: &mut TcpStream,
+    deadline: Instant,
+    limit: usize,
+) -> Result<WireAck, ClientError> {
     let mut header = [0_u8; FRAME_HEADER_BYTES];
     read_exact_until(stream, &mut header, deadline)?;
     let payload_length = parse_header(&header)?;
-    validate_ack_length(payload_length)?;
+    // Bounded by what the request that was actually sent may be answered with,
+    // so a ping cannot make this allocate a Get-sized buffer.
+    validate_ack_length(payload_length, limit)?;
     let mut payload = vec![0_u8; payload_length];
     read_exact_until(stream, &mut payload, deadline)?;
-    Ok(decode_ack_payload(&payload)?)
+    Ok(decode_ack_payload(&payload, limit)?)
 }
 
 fn read_hello_from_stream(
@@ -247,7 +260,7 @@ fn read_hello_from_stream(
     let mut header = [0_u8; FRAME_HEADER_BYTES];
     read_exact_until(stream, &mut header, deadline)?;
     let payload_length = parse_header(&header)?;
-    validate_ack_length(payload_length)?;
+    validate_ack_length(payload_length, MAX_ACK_BYTES)?;
     let mut payload = vec![0_u8; payload_length];
     read_exact_until(stream, &mut payload, deadline)?;
     Ok(decode_hello_payload(&payload)?)
@@ -367,7 +380,11 @@ fn parse_legacy_payload(payload: &str) -> Result<(&str, ClientRequest), ClientEr
     ))
 }
 
-fn ack_result(ack: &Ack) -> i32 {
+/// 1 success, 2 outcome unknown, 0 definitive failure.
+///
+/// The same three values the FFI returns and the client binary exits with, so
+/// the Vim side reads one vocabulary whichever transport it used.
+pub fn ack_result(ack: &Ack) -> i32 {
     if ack.ok {
         1
     } else if ack.detail.as_deref() == Some(AMBIGUOUS_CLIPBOARD_DETAIL) {
@@ -479,10 +496,10 @@ mod tests {
 
     #[test]
     fn client_requires_a_complete_valid_ack() {
-        let mut ack = encode_ack_frame(&WireAck::Plain(Ack {
-            ok: true,
-            detail: Some("ping_ok".to_owned()),
-        }))
+        let mut ack = encode_ack_frame(&WireAck::Plain(Ack::status(
+            true,
+            Some("ping_ok".to_owned()),
+        )))
         .unwrap();
         ack.pop();
         let result = read_ack(&mut Cursor::new(ack));
@@ -496,10 +513,10 @@ mod tests {
 
     #[test]
     fn rejected_ack_is_not_reported_as_success() {
-        let encoded = encode_ack_frame(&WireAck::Plain(Ack {
-            ok: false,
-            detail: Some("request_rejected".to_owned()),
-        }))
+        let encoded = encode_ack_frame(&WireAck::Plain(Ack::status(
+            false,
+            Some("request_rejected".to_owned()),
+        )))
         .unwrap();
         let WireAck::Plain(ack) = read_ack(&mut Cursor::new(encoded)).unwrap() else {
             panic!("expected plaintext ack");
@@ -509,10 +526,7 @@ mod tests {
 
     #[test]
     fn ambiguous_clipboard_result_suppresses_immediate_fallback() {
-        let ack = Ack {
-            ok: false,
-            detail: Some(AMBIGUOUS_CLIPBOARD_DETAIL.to_owned()),
-        };
+        let ack = Ack::status(false, Some(AMBIGUOUS_CLIPBOARD_DETAIL.to_owned()));
         assert_eq!(ack_result(&ack), 2);
     }
 

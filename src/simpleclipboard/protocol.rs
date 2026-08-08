@@ -9,6 +9,13 @@ pub const FRAME_MAGIC: [u8; 4] = *b"SCB1";
 pub const FRAME_HEADER_BYTES: usize = 8;
 pub const MAX_FRAME_BYTES: usize = 10 * 1024 * 1024;
 pub const MAX_ACK_BYTES: usize = 4096;
+// A status ack carries a fixed vocabulary of short details, so 4 KiB is a
+// generous bound and a useful one: it is how much a client is willing to read
+// back from something claiming to be the daemon.  A Get reply carries the
+// clipboard itself, which is request-sized rather than ack-sized, so it needs
+// its own bound.  The two are kept separate rather than merged so that a ping
+// or a set still cannot be answered with ten megabytes.
+pub const MAX_DATA_ACK_BYTES: usize = MAX_FRAME_BYTES;
 pub const NONCE_BYTES: usize = 12;
 pub const CHALLENGE_BYTES: usize = 32;
 
@@ -22,14 +29,19 @@ const AEAD_TAG_BYTES: usize = 16;
 const TAG_PING: u8 = 0x01;
 const TAG_SET: u8 = 0x02;
 const TAG_LEGACY: u8 = 0x03;
+const TAG_GET: u8 = 0x04;
 const TAG_SERVER_HELLO: u8 = 0x10;
 const TAG_REQUEST_PLAIN: u8 = 0x20;
 const TAG_REQUEST_AUTHENTICATED: u8 = 0x21;
 const TAG_ACK_PLAIN: u8 = 0x30;
 const TAG_ACK_AUTHENTICATED: u8 = 0x31;
 const TAG_ACK_BODY: u8 = 0x01;
+const TAG_ACK_DATA_BODY: u8 = 0x02;
 const TAG_NONE: u8 = 0x00;
 const TAG_SOME: u8 = 0x01;
+
+const SELECTION_CLIPBOARD: u8 = 0x00;
+const SELECTION_PRIMARY: u8 = 0x01;
 
 const PLAIN_REQUEST_PREFIX_BYTES: usize = 1;
 const STRING_PREFIX_BYTES: usize = LENGTH_BYTES;
@@ -37,6 +49,7 @@ const WIRE_PLAIN_PREFIX_BYTES: usize = 1;
 const WIRE_REQUEST_AUTH_OVERHEAD: usize = 1 + NONCE_BYTES + LENGTH_BYTES;
 const ACK_BODY_MIN_BYTES: usize = 3;
 const ACK_BODY_WITH_DETAIL_OVERHEAD: usize = 3 + LENGTH_BYTES;
+const ACK_BODY_WITH_TEXT_OVERHEAD: usize = ACK_BODY_WITH_DETAIL_OVERHEAD + LENGTH_BYTES;
 const WIRE_ACK_AUTH_OVERHEAD: usize = 1 + NONCE_BYTES + NONCE_BYTES + LENGTH_BYTES;
 const MIN_REQUEST_CIPHERTEXT_BYTES: usize = AEAD_TAG_BYTES + PLAIN_REQUEST_PREFIX_BYTES;
 const MIN_ACK_CIPHERTEXT_BYTES: usize = AEAD_TAG_BYTES + ACK_BODY_MIN_BYTES;
@@ -59,11 +72,58 @@ impl Drop for AuthKeys {
     }
 }
 
+/// Which of the platform's selections a request addresses.
+///
+/// X11 and Wayland expose two independent buffers: CLIPBOARD, filled by an
+/// explicit copy, and PRIMARY, filled by merely selecting text and pasted with
+/// the middle mouse button.  They are genuinely different destinations, so the
+/// selection travels with the request instead of being a daemon-wide mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Selection {
+    #[default]
+    Clipboard,
+    Primary,
+}
+
+impl Selection {
+    fn tag(self) -> u8 {
+        match self {
+            Self::Clipboard => SELECTION_CLIPBOARD,
+            Self::Primary => SELECTION_PRIMARY,
+        }
+    }
+
+    fn from_tag(tag: u8) -> Result<Self, ProtocolError> {
+        match tag {
+            SELECTION_CLIPBOARD => Ok(Self::Clipboard),
+            SELECTION_PRIMARY => Ok(Self::Primary),
+            tag => Err(ProtocolError::UnknownTag(tag)),
+        }
+    }
+
+    /// The name used on the command line and in the plugin's messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Clipboard => "clipboard",
+            Self::Primary => "primary",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "clipboard" => Some(Self::Clipboard),
+            "primary" => Some(Self::Primary),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlainRequest {
     Ping,
     Set { text: String },
     Legacy { text: String },
+    Get { selection: Selection },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,10 +137,35 @@ pub struct ServerHello {
     pub challenge: Challenge,
 }
 
+/// The daemon's answer to one request.
+///
+/// `text` is `Some` only for a Get reply, and it is what splits an ack into two
+/// wire shapes: a status body that is always tiny, and a data body that carries
+/// a clipboard.  Keeping them one type keeps the sealing, framing and response
+/// binding identical for both — only the length bound differs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ack {
     pub ok: bool,
     pub detail: Option<String>,
+    pub text: Option<String>,
+}
+
+impl Ack {
+    pub fn status(ok: bool, detail: Option<String>) -> Self {
+        Self {
+            ok,
+            detail,
+            text: None,
+        }
+    }
+
+    pub fn data(text: String, detail: Option<String>) -> Self {
+        Self {
+            ok: true,
+            detail,
+            text: Some(text),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,6 +346,7 @@ fn append_length_prefixed(output: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Prot
 fn encode_plain_request(request: &PlainRequest) -> Result<Vec<u8>, ProtocolError> {
     match request {
         PlainRequest::Ping => Ok(vec![TAG_PING]),
+        PlainRequest::Get { selection } => Ok(vec![TAG_GET, selection.tag()]),
         PlainRequest::Set { text } | PlainRequest::Legacy { text } => {
             let length = checked_size(
                 &[PLAIN_REQUEST_PREFIX_BYTES, STRING_PREFIX_BYTES, text.len()],
@@ -284,6 +370,9 @@ fn decode_plain_request(payload: &[u8]) -> Result<PlainRequest, ProtocolError> {
     let tag = decoder.read_u8()?;
     let request = match tag {
         TAG_PING => PlainRequest::Ping,
+        TAG_GET => PlainRequest::Get {
+            selection: Selection::from_tag(decoder.read_u8()?)?,
+        },
         TAG_SET | TAG_LEGACY => {
             let maximum = MAX_FRAME_BYTES
                 - WIRE_PLAIN_PREFIX_BYTES
@@ -305,17 +394,51 @@ fn decode_plain_request(payload: &[u8]) -> Result<PlainRequest, ProtocolError> {
     Ok(request)
 }
 
+// How big this particular ack is allowed to get: a data body carries the
+// clipboard, everything else is a fixed-vocabulary status line.
+fn ack_body_limit(ack: &Ack) -> usize {
+    if ack.text.is_some() {
+        MAX_DATA_ACK_BYTES
+    } else {
+        MAX_ACK_BYTES
+    }
+}
+
+fn wire_ack_limit(ack: &WireAck) -> usize {
+    match ack {
+        WireAck::Plain(ack) => ack_body_limit(ack),
+        // The body is opaque once sealed, so the frame bound is the wider one;
+        // the plaintext was already bounded by its own kind before sealing.
+        WireAck::Authenticated { .. } => MAX_DATA_ACK_BYTES,
+    }
+}
+
 fn encode_ack_body(ack: &Ack) -> Result<Vec<u8>, ProtocolError> {
+    let maximum = ack_body_limit(ack) - WIRE_PLAIN_PREFIX_BYTES;
     let detail_bytes = ack.detail.as_deref().map(str::as_bytes);
-    let length = match detail_bytes {
-        None => ACK_BODY_MIN_BYTES,
-        Some(detail) => checked_size(
+    let text_bytes = ack.text.as_deref().map(str::as_bytes);
+    let mut parts = vec![ACK_BODY_MIN_BYTES];
+    if let Some(detail) = detail_bytes {
+        // The detail keeps the status bound even in a data ack, matching what
+        // the decoder is willing to read back.
+        checked_size(
             &[ACK_BODY_WITH_DETAIL_OVERHEAD, detail.len()],
             MAX_ACK_BYTES - WIRE_PLAIN_PREFIX_BYTES,
-        )?,
-    };
+        )?;
+        parts.push(LENGTH_BYTES);
+        parts.push(detail.len());
+    }
+    if let Some(text) = text_bytes {
+        parts.push(LENGTH_BYTES);
+        parts.push(text.len());
+    }
+    let length = checked_size(&parts, maximum)?;
     let mut output = Vec::with_capacity(length);
-    output.push(TAG_ACK_BODY);
+    output.push(if text_bytes.is_some() {
+        TAG_ACK_DATA_BODY
+    } else {
+        TAG_ACK_BODY
+    });
     output.push(u8::from(ack.ok));
     match detail_bytes {
         None => output.push(TAG_NONE),
@@ -324,16 +447,24 @@ fn encode_ack_body(ack: &Ack) -> Result<Vec<u8>, ProtocolError> {
             append_length_prefixed(&mut output, detail)?;
         }
     }
+    if let Some(text) = text_bytes {
+        append_length_prefixed(&mut output, text)?;
+    }
     Ok(output)
 }
 
 fn decode_ack_body(payload: &[u8]) -> Result<Ack, ProtocolError> {
-    checked_size(&[payload.len()], MAX_ACK_BYTES - WIRE_PLAIN_PREFIX_BYTES)?;
+    // The body tag decides the bound before a single length is trusted, so a
+    // status ack still cannot claim more than MAX_ACK_BYTES.
+    let body_tag = *payload.first().ok_or(ProtocolError::UnexpectedEof)?;
+    let maximum = match body_tag {
+        TAG_ACK_BODY => MAX_ACK_BYTES,
+        TAG_ACK_DATA_BODY => MAX_DATA_ACK_BYTES,
+        tag => return Err(ProtocolError::UnknownTag(tag)),
+    } - WIRE_PLAIN_PREFIX_BYTES;
+    checked_size(&[payload.len()], maximum)?;
     let mut decoder = Decoder::new(payload);
-    let body_tag = decoder.read_u8()?;
-    if body_tag != TAG_ACK_BODY {
-        return Err(ProtocolError::UnknownTag(body_tag));
-    }
+    decoder.read_u8()?;
     let ok = match decoder.read_u8()? {
         0 => false,
         1 => true,
@@ -342,8 +473,12 @@ fn decode_ack_body(payload: &[u8]) -> Result<Ack, ProtocolError> {
     let detail = match decoder.read_u8()? {
         TAG_NONE => None,
         TAG_SOME => {
-            let maximum = MAX_ACK_BYTES - WIRE_PLAIN_PREFIX_BYTES - ACK_BODY_WITH_DETAIL_OVERHEAD;
-            let bytes = decoder.read_length_prefixed(0, maximum)?;
+            // A detail is a short status word whichever body carries it, so it
+            // keeps the tight bound even inside a data ack.
+            let bytes = decoder.read_length_prefixed(
+                0,
+                MAX_ACK_BYTES - WIRE_PLAIN_PREFIX_BYTES - ACK_BODY_WITH_DETAIL_OVERHEAD,
+            )?;
             Some(
                 std::str::from_utf8(bytes)
                     .map_err(|_| ProtocolError::InvalidUtf8)?
@@ -352,8 +487,18 @@ fn decode_ack_body(payload: &[u8]) -> Result<Ack, ProtocolError> {
         }
         tag => return Err(ProtocolError::UnknownTag(tag)),
     };
+    let text = if body_tag == TAG_ACK_DATA_BODY {
+        let bytes = decoder.read_length_prefixed(0, maximum - ACK_BODY_WITH_TEXT_OVERHEAD)?;
+        Some(
+            std::str::from_utf8(bytes)
+                .map_err(|_| ProtocolError::InvalidUtf8)?
+                .to_owned(),
+        )
+    } else {
+        None
+    };
     decoder.finish()?;
-    Ok(Ack { ok, detail })
+    Ok(Ack { ok, detail, text })
 }
 
 fn encode_wire_request(request: &WireRequest) -> Result<Vec<u8>, ProtocolError> {
@@ -409,7 +554,7 @@ fn encode_server_hello(hello: &ServerHello) -> Vec<u8> {
 }
 
 fn decode_server_hello(payload: &[u8]) -> Result<ServerHello, ProtocolError> {
-    validate_ack_length(payload.len())?;
+    validate_ack_length(payload.len(), MAX_ACK_BYTES)?;
     let mut decoder = Decoder::new(payload);
     let tag = decoder.read_u8()?;
     if tag != TAG_SERVER_HELLO {
@@ -421,10 +566,11 @@ fn decode_server_hello(payload: &[u8]) -> Result<ServerHello, ProtocolError> {
 }
 
 fn encode_wire_ack(ack: &WireAck) -> Result<Vec<u8>, ProtocolError> {
+    let maximum = wire_ack_limit(ack);
     match ack {
         WireAck::Plain(ack) => {
             let body = encode_ack_body(ack)?;
-            let length = checked_size(&[WIRE_PLAIN_PREFIX_BYTES, body.len()], MAX_ACK_BYTES)?;
+            let length = checked_size(&[WIRE_PLAIN_PREFIX_BYTES, body.len()], maximum)?;
             let mut output = Vec::with_capacity(length);
             output.push(TAG_ACK_PLAIN);
             output.extend_from_slice(&body);
@@ -435,7 +581,7 @@ fn encode_wire_ack(ack: &WireAck) -> Result<Vec<u8>, ProtocolError> {
             nonce,
             ciphertext,
         } => {
-            let length = checked_size(&[WIRE_ACK_AUTH_OVERHEAD, ciphertext.len()], MAX_ACK_BYTES)?;
+            let length = checked_size(&[WIRE_ACK_AUTH_OVERHEAD, ciphertext.len()], maximum)?;
             if ciphertext.len() < MIN_ACK_CIPHERTEXT_BYTES {
                 return Err(ProtocolError::InvalidLength(ciphertext.len()));
             }
@@ -449,15 +595,15 @@ fn encode_wire_ack(ack: &WireAck) -> Result<Vec<u8>, ProtocolError> {
     }
 }
 
-fn decode_wire_ack(payload: &[u8]) -> Result<WireAck, ProtocolError> {
-    validate_ack_length(payload.len())?;
+fn decode_wire_ack(payload: &[u8], limit: usize) -> Result<WireAck, ProtocolError> {
+    validate_ack_length(payload.len(), limit)?;
     let mut decoder = Decoder::new(payload);
     match decoder.read_u8()? {
         TAG_ACK_PLAIN => decode_ack_body(decoder.remaining()).map(WireAck::Plain),
         TAG_ACK_AUTHENTICATED => {
             let request_nonce = decoder.read_array::<NONCE_BYTES>()?;
             let nonce = decoder.read_array::<NONCE_BYTES>()?;
-            let maximum = MAX_ACK_BYTES - WIRE_ACK_AUTH_OVERHEAD;
+            let maximum = limit - WIRE_ACK_AUTH_OVERHEAD;
             let ciphertext = decoder
                 .read_length_prefixed(MIN_ACK_CIPHERTEXT_BYTES, maximum)?
                 .to_vec();
@@ -580,7 +726,7 @@ fn seal_ack_with_nonce(
     let plaintext = encode_ack_body(ack)?;
     checked_size(
         &[WIRE_ACK_AUTH_OVERHEAD, plaintext.len(), AEAD_TAG_BYTES],
-        MAX_ACK_BYTES,
+        ack_body_limit(ack),
     )?;
     let aad = ack_aad(challenge, &request_nonce);
     let ciphertext = encrypt(&keys.ack, &nonce, &plaintext, &aad)?;
@@ -591,11 +737,17 @@ fn seal_ack_with_nonce(
     })
 }
 
+/// Opens an authenticated ack, refusing anything larger than `limit`.
+///
+/// The caller knows which request it sent and therefore how large a legitimate
+/// answer can be; passing that bound in is what stops a ping from being
+/// answered with a ten-megabyte allocation.
 pub fn open_ack(
     keys: &AuthKeys,
     challenge: &Challenge,
     expected_request_nonce: &Nonce,
     response: &WireAck,
+    limit: usize,
 ) -> Result<Ack, ProtocolError> {
     let WireAck::Authenticated {
         request_nonce,
@@ -609,7 +761,7 @@ pub fn open_ack(
         return Err(ProtocolError::ResponseBinding);
     }
     if ciphertext.len() < MIN_ACK_CIPHERTEXT_BYTES
-        || ciphertext.len() > MAX_ACK_BYTES - WIRE_ACK_AUTH_OVERHEAD
+        || ciphertext.len() > limit - WIRE_ACK_AUTH_OVERHEAD
     {
         return Err(ProtocolError::InvalidLength(ciphertext.len()));
     }
@@ -633,13 +785,13 @@ pub fn encode_request_frame(request: &WireRequest) -> Result<Vec<u8>, ProtocolEr
 
 pub fn encode_hello_frame(hello: &ServerHello) -> Result<Vec<u8>, ProtocolError> {
     let payload = encode_server_hello(hello);
-    validate_ack_length(payload.len())?;
+    validate_ack_length(payload.len(), MAX_ACK_BYTES)?;
     frame(payload)
 }
 
 pub fn encode_ack_frame(ack: &WireAck) -> Result<Vec<u8>, ProtocolError> {
     let payload = encode_wire_ack(ack)?;
-    validate_ack_length(payload.len())?;
+    validate_ack_length(payload.len(), wire_ack_limit(ack))?;
     frame(payload)
 }
 
@@ -651,12 +803,20 @@ pub fn decode_hello_payload(payload: &[u8]) -> Result<ServerHello, ProtocolError
     decode_server_hello(payload)
 }
 
-pub fn decode_ack_payload(payload: &[u8]) -> Result<WireAck, ProtocolError> {
-    decode_wire_ack(payload)
+pub fn decode_ack_payload(payload: &[u8], limit: usize) -> Result<WireAck, ProtocolError> {
+    decode_wire_ack(payload, limit)
 }
 
-pub fn validate_ack_length(length: usize) -> Result<(), ProtocolError> {
-    if length == 0 || length > MAX_ACK_BYTES {
+/// The largest ack the given request may legitimately be answered with.
+pub fn ack_limit(request: &PlainRequest) -> usize {
+    match request {
+        PlainRequest::Get { .. } => MAX_DATA_ACK_BYTES,
+        _ => MAX_ACK_BYTES,
+    }
+}
+
+pub fn validate_ack_length(length: usize, limit: usize) -> Result<(), ProtocolError> {
+    if length == 0 || length > limit {
         Err(ProtocolError::InvalidLength(length))
     } else {
         Ok(())
@@ -712,6 +872,12 @@ mod tests {
             },
             PlainRequest::Legacy {
                 text: "legacy".to_owned(),
+            },
+            PlainRequest::Get {
+                selection: Selection::Clipboard,
+            },
+            PlainRequest::Get {
+                selection: Selection::Primary,
             },
         ] {
             let wire = WireRequest::Plain(request);
@@ -782,26 +948,38 @@ mod tests {
         let keys = derive_auth_keys("secret");
         let challenge = [2_u8; CHALLENGE_BYTES];
         let request_nonce = [3_u8; NONCE_BYTES];
-        let ack = Ack {
-            ok: true,
-            detail: Some("clipboard_set_ok".to_owned()),
-        };
+        let ack = Ack::status(true, Some("clipboard_set_ok".to_owned()));
         let mut response =
             seal_ack_with_nonce(&keys, &challenge, request_nonce, &ack, [9_u8; NONCE_BYTES])
                 .unwrap();
         let encoded = encode_ack_frame(&response).unwrap();
         let (_, payload) = split_frame(&encoded);
-        assert_eq!(decode_ack_payload(payload).unwrap(), response);
         assert_eq!(
-            open_ack(&keys, &challenge, &request_nonce, &response).unwrap(),
+            decode_ack_payload(payload, MAX_ACK_BYTES).unwrap(),
+            response
+        );
+        assert_eq!(
+            open_ack(&keys, &challenge, &request_nonce, &response, MAX_ACK_BYTES).unwrap(),
             ack
         );
         assert_eq!(
-            open_ack(&keys, &challenge, &[4_u8; NONCE_BYTES], &response),
+            open_ack(
+                &keys,
+                &challenge,
+                &[4_u8; NONCE_BYTES],
+                &response,
+                MAX_ACK_BYTES
+            ),
             Err(ProtocolError::ResponseBinding)
         );
         assert_eq!(
-            open_ack(&keys, &[8_u8; CHALLENGE_BYTES], &request_nonce, &response),
+            open_ack(
+                &keys,
+                &[8_u8; CHALLENGE_BYTES],
+                &request_nonce,
+                &response,
+                MAX_ACK_BYTES
+            ),
             Err(ProtocolError::AuthenticationFailed)
         );
 
@@ -810,7 +988,7 @@ mod tests {
         };
         ciphertext[0] ^= 1;
         assert_eq!(
-            open_ack(&keys, &challenge, &request_nonce, &response),
+            open_ack(&keys, &challenge, &request_nonce, &response, MAX_ACK_BYTES),
             Err(ProtocolError::AuthenticationFailed)
         );
     }
@@ -832,26 +1010,26 @@ mod tests {
     #[test]
     fn ack_round_trip_is_strict() {
         for ack in [
-            Ack {
-                ok: true,
-                detail: None,
-            },
-            Ack {
-                ok: false,
-                detail: Some("request_rejected".to_owned()),
-            },
+            Ack::status(true, None),
+            Ack::status(false, Some("request_rejected".to_owned())),
+            Ack::data(String::new(), None),
+            Ack::data(
+                "pasted\n第二行".to_owned(),
+                Some("clipboard_get_ok".to_owned()),
+            ),
         ] {
+            let limit = ack_body_limit(&ack);
             let wire = WireAck::Plain(ack);
             let encoded = encode_ack_frame(&wire).unwrap();
             let (header, payload) = split_frame(&encoded);
 
             assert_eq!(parse_header(header).unwrap(), payload.len());
-            assert_eq!(decode_ack_payload(payload).unwrap(), wire);
+            assert_eq!(decode_ack_payload(payload, limit).unwrap(), wire);
 
             let mut trailing = payload.to_vec();
             trailing.push(0);
             assert_eq!(
-                decode_ack_payload(&trailing),
+                decode_ack_payload(&trailing, limit),
                 Err(ProtocolError::TrailingBytes)
             );
         }
@@ -870,15 +1048,44 @@ mod tests {
         let (_, set_payload) = split_frame(&set);
         assert_eq!(set_payload, [TAG_REQUEST_PLAIN, TAG_SET, 0, 0, 0, 1, b'A']);
 
-        let ack = encode_ack_frame(&WireAck::Plain(Ack {
-            ok: false,
-            detail: Some("x".to_owned()),
-        }))
-        .unwrap();
+        let ack =
+            encode_ack_frame(&WireAck::Plain(Ack::status(false, Some("x".to_owned())))).unwrap();
         let (_, ack_payload) = split_frame(&ack);
         assert_eq!(
             ack_payload,
             [TAG_ACK_PLAIN, TAG_ACK_BODY, 0, TAG_SOME, 0, 0, 0, 1, b'x']
+        );
+
+        // Get is two bytes on the wire and the selection is one of them, so a
+        // paste cannot silently address the wrong selection.
+        for (selection, tag) in [
+            (Selection::Clipboard, SELECTION_CLIPBOARD),
+            (Selection::Primary, SELECTION_PRIMARY),
+        ] {
+            let get =
+                encode_request_frame(&WireRequest::Plain(PlainRequest::Get { selection })).unwrap();
+            let (_, get_payload) = split_frame(&get);
+            assert_eq!(get_payload, [TAG_REQUEST_PLAIN, TAG_GET, tag]);
+        }
+
+        // A data ack appends the clipboard after the status fields, so a
+        // decoder that stopped at the detail would see trailing bytes.
+        let data = encode_ack_frame(&WireAck::Plain(Ack::data("hi".to_owned(), None))).unwrap();
+        let (_, data_payload) = split_frame(&data);
+        assert_eq!(
+            data_payload,
+            [
+                TAG_ACK_PLAIN,
+                TAG_ACK_DATA_BODY,
+                1,
+                TAG_NONE,
+                0,
+                0,
+                0,
+                2,
+                b'h',
+                b'i'
+            ]
         );
     }
 
@@ -897,15 +1104,15 @@ mod tests {
             Err(ProtocolError::UnknownTag(0xfd))
         );
         assert_eq!(
-            decode_ack_payload(&[0xfc]),
+            decode_ack_payload(&[0xfc], MAX_ACK_BYTES),
             Err(ProtocolError::UnknownTag(0xfc))
         );
         assert_eq!(
-            decode_ack_payload(&[TAG_ACK_PLAIN, TAG_ACK_BODY, 2, TAG_NONE]),
+            decode_ack_payload(&[TAG_ACK_PLAIN, TAG_ACK_BODY, 2, TAG_NONE], MAX_ACK_BYTES),
             Err(ProtocolError::InvalidBoolean(2))
         );
         assert_eq!(
-            decode_ack_payload(&[TAG_ACK_PLAIN, TAG_ACK_BODY, 1, 2]),
+            decode_ack_payload(&[TAG_ACK_PLAIN, TAG_ACK_BODY, 1, 2], MAX_ACK_BYTES),
             Err(ProtocolError::UnknownTag(2))
         );
         assert_eq!(
@@ -941,14 +1148,14 @@ mod tests {
             Err(ProtocolError::UnexpectedEof)
         );
 
-        let ack = encode_ack_frame(&WireAck::Plain(Ack {
-            ok: false,
-            detail: Some("detail".to_owned()),
-        }))
+        let ack = encode_ack_frame(&WireAck::Plain(Ack::status(
+            false,
+            Some("detail".to_owned()),
+        )))
         .unwrap();
         let (_, ack_payload) = split_frame(&ack);
         for length in 1..ack_payload.len() {
-            assert!(decode_ack_payload(&ack_payload[..length]).is_err());
+            assert!(decode_ack_payload(&ack_payload[..length], MAX_ACK_BYTES).is_err());
         }
     }
 
@@ -961,7 +1168,7 @@ mod tests {
         );
         let invalid_ack_utf8 = [TAG_ACK_PLAIN, TAG_ACK_BODY, 1, TAG_SOME, 0, 0, 0, 1, 0xff];
         assert_eq!(
-            decode_ack_payload(&invalid_ack_utf8),
+            decode_ack_payload(&invalid_ack_utf8, MAX_ACK_BYTES),
             Err(ProtocolError::InvalidUtf8)
         );
 
@@ -978,6 +1185,80 @@ mod tests {
             encode_request_frame(&oversized),
             Err(ProtocolError::InvalidLength(_))
         ));
+    }
+
+    // A Get reply carries a clipboard, so it needs a frame-sized bound; a ping
+    // or a set must not gain one, because that bound is how much a client is
+    // willing to allocate for something claiming to be the daemon.
+    #[test]
+    fn only_a_data_ack_may_exceed_the_status_ack_bound() {
+        let big = "x".repeat(MAX_ACK_BYTES * 2);
+        let data = WireAck::Plain(Ack::data(big.clone(), None));
+        let frame = encode_ack_frame(&data).unwrap();
+        let (_, payload) = split_frame(&frame);
+        assert!(payload.len() > MAX_ACK_BYTES);
+        assert_eq!(
+            decode_ack_payload(payload, MAX_DATA_ACK_BYTES).unwrap(),
+            data
+        );
+        // The same bytes, offered to a client that only asked for a status ack.
+        assert_eq!(
+            decode_ack_payload(payload, MAX_ACK_BYTES),
+            Err(ProtocolError::InvalidLength(payload.len()))
+        );
+
+        assert_eq!(ack_limit(&PlainRequest::Ping), MAX_ACK_BYTES);
+        assert_eq!(
+            ack_limit(&PlainRequest::Set {
+                text: String::new()
+            }),
+            MAX_ACK_BYTES
+        );
+        assert_eq!(
+            ack_limit(&PlainRequest::Get {
+                selection: Selection::Primary
+            }),
+            MAX_DATA_ACK_BYTES
+        );
+
+        // A status ack cannot be inflated past its own bound, however much the
+        // reader would have been willing to accept.
+        let oversized_status = WireAck::Plain(Ack::status(true, Some(big)));
+        assert!(matches!(
+            encode_ack_frame(&oversized_status),
+            Err(ProtocolError::InvalidLength(_))
+        ));
+    }
+
+    #[test]
+    fn a_sealed_data_ack_round_trips_but_not_into_a_status_sized_reader() {
+        let keys = derive_auth_keys("secret");
+        let challenge = [12_u8; CHALLENGE_BYTES];
+        let request_nonce = [13_u8; NONCE_BYTES];
+        let ack = Ack::data("第一行\n".repeat(1000), Some("clipboard_get_ok".to_owned()));
+        let sealed = seal_ack(&keys, &challenge, request_nonce, &ack).unwrap();
+        let frame = encode_ack_frame(&sealed).unwrap();
+        let (_, payload) = split_frame(&frame);
+        assert!(payload.len() > MAX_ACK_BYTES);
+        let decoded = decode_ack_payload(payload, MAX_DATA_ACK_BYTES).unwrap();
+        assert_eq!(
+            open_ack(
+                &keys,
+                &challenge,
+                &request_nonce,
+                &decoded,
+                MAX_DATA_ACK_BYTES
+            )
+            .unwrap(),
+            ack
+        );
+        let WireAck::Authenticated { ciphertext, .. } = &decoded else {
+            panic!("expected an authenticated ack");
+        };
+        assert_eq!(
+            open_ack(&keys, &challenge, &request_nonce, &decoded, MAX_ACK_BYTES),
+            Err(ProtocolError::InvalidLength(ciphertext.len()))
+        );
     }
 
     #[test]
@@ -998,7 +1279,7 @@ mod tests {
         bad_magic[..4].copy_from_slice(b"NOPE");
         assert_eq!(parse_header(&bad_magic), Err(ProtocolError::InvalidMagic));
         assert_eq!(
-            validate_ack_length(MAX_ACK_BYTES + 1),
+            validate_ack_length(MAX_ACK_BYTES + 1, MAX_ACK_BYTES),
             Err(ProtocolError::InvalidLength(MAX_ACK_BYTES + 1))
         );
     }

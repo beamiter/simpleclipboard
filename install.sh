@@ -103,8 +103,9 @@ fi
 release_dir="$target_root/$host_target/release"
 library_source="$release_dir/$library_name"
 daemon_source="$release_dir/simpleclipboard-daemon"
+client_source="$release_dir/simpleclipboard-client"
 
-if [[ ! -f "$library_source" || ! -x "$daemon_source" ]]; then
+if [[ ! -f "$library_source" || ! -x "$daemon_source" || ! -x "$client_source" ]]; then
   echo "Build completed but expected artifacts were not found in $release_dir" >&2
   exit 1
 fi
@@ -152,6 +153,7 @@ if [[ -d "$repo_root/lib" ]]; then
 fi
 install -m 0755 "$library_source" "$stage_dir/$library_name"
 install -m 0755 "$daemon_source" "$stage_dir/simpleclipboard-daemon"
+install -m 0755 "$client_source" "$stage_dir/simpleclipboard-client"
 chmod "$lib_mode" "$stage_dir"
 
 if [[ -d "$repo_root/lib" ]]; then
@@ -170,7 +172,8 @@ if [[ -n "$backup_dir" ]]; then
 fi
 
 echo "Installed $("$repo_root/lib/simpleclipboard-daemon" --version)"
-echo "Artifacts: $repo_root/lib/$library_name and $repo_root/lib/simpleclipboard-daemon"
+echo "Artifacts: $repo_root/lib/$library_name, $repo_root/lib/simpleclipboard-daemon"
+echo "           and $repo_root/lib/simpleclipboard-client"
 
 # :help simpleclipboard only resolves once tags exist, and looking up the help
 # is the first thing a new user does after installing.
