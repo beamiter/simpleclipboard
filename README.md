@@ -254,11 +254,14 @@ g:simpleclipboard_port must be a number, but is a string ("12343"); using 12343
 g:simpleclipboard_debounce_ms must be a number, but is a string ("soon"); using the default 50
 ~~~
 
-Numeric strings are read as decimal, since quoting a port is a common habit;
-anything else falls back to the documented default. The two options that decide
-what may leave Vim — `g:simpleclipboard_auto_copy_registers` and
-`g:simpleclipboard_auto_copy_max_bytes` — instead skip automatic copy rather
-than guessing a more permissive default, and `g:simpleclipboard_token` is
+Numeric strings are read as decimal, since quoting a port is a common habit,
+and a boolean is read as the 0 or 1 it coerces to; anything else falls back to
+the documented default. Each message names the value really in force, never a
+default that is not. The two options that decide what may leave Vim —
+`g:simpleclipboard_auto_copy_registers` and
+`g:simpleclipboard_auto_copy_max_bytes` — skip automatic copy rather than guess
+a more permissive default when their value cannot be read at all; a quoted byte
+cap is still a byte cap and is applied as one. `g:simpleclipboard_token` is
 reported by type and length only, never by value. List elements are checked
 too: `g:simpleclipboard_copy_command` must be a list of non-empty strings and
 `g:simpleclipboard_auto_copy_registers` a list of strings.

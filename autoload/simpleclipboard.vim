@@ -135,6 +135,27 @@ def Remedy(spec: dict<any>): string
   return get(spec, 'note', $'using the default {DescribeValue(spec.default)}')
 enddef
 
+# The options that decide what may leave Vim carry a `note` and fail closed:
+# their consumers skip automatic copy instead of falling back to a more
+# permissive default.
+def FailsClosed(spec: dict<any>): bool
+  return has_key(spec, 'note')
+enddef
+
+# The byte cap, coerced the way ValidateOptions() reports it: a quoted number
+# is honoured, anything else is unreadable and `valid` is false so automatic
+# copy stops rather than guessing "no cap".
+def AutoCopyLimit(): dict<any>
+  var raw = get(g:, 'simpleclipboard_auto_copy_max_bytes', 0)
+  if type(raw) == v:t_string && raw =~# NUMERIC_STRING
+    return {valid: true, bytes: str2nr(trim(raw), 10)}
+  endif
+  if type(raw) != v:t_number
+    return {valid: false, bytes: 0}
+  endif
+  return {valid: true, bytes: raw}
+enddef
+
 def OptionProblem(spec: dict<any>, raw: any): string
   var name = 'g:' .. spec.name
   # A wrong token still must not be printed; its length is enough to identify.
@@ -173,12 +194,20 @@ def OptionProblem(spec: dict<any>, raw: any): string
     endif
     return $'{name} must be {wanted}, but is {seen}; {Remedy(spec)}'
   endif
-  var effective = EffectiveNumber(spec, raw)
-  if type(raw) == v:t_string && raw =~# NUMERIC_STRING
-      && (!positive || effective > 0)
-    return $'{name} must be {wanted}, but is {seen}; using {effective}'
+  # Report the value the consumer will really use.  EffectiveNumber() coerces a
+  # boolean to 0/1, so claiming the default is in force would be false for
+  # every option read through NumberOption(); the fail-closed options honour a
+  # quoted number, and nothing else, exactly as their consumers do.
+  var coerced = type(raw) == v:t_string
+    ? raw =~# NUMERIC_STRING
+    : type(raw) == v:t_bool && !FailsClosed(spec)
+  if !coerced
+    return $'{name} must be {wanted}, but is {seen}; {Remedy(spec)}'
   endif
-  return $'{name} must be {wanted}, but is {seen}; {Remedy(spec)}'
+  var effective = EffectiveNumber(spec, raw)
+  var remedy = effective == spec.default
+    ? $'using the default {effective}' : $'using {effective}'
+  return $'{name} must be {wanted}, but is {seen}; {remedy}'
 enddef
 
 # One actionable line per misconfigured option, in declaration order, naming
@@ -1513,14 +1542,14 @@ export def CopyYankedToClipboardEvent(event: any = v:null)
   if text ==# ''
     return
   endif
-  var max_bytes = get(g:, 'simpleclipboard_auto_copy_max_bytes', 0)
-  if type(max_bytes) != v:t_number
+  var limit = AutoCopyLimit()
+  if !limit.valid
     Trace('g:simpleclipboard_auto_copy_max_bytes must be a number; automatic copy skipped.',
       'WarningMsg')
     return
   endif
-  if max_bytes > 0 && strlen(text) > max_bytes
-    Trace($'Automatic copy skipped: {strlen(text)} bytes exceeds limit {max_bytes}.',
+  if limit.bytes > 0 && strlen(text) > limit.bytes
+    Trace($'Automatic copy skipped: {strlen(text)} bytes exceeds limit {limit.bytes}.',
       'WarningMsg')
     return
   endif
@@ -1610,10 +1639,9 @@ export def Status(): void
     endfor
     register_policy = empty(names) ? 'all non-black-hole registers' : join(names, ',')
   endif
-  var auto_limit = get(g:, 'simpleclipboard_auto_copy_max_bytes', 0)
-  var limit_policy = type(auto_limit) == v:t_number
-    ? (auto_limit <= 0 ? 'unlimited' : string(auto_limit) .. ' bytes')
-    : 'invalid (expected number)'
+  var auto_limit = AutoCopyLimit()
+  var limit_policy = !auto_limit.valid ? 'invalid (expected number)'
+    : auto_limit.bytes <= 0 ? 'unlimited' : string(auto_limit.bytes) .. ' bytes'
   var lines = [
     $'SimpleClipboard {VERSION}',
     $'environment: {environment_kind} (ssh={string(IsSSH())}, container={string(InContainer())})',

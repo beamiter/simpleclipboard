@@ -86,6 +86,22 @@ and packaged Rust components.
 - 冒烟测试覆盖:带引号的端口仍然能通过回退链完成复制并给出一条可执行的
   警告、非正数的 OSC52 上限退回默认值、错误类型的 token 不被回显。
 
+### 选项报告写的就是真正生效的取值
+
+- `let g:simpleclipboard_auto_copy_max_bytes = '1000'` 此前会同时给出两个互相
+  矛盾的说法:警告说 `using 1000`,而消费端直接看原始 g: 值、遇到非数字就
+  整条跳过,于是每次 yank 都被悄悄丢掉(只有开了 debug 才看得见),
+  `:SimpleCopyStatus` 同一次输出里还写着 `max=invalid (expected number)`。
+  现在字节上限和其他数字选项一样解释数字字符串,`'1000'` 就是 1000 字节;
+  只有完全读不出数字时才 fail closed,并如实报告"跳过自动复制"。
+- `let g:simpleclipboard_port = v:true` 此前警告说"用默认值 12343",实际
+  强制转换成 1,于是 `:SimpleCopyStatus` 紧接着显示 `address=127.0.0.1:1`,
+  守护进程也是照 1 号端口启动的。所有分支的"随之采取的行为"现在都由真正
+  生效的取值算出来,不再假设"只要不是正常数字就用默认值"。
+- 冒烟测试覆盖:带引号的字节上限会拦下超限 yank 但放行未超限 yank、
+  `:SimpleCopyStatus` 显示 `max=4 bytes`;读不出数字的上限仍然 fail closed;
+  布尔端口报告 `using 1` 且 `NumberOption()` 与 `:SimpleCopyStatus` 一致。
+
 ### `:SimpleCopyLog` 真的无条件记录失败与路由
 
 - 帮助文档承诺这份记录包含"失败的后端和这次复制为什么走了这条路",而且

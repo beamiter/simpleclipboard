@@ -139,6 +139,43 @@ call assert_equal(0z, readblob(s:capture))
 let g:simpleclipboard_auto_copy_registers = []
 let g:simpleclipboard_auto_copy_max_bytes = 0
 
+" A quoted byte cap is a quoted number, not an unreadable value: the warning,
+" :SimpleCopyStatus and the yank path must all agree on the cap in force.  The
+" warning used to promise "using 4" while the consumer dropped every yank.
+let g:simpleclipboard_auto_copy_max_bytes = '4'
+call assert_equal(
+      \ ['g:simpleclipboard_auto_copy_max_bytes must be a number, but is a string ("4"); using 4'],
+      \ simpleclipboard#ValidateOptions())
+messages clear
+call simpleclipboard#Status()
+call assert_match('automatic copy: registers=.*; max=4 bytes', execute('messages'))
+call delete(s:capture)
+normal! gg0yy
+sleep 150m
+call assert_false(filereadable(s:capture), 'a quoted cap still caps an oversized yank')
+call simpleclipboard#CopyYankedToClipboardEvent({
+      \ 'operator': 'y', 'regname': '', 'regcontents': ['bet'], 'regtype': 'v',
+      \ })
+sleep 150m
+call assert_equal(['bet'], readfile(s:capture, 'b'))
+
+" A cap that cannot be read as a number at all still fails closed, and says so.
+let g:simpleclipboard_auto_copy_max_bytes = 'lots'
+call assert_equal(
+      \ ['g:simpleclipboard_auto_copy_max_bytes must be a number, but is a string ("lots"); '
+      \ .. 'automatic copy is skipped until it is fixed'],
+      \ simpleclipboard#ValidateOptions())
+messages clear
+call simpleclipboard#Status()
+call assert_match('max=invalid (expected number)', execute('messages'))
+call delete(s:capture)
+call simpleclipboard#CopyYankedToClipboardEvent({
+      \ 'operator': 'y', 'regname': '', 'regcontents': ['bet'], 'regtype': 'v',
+      \ })
+sleep 150m
+call assert_false(filereadable(s:capture), 'an unreadable cap fails closed')
+let g:simpleclipboard_auto_copy_max_bytes = 0
+
 " g:simpleclipboard_auto_copy is honoured per yank rather than latched when the
 " plugin loaded, so disabling it immediately before yanking a credential really
 " does keep that credential inside Vim.
@@ -210,6 +247,19 @@ call simpleclipboard#Status()
 let s:coerced_status = execute('messages')
 call assert_match('configuration: 3 problem(s)', s:coerced_status)
 call assert_match('address=127.0.0.1:1', s:coerced_status)
+
+" A boolean is coerced to 0/1 like any other numeric value, so the warning has
+" to name the number really in force instead of a default that is not.
+let g:simpleclipboard_port = v:true
+messages clear
+call simpleclipboard#Refresh()
+call assert_match('g:simpleclipboard_port must be a positive number, but is a boolean (true); using 1',
+      \ execute('messages'))
+call assert_equal(1, simpleclipboard#NumberOption('simpleclipboard_port'))
+messages clear
+call simpleclipboard#Status()
+call assert_match('address=127.0.0.1:1', execute('messages'))
+let g:simpleclipboard_port = '1'
 
 " A list of the wrong things is as unusable as a non-list: both consumers drop
 " the offending entry silently.
