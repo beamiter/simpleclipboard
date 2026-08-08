@@ -321,6 +321,16 @@ call assert_match('external commands: custom command', s:failure_status)
 call assert_match('OSC52: disabled', s:failure_status)
 call assert_match('last copy: method=failed, outcome=failed', s:failure_status)
 
+" Nobody has debug logging on before the copy that goes wrong, so the failed
+" backend and the route each copy took are in the transcript regardless.
+call assert_equal(0, g:simpleclipboard_debug)
+SimpleCopyLog
+let s:transcript = join(getline(1, '$'), "\n")
+bwipeout!
+call assert_match('\n\d\d:\d\d:\d\d custom command exited with status 1', s:transcript)
+call assert_match('All copy backends failed', s:transcript)
+call assert_match('Copy route: pbcopy (', s:transcript)
+
 " Disabled daemon routing still classifies SSH, but does no route/network probe.
 let $SSH_CONNECTION = '203.0.113.5 12345 203.0.113.10 22'
 let g:simpleclipboard_debug = 1

@@ -774,7 +774,7 @@ What it deliberately does not do:
 - No request/reply correlation or per-request timeout in Vim: the client call
   is synchronous, and the connect and I/O deadlines live in the Rust client.
 - No daemon stderr transcript.  Daemon output is discarded, so |:SimpleCopyLog|
-  shows this plugin's own notifications rather than the daemon's.
+  shows this plugin's own view of the daemon rather than the daemon's own log.
 
                                                       *:SimpleCopyHealth*
 :SimpleCopyHealth
@@ -790,10 +790,20 @@ What it deliberately does not do:
 
                                                       *:SimpleCopyLog*
 :SimpleCopyLog
-        Open this plugin's notification transcript in a scratch buffer: the
-        most recent few hundred messages, including daemon lifecycle events,
-        failed backends and the reason a copy took the route it took.  Unlike
-        |g:simpleclipboard_debug| output, it is recorded unconditionally.
+        Open this plugin's transcript in a scratch buffer: the most recent few
+        hundred entries.  Three kinds of entry go in, all of them unconditional
+        and none of them dependent on |g:simpleclipboard_debug| having been on
+        beforehand — which it never is before the copy that goes wrong:
+
+        - every notification this plugin printed, daemon lifecycle included;
+        - every backend failure behind a fallback, and every route decision
+          (blocked daemon route, refused plaintext, skipped automatic copy);
+        - the route each copy finally took, as "Copy route: <method> (N
+          bytes)".
+
+        With |g:simpleclipboard_debug| on, the same lines are echoed as they
+        happen, together with the finer-grained probe detail that is not kept
+        in the ring.
 
 
 ==============================================================================

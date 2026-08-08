@@ -171,6 +171,7 @@ xmap <leader>Y <Plug>(SimpleCopyVisual)
 | `:SimpleCopyStop` | Stop only the daemon job started by this Vim instance. |
 | `:SimpleCopyStatus` | Always print environment, address, and backend diagnostics. |
 | `:SimpleCopyRefresh` | Clear environment/backend caches and detect them again. |
+| `:SimpleCopyLog` | Open the transcript: notifications, failed backends, route decisions, and the route each copy took — recorded whether or not debug logging was on. |
 
 Path and location commands preserve spaces and UTF-8 literally rather than
 copying shell-escaped text. They fail visibly for unnamed and non-file buffers,

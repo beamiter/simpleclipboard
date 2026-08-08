@@ -261,9 +261,25 @@ def Log(msg: string, hl: string = 'None')
   echohl None
 enddef
 
-# Every notification is retained so :SimpleCopyLog can explain a copy that
-# silently took the wrong route.
+# Every notification, every backend failure and every route decision is
+# retained so :SimpleCopyLog can explain a copy that silently took the wrong
+# route.  The ring is deliberately independent of g:simpleclipboard_debug:
+# nobody has debug logging on before the copy that goes wrong.
 var log_ring: list<string> = []
+
+def Record(msg: string)
+  log_ring->add(strftime('%H:%M:%S') .. ' ' .. msg)
+  if len(log_ring) > 500
+    log_ring = log_ring[-300 : ]
+  endif
+enddef
+
+# A route decision or a failed backend: recorded unconditionally, echoed only
+# when debug logging asked for it.
+def Trace(msg: string, hl: string = 'None')
+  Record(msg)
+  Log(msg, hl)
+enddef
 
 export def ShowLog(): void
   new
@@ -279,10 +295,7 @@ export def RestartDaemon(): void
 enddef
 
 def Notify(msg: string, hl: string = 'None')
-  log_ring->add(strftime('%H:%M:%S') .. ' ' .. msg)
-  if len(log_ring) > 500
-    log_ring = log_ring[-300 : ]
-  endif
+  Record(msg)
   echohl hl
   echom '[SimpleClipboard] ' .. msg
   echohl None
@@ -417,7 +430,7 @@ def IsTcpOpen(address: string): bool
       return true
     endif
   catch
-    Log($'TCP probe failed for {address}: {v:exception}', 'WarningMsg')
+    Trace($'TCP probe failed for {address}: {v:exception}', 'WarningMsg')
   endtry
   return false
 enddef
@@ -479,7 +492,7 @@ export def DetectEnvironment(): void
 
   if !BoolOption('simpleclipboard_daemon_enabled') || !has('libcall')
     daemon_address = ''
-    Log(environment_kind .. ': daemon routing disabled; skipping network probes.', 'Comment')
+    Trace(environment_kind .. ': daemon routing disabled; skipping network probes.', 'Comment')
     return
   endif
 
@@ -489,7 +502,7 @@ export def DetectEnvironment(): void
   if token_error !=# ''
     daemon_address = ''
     daemon_route_error = token_error
-    Log(token_error .. '; daemon routing blocked.', 'ErrorMsg')
+    Trace(token_error .. '; daemon routing blocked.', 'ErrorMsg')
     return
   endif
   if override !=# ''
@@ -498,19 +511,19 @@ export def DetectEnvironment(): void
     if type(token) != v:t_string || token ==# ''
       daemon_address = ''
       daemon_route_error = 'custom daemon routing requires g:simpleclipboard_token'
-      Log(daemon_route_error .. '; refusing plaintext daemon traffic.', 'ErrorMsg')
+      Trace(daemon_route_error .. '; refusing plaintext daemon traffic.', 'ErrorMsg')
       return
     endif
     daemon_address = override
     tunnel_available = true
-    Log('Using g:simpleclipboard_address: ' .. daemon_address, 'MoreMsg')
+    Trace('Using g:simpleclipboard_address: ' .. daemon_address, 'MoreMsg')
     return
   endif
 
   if is_remote && (type(token) != v:t_string || token ==# '')
     daemon_address = ''
     daemon_route_error = 'remote daemon routing requires g:simpleclipboard_token'
-    Log(daemon_route_error .. '; skipping route probes and plaintext daemon traffic.', 'ErrorMsg')
+    Trace(daemon_route_error .. '; skipping route probes and plaintext daemon traffic.', 'ErrorMsg')
     return
   endif
 
@@ -529,7 +542,7 @@ export def DetectEnvironment(): void
     if !IsLoopbackHost(client_host) && (type(token) != v:t_string || token ==# '')
       daemon_address = ''
       daemon_route_error = 'non-loopback daemon routing requires g:simpleclipboard_token'
-      Log(daemon_route_error .. '; refusing plaintext daemon traffic.', 'ErrorMsg')
+      Trace(daemon_route_error .. '; refusing plaintext daemon traffic.', 'ErrorMsg')
       return
     endif
     daemon_address = HostPort(client_host, daemon_port)
@@ -574,7 +587,7 @@ export def DetectEnvironment(): void
     endif
   endif
   daemon_address = ''
-  Log(environment_kind .. ': no daemon route detected; fallbacks remain available.', 'Comment')
+  Trace(environment_kind .. ': no daemon route detected; fallbacks remain available.', 'Comment')
 enddef
 
 def GetDaemonAddress(): string
@@ -611,14 +624,14 @@ def DaemonRequest(action: string, text: string, address: string = ''): number
   var token = get(g:, 'simpleclipboard_token', '')
   var token_error = TokenValidationError(token)
   if token_error !=# ''
-    Log(token_error .. '.', 'ErrorMsg')
+    Trace(token_error .. '.', 'ErrorMsg')
     return DAEMON_FAILURE
   endif
   if target ==# '' || stridx(target, FIELD_SEPARATOR) >= 0
     return DAEMON_FAILURE
   endif
   if token ==# '' && (is_remote || custom_address || !IsLoopbackAddress(target))
-    Log('Refusing plaintext daemon traffic outside the default local loopback route.', 'ErrorMsg')
+    Trace('Refusing plaintext daemon traffic outside the default local loopback route.', 'ErrorMsg')
     return DAEMON_FAILURE
   endif
 
@@ -631,12 +644,12 @@ def DaemonRequest(action: string, text: string, address: string = ''): number
       return NormalizeDaemonResult(result)
     catch
       client_abi = 1
-      Log('Delimiter-safe client ABI unavailable; trying v0.1 compatibility ABI.', 'WarningMsg')
+      Trace('Delimiter-safe client ABI unavailable; trying v0.1 compatibility ABI.', 'WarningMsg')
     endtry
   endif
 
   if stridx(text, FIELD_SEPARATOR) >= 0
-    Log('Legacy client ABI cannot safely carry U+0001 text.', 'ErrorMsg')
+    Trace('Legacy client ABI cannot safely carry U+0001 text.', 'ErrorMsg')
     return DAEMON_FAILURE
   endif
   try
@@ -644,7 +657,7 @@ def DaemonRequest(action: string, text: string, address: string = ''): number
       .. FIELD_SEPARATOR .. token
     return NormalizeDaemonResult(libcallnr(client_lib, 'rust_set_clipboard_tcp', legacy))
   catch
-    Log('Client library call failed: ' .. v:exception, 'ErrorMsg')
+    Trace('Client library call failed: ' .. v:exception, 'ErrorMsg')
     return DAEMON_FAILURE
   endtry
 enddef
@@ -660,7 +673,7 @@ def DaemonExitCallback(exited_job: job, status: number)
     remove(daemon_jobs_being_stopped, stopped_index)
   endif
   if status != 0 && !stop_requested
-    Log('Daemon exited with status ' .. string(status) .. '.', 'WarningMsg')
+    Trace('Daemon exited with status ' .. string(status) .. '.', 'WarningMsg')
   endif
   if !stop_requested
     daemon_start_attempted = false
@@ -834,6 +847,7 @@ def MarkSuccess(method: string)
   last_error = ''
   last_copy_at = strftime('%Y-%m-%d %H:%M:%S')
   last_outcome = method =~# '(queued)' ? 'queued' : 'success'
+  Record($'Copy route: {method} ({last_copy_bytes} bytes).')
 enddef
 
 def MarkUncertain(method: string)
@@ -847,6 +861,7 @@ enddef
 
 def MarkFailure(detail: string)
   last_error = detail
+  Record(detail)
 enddef
 
 def StartPendingCopyIfIdle(): void
@@ -1029,7 +1044,7 @@ def CopyViaOsc52(text: string): bool
       return false
     endif
     payload = TruncateUtf8(payload, limit)
-    Log($'OSC52 payload truncated to {strlen(payload)} bytes.', 'WarningMsg')
+    Trace($'OSC52 payload truncated to {strlen(payload)} bytes.', 'WarningMsg')
   endif
 
   var encoded = trim(system('base64 -w0', payload))
@@ -1171,7 +1186,7 @@ enddef
 def AutoCopyRegisterAllowed(name: string): bool
   var configured = get(g:, 'simpleclipboard_auto_copy_registers', [])
   if type(configured) != v:t_list
-    Log('g:simpleclipboard_auto_copy_registers must be a list; automatic copy skipped.',
+    Trace('g:simpleclipboard_auto_copy_registers must be a list; automatic copy skipped.',
       'WarningMsg')
     return false
   endif
@@ -1500,12 +1515,12 @@ export def CopyYankedToClipboardEvent(event: any = v:null)
   endif
   var max_bytes = get(g:, 'simpleclipboard_auto_copy_max_bytes', 0)
   if type(max_bytes) != v:t_number
-    Log('g:simpleclipboard_auto_copy_max_bytes must be a number; automatic copy skipped.',
+    Trace('g:simpleclipboard_auto_copy_max_bytes must be a number; automatic copy skipped.',
       'WarningMsg')
     return
   endif
   if max_bytes > 0 && strlen(text) > max_bytes
-    Log($'Automatic copy skipped: {strlen(text)} bytes exceeds limit {max_bytes}.',
+    Trace($'Automatic copy skipped: {strlen(text)} bytes exceeds limit {max_bytes}.',
       'WarningMsg')
     return
   endif

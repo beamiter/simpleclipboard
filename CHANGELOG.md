@@ -86,6 +86,19 @@ and packaged Rust components.
 - 冒烟测试覆盖:带引号的端口仍然能通过回退链完成复制并给出一条可执行的
   警告、非正数的 OSC52 上限退回默认值、错误类型的 token 不被回显。
 
+### `:SimpleCopyLog` 真的无条件记录失败与路由
+
+- 帮助文档承诺这份记录包含"失败的后端和这次复制为什么走了这条路",而且
+  "不依赖 |g:simpleclipboard_debug|"。实际上环形缓冲区只在 `Notify()` 里追加,
+  失败与路由判断走的是 `Log()`——默认关闭 debug 时直接 return。默认配置下
+  跑完一次全链路失败的复制,`:SimpleCopyLog` 只有一行缓存刷新记录。
+- 现在 `MarkFailure()`、每次成功复制的路由(`Copy route: <method> (N bytes)`)
+  以及路由判断(守护进程路由被禁用/被拒、拒绝明文、跳过自动复制的原因)都
+  无条件进入环形缓冲区,开了 debug 才额外回显。没人会在复制出错之前先打开
+  debug 日志,这正是这份记录存在的理由。
+- 冒烟测试覆盖:debug 关闭时跑完一次全链路失败的复制,记录里必须有失败的
+  后端、最终结论和上一条成功复制走的路由。
+
 ### 可组合文件引用
 
 - 新增 `:SimpleCopyFormat[!] {template}` 与 `<Plug>(SimpleCopyFormat)`,可用
