@@ -282,9 +282,12 @@ the documented default. Each message names the value really in force, never a
 default that is not. The three options that decide what may leave Vim —
 `g:simpleclipboard_auto_copy_registers`, `g:simpleclipboard_auto_copy_max_bytes`
 and `g:simpleclipboard_osc52_limit` — fail closed rather than guess a more
-permissive default when their value cannot be read at all: the first two skip
-automatic copy, and an unreadable or non-positive OSC52 limit blocks the OSC52
-path. A quoted byte cap is still a byte cap and is applied as one.
+permissive default when their value cannot be used: the first two skip
+automatic copy when the value cannot be read at all, and an unreadable or
+non-positive OSC52 limit blocks the OSC52 path. Quoting changes nothing there:
+`'0'` and `'-5'` block OSC52 exactly as `0` and `-5` do, and the message says
+so rather than naming the 75000-byte default it does not reinstate. A quoted
+byte cap is still a byte cap and is applied as one.
 `g:simpleclipboard_token` is
 reported by type and length only, never by value. List elements are checked
 too: `g:simpleclipboard_copy_command` must be a list of non-empty strings and

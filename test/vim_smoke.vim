@@ -276,6 +276,37 @@ messages clear
 call simpleclipboard#Status()
 call assert_match('last error: g:simpleclipboard_osc52_limit must be a positive number; OSC52 skipped',
       \ execute('messages'))
+
+" A quoted number is a habit the accessors deliberately honour, so a quoted
+" "0" is not unreadable: it is readable and non-positive, and Osc52Limit()
+" blocks it exactly as it blocks the unquoted 0. The warning has to say so.
+" Naming the 75000-byte default here would be the "default that is not in
+" force" this reporting exists to keep out - and it would name it for the one
+" backend that cannot take its output back.
+let g:simpleclipboard_osc52_limit = '0'
+messages clear
+call simpleclipboard#Refresh()
+let s:quoted_zero = execute('messages')
+call assert_match('g:simpleclipboard_osc52_limit must be a positive number, but is a string ("0"); OSC52 is skipped until it is fixed',
+      \ s:quoted_zero)
+call assert_notmatch('using the default 75000', s:quoted_zero)
+messages clear
+call simpleclipboard#Status()
+call assert_match('OSC52: blocked (invalid limit)', execute('messages'))
+call delete(s:capture)
+call assert_false(simpleclipboard#CopyToSystemClipboard('quoted zero osc52 limit'))
+sleep 100m
+call assert_false(filereadable(s:capture), 'a quoted "0" blocks OSC52 as firmly as an unquoted 0')
+
+" A quoted number that is readable and positive is honoured, and the warning
+" names the value really in force rather than the note.
+let g:simpleclipboard_osc52_limit = ' 12 '
+messages clear
+call simpleclipboard#Refresh()
+call assert_match('g:simpleclipboard_osc52_limit must be a positive number, but is a string (" 12 "); using 12',
+      \ execute('messages'))
+let g:simpleclipboard_osc52_limit = 0
+
 let $PATH = s:old_path
 let g:simpleclipboard_disable_osc52 = 1
 let g:simpleclipboard_copy_command = ['tee', s:capture]

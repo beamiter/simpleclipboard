@@ -92,21 +92,33 @@ enddef
 
 const NUMERIC_STRING = '^\s*-\?\d\+\s*$'
 
+def Coercible(raw: any): bool
+  # A quoted number is a vimrc habit, not a different intent.
+  return type(raw) == v:t_number || type(raw) == v:t_bool
+    || (type(raw) == v:t_string && raw =~# NUMERIC_STRING)
+enddef
+
+# The number a coercible value denotes, before `positive` decides whether the
+# consumer will accept it.  EffectiveNumber() clamps a rejected value to the
+# default; the reporting below needs the unclamped one, because that is what
+# tells "using 12" apart from a limit that blocks the backend outright.
+def CoercedNumber(raw: any): number
+  if type(raw) == v:t_number
+    return raw
+  endif
+  if type(raw) == v:t_bool
+    return raw == v:true ? 1 : 0
+  endif
+  return str2nr(trim(raw), 10)
+enddef
+
 def EffectiveNumber(spec: dict<any>, raw: any): number
   var fallback: number = spec.default
-  var positive = get(spec, 'positive', false)
-  var value = fallback
-  if type(raw) == v:t_number
-    value = raw
-  elseif type(raw) == v:t_bool
-    value = raw == v:true ? 1 : 0
-  elseif type(raw) == v:t_string && raw =~# NUMERIC_STRING
-    # A quoted number is a vimrc habit, not a different intent.
-    value = str2nr(trim(raw), 10)
-  else
+  if !Coercible(raw)
     return fallback
   endif
-  return positive && value <= 0 ? fallback : value
+  var value = CoercedNumber(raw)
+  return get(spec, 'positive', false) && value <= 0 ? fallback : value
 enddef
 
 export def NumberOption(name: string): number
@@ -246,10 +258,15 @@ def OptionProblem(spec: dict<any>, raw: any): string
   # boolean to 0/1, so claiming the default is in force would be false for
   # every option read through NumberOption(); the fail-closed options honour a
   # quoted number, and nothing else, exactly as their consumers do.
-  var coerced = type(raw) == v:t_string
+  var readable = type(raw) == v:t_string
     ? raw =~# NUMERIC_STRING
     : type(raw) == v:t_bool && !FailsClosed(spec)
-  if !coerced
+  # Readable is not the same as accepted.  A quoted "0" or "-5" for a positive
+  # fail-closed option coerces cleanly and is then refused: Osc52Limit() blocks
+  # it exactly as it blocks the unquoted number, so falling through to
+  # EffectiveNumber() here would name the 75000-byte default for a limit that
+  # is not in force - on the one backend whose output cannot be taken back.
+  if !readable || (positive && FailsClosed(spec) && CoercedNumber(raw) <= 0)
     return $'{name} must be {wanted}, but is {seen}; {Remedy(spec)}'
   endif
   var effective = EffectiveNumber(spec, raw)

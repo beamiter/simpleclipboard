@@ -316,9 +316,11 @@ tunnel 端口，也必须同步修改。
 取值，不会在实际用 1 的时候声称"用默认值 12343"。例外是
 |g:simpleclipboard_auto_copy_registers|、
 |g:simpleclipboard_auto_copy_max_bytes| 与 |g:simpleclipboard_osc52_limit|：
-它们控制哪些内容可以离开 Vim，取值完全无法解释时失败关闭而不是猜一个更宽松的
-默认值——前两个跳过自动复制，OSC52 上限取 0、负数或读不出数字时直接封掉
-OSC52 而不是退回 75000。写成字符串的字节上限仍然是字节上限，会照常生效。
+它们控制哪些内容可以离开 Vim，取值不可用时失败关闭而不是猜一个更宽松的
+默认值——前两个在完全读不出数字时跳过自动复制，OSC52 上限取 0、负数或读不出
+数字时直接封掉 OSC52 而不是退回 75000。加不加引号都一样：'0' 与 '-5' 和
+0、-5 一样封掉 OSC52，报告里写的也是"封掉"，不会去提那个并没有生效的 75000。
+写成字符串的字节上限仍然是字节上限，会照常生效。
 |g:simpleclipboard_token| 只报告类型和长度，不回显取值。列表选项的元素也会
 校验：|g:simpleclipboard_copy_command| 必须是非空字符串列表，
 |g:simpleclipboard_auto_copy_registers| 必须是字符串列表。

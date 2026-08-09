@@ -8,6 +8,20 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-05
 
+### 加了引号的 OSC52 上限,报告里不再提那个没有生效的默认值
+
+- `let g:simpleclipboard_osc52_limit = '0'`（或 `'-5'`）此前报的是
+  "using the default 75000",而 `Osc52Limit()` 其实把 OSC52 整条路径
+  封掉了——`:SimpleCopyStatus` 同一屏上写着 `OSC52: blocked (invalid limit)`,
+  每一次 OSC52 复制都失败。数字字符串按十进制解释是文档明确鼓励的写法
+  （"引号包住端口是常见写法"）,所以这是一个真能配出来的配置,而"报一个
+  并没有生效的默认值"正是选项校验存在的意义所要排除的那种错。
+- 现在失败关闭的选项在数值可读但被 `positive` 拒绝时报的是它自己的注记
+  （OSC52 上限:"OSC52 is skipped until it is fixed"）,和不加引号的 `0`
+  一字不差。可读且为正的字符串不受影响,`' 12 '` 仍然报 "using 12"。
+- 冒烟测试补上了加引号的 `'0'`（此前只覆盖不加引号的 `0`,走的是另一条
+  分支）与 `' 12 '` 两例,并断言 `'0'` 之下 OSC52 确实一个字节都不发。
+
 ### 协议学会了读剪贴板,并且多了一个独立的客户端程序
 
 - SCB1 新增 `get` 请求(tag `0x04`,后跟一个选区字节:`0x00` CLIPBOARD、
