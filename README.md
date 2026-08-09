@@ -73,13 +73,23 @@ cd ~/.vim/pack/plugins/start/simpleclipboard
 ./install.sh
 ~~~
 
-The installer builds the release daemon and client library and places them in
-the plugin's `lib/` directory:
+The installer builds the release daemon, the client library and the client
+binary, and places them in the plugin's `lib/` directory:
 
-- Linux: `lib/libsimpleclipboard.so` and `lib/simpleclipboard-daemon`
-- macOS: `lib/libsimpleclipboard.dylib` and `lib/simpleclipboard-daemon`
+- Linux: `lib/libsimpleclipboard.so`, `lib/simpleclipboard-daemon` and
+  `lib/simpleclipboard-client`
+- macOS: `lib/libsimpleclipboard.dylib`, `lib/simpleclipboard-daemon` and
+  `lib/simpleclipboard-client`
 
-Before either artifact is moved into place, the installer runs
+`lib/simpleclipboard-client` sends one daemon request per run — `ping`, `set`
+from standard input, or `get` to standard output — reading the pre-shared key
+from `SIMPLECLIPBOARD_TOKEN`. It is the only way to reach a `get`, because
+`libcallnr()` can return nothing but a number.
+Note that **the plugin does not drive it yet**: Vim still makes every copy
+through the synchronous library entry points, and no Vim command reads the
+clipboard. Run it yourself if you want a `get`.
+
+Before any artifact is moved into place, the installer runs
 `simpleclipboard-daemon --self-test` on the binary it just built — one
 authenticated request through key derivation, sealing, framing and the response
 binding, without touching the desktop clipboard. A build that compiles but does

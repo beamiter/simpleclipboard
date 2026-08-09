@@ -87,10 +87,11 @@ if ! grep -q 'failed --self-test' "$scratch/output"; then
   exit 1
 fi
 
-# Vim drives simpleclipboard-client with job_start(), so an install that ships
-# only the daemon leaves the asynchronous transport and every paste unavailable
-# with nothing to point at.  A successful install must place all three
-# artifacts, and none of them may be left behind by the failed attempt above.
+# simpleclipboard-client is the only way to reach a Get, and the documentation
+# points users at lib/simpleclipboard-client by name, so an install that ships
+# only the daemon leaves that instruction pointing at nothing.  A successful
+# install must place all three artifacts, and none of them may be left behind
+# by the failed attempt above.
 mkdir -p "$scratch/ok-root/lib"
 cp "$repo_root/install.sh" "$scratch/ok-root/install.sh"
 PATH="$scratch/stub-bin:$PATH" CARGO_TARGET_DIR="$scratch/ok-target" \

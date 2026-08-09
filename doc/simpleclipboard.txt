@@ -100,11 +100,19 @@ Linux：
 
   lib/libsimpleclipboard.so
   lib/simpleclipboard-daemon
+  lib/simpleclipboard-client
 
 macOS：
 
   lib/libsimpleclipboard.dylib
   lib/simpleclipboard-daemon
+  lib/simpleclipboard-client
+
+simpleclipboard-client 每次运行发一个请求（ping、从标准输入读的 set、
+写到标准输出的 get），密钥从 $SIMPLECLIPBOARD_TOKEN 读取。它是唯一能
+拿到 get 结果的途径，因为 libcallnr() 只能返回数字。
+注意：插件目前还没有驱动它——Vim 侧的每一次复制仍然走同步的库调用，
+也没有任何命令会读剪贴板。想要 get，请自己在 shell 里运行它。
 
 插件目录必须位于 'runtimepath'，否则自动发现无法找到 lib/ 下的文件。
 也可以使用 |g:simpleclipboard_libpath| 和

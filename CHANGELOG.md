@@ -8,7 +8,7 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-05
 
-### 协议学会了读剪贴板,并且多了一个 Vim 能异步驱动的客户端程序
+### 协议学会了读剪贴板,并且多了一个独立的客户端程序
 
 - SCB1 新增 `get` 请求(tag `0x04`,后跟一个选区字节:`0x00` CLIPBOARD、
   `0x01` PRIMARY)与一种带数据的 ack body(tag `0x02`,在 `ok` 和 detail
@@ -18,9 +18,13 @@ and packaged Rust components.
   客户端按自己发出的请求决定愿意读回多少,所以一个 ping 不可能被回一个
   十兆字节的应答。
 - 新增 `lib/simpleclipboard-client`。同一个 `send_request` 逐字复用,只是
-  搬到了子进程里:Vim 用 `job_start()` 驱动它,守护进程慢、或剪贴板卡在一个
-  永远不会回话的显示服务器上时,不再冻住编辑器的 UI 线程;而且
-  `libcallnr()` 只能返回数字,`get` 的文本本来也无处可回。
+  搬到了子进程里——`libcallnr()` 只能返回数字,`get` 的文本本来无处可回,
+  而子进程也是将来能被异步等待、不必冻住 UI 线程的形状。
+  **但插件目前还没有驱动它**:`autoload/simpleclipboard.vim` 的每一次复制
+  仍然走同步的 `libcallnr()`,`get` 在 Vim 侧根本没有调用方。也就是说,
+  这个版本里它只是一个能从 shell 里手工运行的程序,复制的响应性一如既往。
+  README 与 `:help simpleclipboard` 现在都列出了 `lib/simpleclipboard-client`
+  并写明这条注意事项。
 - token 走环境变量、剪贴板正文走标准输入,都不进 argv——Linux 上
   `/proc/<pid>/cmdline` 是全局可读的。
 - 安全边界:**tokenless 的守护进程拒绝 `get`**(`get_requires_authentication`)。
@@ -30,9 +34,18 @@ and packaged Rust components.
   选区的那个线程负责提供内容,另开连接去读有死锁的可能。
 - 读超时就是读失败:写有可能已经写了一半,所以要告诉调用方别去 fallback;
   读不会改变任何东西,于是不再复用 `clipboard_outcome_unknown` 这个代码。
-- `test/tcp_e2e.sh` 现在跑真正的 set/get 往返(无显示服务器时跳过而不是
-  失败)、断言错误 token 被拒、断言剪贴板正文不能当命令行参数传,
-  并断言 tokenless 守护进程拒绝 `get` 且不回任何数据。
+- `test/tcp_e2e.sh` 现在跑真正的 set/get 往返、断言错误 token 被拒、
+  断言剪贴板正文不能当命令行参数传,并断言 tokenless 守护进程拒绝 `get`
+  且不回任何数据。往返只在"这台机器根本没有显示服务器"这一种情况下跳过:
+  判据抽到了 `test/e2e_skip_rules.sh`,要求 `DISPLAY`/`WAYLAND_DISPLAY`
+  都没有、且客户端报的是 `clipboard_unavailable`;别的失败一律是失败。
+  此前是 `--action set` 只要非零退出就跳过,于是分帧回归、读不了标准输入、
+  token 环境变量改名,在 CI 的无头 Linux 上都会被当成"没有显示服务器"。
+- 新增 `test/doc_claims.sh`(接入 `make check`):文档里点名的粘贴命令必须
+  是插件真能运行的、文档里写的 `:Simple…` 命令必须真的定义过,而
+  `simpleclipboard-client` 的"插件还没驱动它"这句注意事项,必须在插件确实
+  不驱动它时出现、在插件开始驱动它时消失。SECURITY.md 此前描述了一条
+  本地粘贴命令的回退链,而插件根本没有粘贴功能,现已改为如实说明。
 
 ### OSC52 有了第一批测试,顺带修好了它一直没人发现的三个洞
 

@@ -180,8 +180,8 @@ fn connect_with_timeout(address: &str) -> Result<TcpStream, ClientError> {
 /// Sends one request and returns the daemon's answer.
 ///
 /// Shared verbatim by the in-process `libcall` entry points and by the
-/// `simpleclipboard-client` binary the plugin drives with `job_start()`, so the
-/// two can never drift on framing, sealing or response binding.
+/// `simpleclipboard-client` binary, so the two transports can never drift on
+/// framing, sealing or response binding.
 pub fn send_request(address: &str, request: &ClientRequest) -> Result<Ack, ClientError> {
     if address.is_empty() {
         return Err(ClientError::InvalidPayload);

@@ -1,6 +1,6 @@
-.PHONY: check rust-check vim-check installer-check shell-check help-tags vim-core defcompile core-verify
+.PHONY: check rust-check vim-check installer-check shell-check help-tags vim-core defcompile core-verify doc-check skip-rules-check
 
-check: core-verify rust-check vim-check installer-check shell-check help-tags defcompile vim-core
+check: core-verify rust-check vim-check installer-check shell-check help-tags defcompile vim-core doc-check skip-rules-check
 
 rust-check:
 	cargo fmt --all -- --check
@@ -12,15 +12,30 @@ vim-check:
 	vim -Nu NONE -i NONE -n -es -S test/vim_smoke.vim
 
 installer-check:
-	bash -n install.sh test/install_args.sh test/tcp_e2e.sh
+	bash -n install.sh test/install_args.sh test/tcp_e2e.sh \
+	  test/e2e_skip_rules.sh test/e2e_skip_rules_test.sh test/doc_claims.sh
 	bash test/install_args.sh
+
+# Prose is the one part of the repo nothing else checks: it compiles under no
+# compiler and runs in no test, so a sentence describing a feature reads the
+# same whether or not the feature exists.  This target is the grep that keeps
+# the documented commands, helper programs and caveats tied to the code.
+doc-check:
+	bash test/doc_claims.sh
+
+# test/tcp_e2e.sh needs a built daemon and a live port, so `make check` cannot
+# run it; the rule deciding when it may downgrade a failed clipboard round trip
+# to a skip needs neither, and is the part most likely to hide a regression.
+skip-rules-check:
+	bash test/e2e_skip_rules_test.sh
 
 # shellcheck is not needed to work on the plugin, so its absence skips instead
 # of failing; CI installs it, which is what keeps this honest.  Having it here
 # rather than only in the workflow is what lets CI run `make check` alone.
 shell-check:
 	@if command -v shellcheck >/dev/null 2>&1; then \
-	  shellcheck install.sh test/install_args.sh test/tcp_e2e.sh; \
+	  shellcheck install.sh test/install_args.sh test/tcp_e2e.sh \
+	    test/e2e_skip_rules.sh test/e2e_skip_rules_test.sh test/doc_claims.sh; \
 	else \
 	  echo "shellcheck: not installed; skipped"; \
 	fi

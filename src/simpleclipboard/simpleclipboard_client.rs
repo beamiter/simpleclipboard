@@ -1,13 +1,19 @@
-//! One daemon request per process, so Vim can make it with `job_start()`.
+//! One daemon request per process, for a caller that cannot use the `libcall`
+//! entry points.
 //!
-//! The `libcall` entry points in the library are synchronous by construction:
-//! Vim calls into the shared object on its own UI thread and gets the answer
-//! back as a return value, which means a daemon that is slow to answer — or a
-//! clipboard that is waiting on a display server that will never reply — freezes
-//! the editor for the whole request deadline, on every yank.  A separate
-//! executable moves exactly the same request onto a child process that Vim
-//! watches asynchronously, and it is also the only way to carry a Get reply
-//! back, since `libcallnr()` can return nothing but a number.
+//! Those entry points are synchronous by construction: Vim calls into the
+//! shared object on its own UI thread and gets the answer back as a return
+//! value, which means a daemon that is slow to answer — or a clipboard waiting
+//! on a display server that will never reply — freezes the editor for the whole
+//! request deadline, on every yank.  A separate executable moves exactly the
+//! same request onto a child process that an editor can watch asynchronously,
+//! and it is also the only way to carry a Get reply back, since `libcallnr()`
+//! can return nothing but a number.
+//!
+//! `install.sh` places the binary in `lib/` and it works from a shell.
+//! Note that the plugin does not drive it yet: `autoload/simpleclipboard.vim`
+//! still sends every copy through `libcallnr()`, and Get has no Vim-side
+//! caller at all.  Nothing here reaches a user until that path is written.
 //!
 //! Everything about the request itself — framing, AEAD sealing, the challenge
 //! and the response binding — is the library's `send_request`, verbatim, so the

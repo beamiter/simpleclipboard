@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=e2e_skip_rules.sh
+source "$repo_root/test/e2e_skip_rules.sh"
 daemon="$repo_root/lib/simpleclipboard-daemon"
 client="$repo_root/lib/simpleclipboard-client"
 case "$(uname -s)" in
@@ -72,10 +75,11 @@ vim_ping "$authenticated_port" 'definitely-wrong-token' "$temporary/wrong"
 [[ "$(<"$temporary/correct")" == 1 ]]
 [[ "$(<"$temporary/wrong")" == 0 ]]
 
-# The client binary is the transport Vim drives with job_start(), so it is
-# exercised here rather than only through the in-process library.  A ping needs
-# no display server, so it is asserted unconditionally; a real set/get round
-# trip does, and is skipped rather than failed on a headless runner.
+# The client binary carries the same requests as the in-process library and is
+# the only way to reach a Get, so it is exercised here rather than only through
+# libcall.  A ping needs no display server, so it is asserted unconditionally;
+# a real set/get round trip does, and only a runner without one may skip it —
+# see round_trip_skip_is_allowed in test/e2e_skip_rules.sh.
 SIMPLECLIPBOARD_TOKEN="$token" \
   "$client" --address "127.0.0.1:$authenticated_port" --action ping
 if ! SIMPLECLIPBOARD_TOKEN='definitely-wrong-token' \
@@ -105,8 +109,14 @@ if printf '%s' "$clipboard_text" | SIMPLECLIPBOARD_TOKEN="$token" \
     exit 1
   fi
   echo 'Clipboard set/get round trip passed'
+elif round_trip_skip_is_allowed "$temporary/set.err"; then
+  echo 'Skipping the set/get round trip: no display server on this host'
+  sed -n '1,10p' "$temporary/set.err"
 else
-  echo "Skipping the set/get round trip: $(<"$temporary/set.err")"
+  echo 'The client could not set the clipboard, and not because this host has' >&2
+  echo 'no display server, so the round trip is a failure rather than a skip:' >&2
+  sed -n '1,40p' "$temporary/set.err" >&2
+  exit 1
 fi
 
 kill -TERM "$daemon_pid"

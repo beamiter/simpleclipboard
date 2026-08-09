@@ -16,10 +16,12 @@ path = "src/simpleclipboard/simpleclipboard_lib.rs"
 name = "simpleclipboard-daemon"
 path = "src/simpleclipboard/simpleclipboard_daemon.rs"
 
-# The asynchronous transport: Vim drives one of these per request with
-# job_start(), so a slow daemon cannot freeze the editor's UI thread the way an
-# in-process libcallnr() does — and so a Get reply, which is text rather than a
-# number, has somewhere to come back through.
+# The out-of-process transport: one daemon request per process.  That is the
+# only shape a Get reply fits, since libcallnr() can return nothing but a
+# number, and the only shape an editor can watch asynchronously instead of
+# blocking its UI thread for the whole request deadline.  It is built,
+# installed and usable from a shell, but the plugin does not drive it yet:
+# every copy still goes through the synchronous libcallnr() entry points.
 [[bin]]
 name = "simpleclipboard-client"
 path = "src/simpleclipboard/simpleclipboard_client.rs"
