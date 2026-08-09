@@ -174,6 +174,45 @@ call simpleclipboard#CopyYankedToClipboardEvent({
       \ })
 sleep 150m
 call assert_false(filereadable(s:capture), 'an unreadable cap fails closed')
+
+" A quoted "0" is readable, and this option - unlike the OSC52 limit - is not
+" `positive`: zero is its documented way to say "no cap", so the fail-closed
+" note must NOT appear here.  Reporting "automatic copy is skipped until it is
+" fixed" would name a remedy that is not in force while the yank path goes on
+" copying every byte, which is the same defect the note exists to prevent.
+let g:simpleclipboard_auto_copy_max_bytes = '0'
+call assert_equal(
+      \ ['g:simpleclipboard_auto_copy_max_bytes must be a number, but is a string ("0"); '
+      \ .. 'using the default 0, which applies no cap'],
+      \ simpleclipboard#ValidateOptions())
+messages clear
+call simpleclipboard#Status()
+call assert_match('automatic copy: registers=.*; max=unlimited', execute('messages'))
+call delete(s:capture)
+call simpleclipboard#CopyYankedToClipboardEvent({
+      \ 'operator': 'y', 'regname': '', 'regcontents': ['quoted zero copies'], 'regtype': 'v',
+      \ })
+sleep 150m
+call assert_equal(['quoted zero copies'], readfile(s:capture, 'b'))
+
+" A quoted negative cap is no cap either: AutoCopyLimit() hands -5 to an
+" enforcement that reads `bytes > 0`, so every yank is copied whole and
+" :SimpleCopyStatus prints max=unlimited.  The warning has to say the same
+" thing - "using -5" alone named a cap that no yank will ever meet.
+let g:simpleclipboard_auto_copy_max_bytes = '-5'
+call assert_equal(
+      \ ['g:simpleclipboard_auto_copy_max_bytes must be a number, but is a string ("-5"); '
+      \ .. 'using -5, which applies no cap'],
+      \ simpleclipboard#ValidateOptions())
+messages clear
+call simpleclipboard#Status()
+call assert_match('automatic copy: registers=.*; max=unlimited', execute('messages'))
+call delete(s:capture)
+call simpleclipboard#CopyYankedToClipboardEvent({
+      \ 'operator': 'y', 'regname': '', 'regcontents': ['far more than five bytes'], 'regtype': 'v',
+      \ })
+sleep 150m
+call assert_equal(['far more than five bytes'], readfile(s:capture, 'b'))
 let g:simpleclipboard_auto_copy_max_bytes = 0
 
 " g:simpleclipboard_auto_copy is honoured per yank rather than latched when the
@@ -263,15 +302,43 @@ call assert_match('address=127.0.0.1:1', s:coerced_status)
 " screen into whatever is logging the outer session.
 let g:simpleclipboard_copy_command = []
 let g:simpleclipboard_disable_osc52 = 0
+" "Nothing was written" only means "the limit blocked it" if the OSC52 path
+" could otherwise write.  With $PATH emptied of copy commands base64 goes with
+" them, so every OSC52 copy fails for that reason instead and the assertions
+" below would hold for any limit at all - including one that blocks nothing.
+" Keep base64 reachable, send the sequence to a file, and prove with a control
+" copy that this harness really does write when the limit permits it.
+let s:limit_tty = s:tmp_prefix .. '-limit-tty'
+let s:limit_base64 = s:fake_bin .. '/base64'
+let s:limit_osc52_ready = executable('base64')
+if s:limit_osc52_ready
+  call writefile(['#!/bin/sh', 'exec ' .. shellescape(exepath('base64')) .. ' "$@"'],
+        \ s:limit_base64)
+  call assert_equal(1, setfperm(s:limit_base64, 'rwx------'))
+  let g:simpleclipboard_osc52_tty = s:limit_tty
+endif
 let $PATH = s:fake_bin
 call simpleclipboard#Refresh()
+if s:limit_osc52_ready
+  let g:simpleclipboard_osc52_limit = 75000
+  call delete(s:limit_tty)
+  call assert_true(simpleclipboard#CopyToSystemClipboard('osc52 control'))
+  call assert_equal("\x1b]52;c;b3NjNTIgY29udHJvbA==\x07",
+        \ join(readfile(s:limit_tty, 'b'), "\n"))
+  let g:simpleclipboard_osc52_limit = 0
+endif
 messages clear
 call simpleclipboard#Status()
 call assert_match('OSC52: blocked (invalid limit)', execute('messages'))
 call delete(s:capture)
+call delete(s:limit_tty)
 call assert_false(simpleclipboard#CopyToSystemClipboard('unreadable osc52 limit'))
 sleep 100m
 call assert_false(filereadable(s:capture), 'a blocked OSC52 copy writes nothing at all')
+if s:limit_osc52_ready
+  call assert_false(filereadable(s:limit_tty),
+        \ 'a blocked OSC52 copy emits no escape sequence either')
+endif
 messages clear
 call simpleclipboard#Status()
 call assert_match('last error: g:simpleclipboard_osc52_limit must be a positive number; OSC52 skipped',
@@ -294,9 +361,14 @@ messages clear
 call simpleclipboard#Status()
 call assert_match('OSC52: blocked (invalid limit)', execute('messages'))
 call delete(s:capture)
+call delete(s:limit_tty)
 call assert_false(simpleclipboard#CopyToSystemClipboard('quoted zero osc52 limit'))
 sleep 100m
 call assert_false(filereadable(s:capture), 'a quoted "0" blocks OSC52 as firmly as an unquoted 0')
+if s:limit_osc52_ready
+  call assert_false(filereadable(s:limit_tty),
+        \ 'a quoted "0" emits no escape sequence either')
+endif
 
 " A quoted number that is readable and positive is honoured, and the warning
 " names the value really in force rather than the note.
@@ -308,6 +380,9 @@ call assert_match('g:simpleclipboard_osc52_limit must be a positive number, but 
 let g:simpleclipboard_osc52_limit = 0
 
 let $PATH = s:old_path
+call delete(s:limit_base64)
+call delete(s:limit_tty)
+let g:simpleclipboard_osc52_tty = ''
 let g:simpleclipboard_disable_osc52 = 1
 let g:simpleclipboard_copy_command = ['tee', s:capture]
 call simpleclipboard#Refresh()

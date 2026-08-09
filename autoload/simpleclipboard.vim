@@ -50,8 +50,13 @@ const OPTION_SPECS: list<dict<any>> = [
   {name: 'simpleclipboard_auto_copy', kind: 'bool', default: 1},
   {name: 'simpleclipboard_auto_copy_registers', kind: 'list', default: [],
     elements: 'string', note: 'automatic copy is skipped until it is fixed'},
+  # `nonpositive` names what a value of zero or less really does, for an option
+  # whose consumer switches off rather than clamps: the cap is enforced by
+  # `bytes > 0`, so reporting "using -5" alone would put a cap on screen that
+  # :SimpleCopyStatus prints as max=unlimited two lines later.
   {name: 'simpleclipboard_auto_copy_max_bytes', kind: 'number', default: 0,
-    note: 'automatic copy is skipped until it is fixed'},
+    note: 'automatic copy is skipped until it is fixed',
+    nonpositive: 'applies no cap'},
   {name: 'simpleclipboard_libpath', kind: 'string', default: ''},
   {name: 'simpleclipboard_daemon_path', kind: 'string', default: ''},
   {name: 'simpleclipboard_no_default_mappings', kind: 'bool', default: 0},
@@ -272,6 +277,15 @@ def OptionProblem(spec: dict<any>, raw: any): string
   var effective = EffectiveNumber(spec, raw)
   var remedy = effective == spec.default
     ? $'using the default {effective}' : $'using {effective}'
+  # The value in force is not always a value that does anything.  A byte cap of
+  # zero or less is not a cap: AutoCopyLimit() hands the coerced number to an
+  # enforcement that reads `bytes > 0`, and :SimpleCopyStatus prints it as
+  # max=unlimited - so naming "-5" on its own contradicts the status line on
+  # the same screen and reads as a cap no yank will ever meet.  Say what the
+  # number does, alongside the number itself.
+  if has_key(spec, 'nonpositive') && effective <= 0
+    remedy ..= $', which {spec.nonpositive}'
+  endif
   return $'{name} must be {wanted}, but is {seen}; {remedy}'
 enddef
 

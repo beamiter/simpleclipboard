@@ -323,7 +323,10 @@ tunnel 端口，也必须同步修改。
 默认值——前两个在完全读不出数字时跳过自动复制，OSC52 上限取 0、负数或读不出
 数字时直接封掉 OSC52 而不是退回 75000。加不加引号都一样：'0' 与 '-5' 和
 0、-5 一样封掉 OSC52，报告里写的也是"封掉"，不会去提那个并没有生效的 75000。
-写成字符串的字节上限仍然是字节上限，会照常生效。
+写成字符串的字节上限仍然是字节上限，会照常生效；但取零或负数的上限根本不是
+上限——自动复制只在上限为正时才拦截——所以 '-5' 报的是
+"using -5, which applies no cap"，而不是一个永远拦不到任何 yank 的上限，
+|:SimpleCopyStatus| 同一屏上写的也是 max=unlimited。
 |g:simpleclipboard_token| 只报告类型和长度，不回显取值。列表选项的元素也会
 校验：|g:simpleclipboard_copy_command| 必须是非空字符串列表，
 |g:simpleclipboard_auto_copy_registers| 必须是字符串列表。
@@ -370,6 +373,9 @@ g:simpleclipboard_auto_copy_max_bytes
 	自动复制，:SimpleCopyRegister、:SimpleCopyRange 等显式操作不截断也不拒绝。
 	写成数字字符串（'4096'）按十进制解释；完全读不出数字时自动复制整体
 	跳过，|:SimpleCopyStatus| 会显示 max=invalid (expected number)。
+	零和负数都表示不限制（上限只在为正时才拦截），加引号也一样：'0' 与
+	'-5' 的报告写的是 "which applies no cap"，|:SimpleCopyStatus| 写的是
+	max=unlimited，两者说的是同一件事。
 
 					*g:simpleclipboard_debounce_ms*
 g:simpleclipboard_debounce_ms

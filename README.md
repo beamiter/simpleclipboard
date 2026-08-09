@@ -214,7 +214,7 @@ any other option run `:SimpleCopyRefresh`.
 | `g:simpleclipboard_daemon_autostop` | `0` | On exit, stop only the daemon job owned by this Vim instance. |
 | `g:simpleclipboard_auto_copy` | `1` | Copy successful yank operations from `TextYankPost`. Re-read on every yank, so runtime changes apply immediately; see `:SimpleCopyToggle` and `:SimpleCopyPause`. |
 | `g:simpleclipboard_auto_copy_registers` | `[]` | Automatic-copy register allow-list; empty preserves all registers except `_`. Use `['unnamed']` to accept only ordinary yanks. |
-| `g:simpleclipboard_auto_copy_max_bytes` | `0` | Maximum automatic-yank payload in UTF-8 bytes; `0` is unlimited. Explicit copy commands are never capped. |
+| `g:simpleclipboard_auto_copy_max_bytes` | `0` | Maximum automatic-yank payload in UTF-8 bytes; `0` — or any value that reads as zero or less — is unlimited. Explicit copy commands are never capped. |
 | `g:simpleclipboard_debounce_ms` | `50` | Debounce automatic copy by this many milliseconds. |
 | `g:simpleclipboard_no_default_mappings` | `0` | Do not create the `<leader>y` mappings. |
 
@@ -290,7 +290,11 @@ automatic copy when the value cannot be read at all, and an unreadable or
 non-positive OSC52 limit blocks the OSC52 path. Quoting changes nothing there:
 `'0'` and `'-5'` block OSC52 exactly as `0` and `-5` do, and the message says
 so rather than naming the 75000-byte default it does not reinstate. A quoted
-byte cap is still a byte cap and is applied as one.
+byte cap is still a byte cap and is applied as one — but a cap of zero or less
+is not a cap at all, since the automatic-copy limit is enforced only when it is
+positive, so `'-5'` is reported as `using -5, which applies no cap` rather than
+as a cap no yank will ever meet, and `:SimpleCopyStatus` prints the same thing
+as `max=unlimited`.
 `g:simpleclipboard_token` is
 reported by type and length only, never by value. List elements are checked
 too: `g:simpleclipboard_copy_command` must be a list of non-empty strings and

@@ -8,6 +8,25 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-05
 
+### 取零或负数的自动复制上限,报告里不再当成一个上限
+
+- `let g:simpleclipboard_auto_copy_max_bytes = '-5'` 此前报的是 "using -5",
+  可 `AutoCopyLimit()` 把 -5 原样交给 `bytes > 0` 的判断,于是一个字节都不
+  拦;同一次 `:SimpleCopyStatus` 在下面几行写着 `max=unlimited`。一屏之内
+  两句话互相矛盾,而"报一个并没有生效的取值"正是选项校验存在的意义所要排
+  除的那种错——OSC52 上限那条刚扫过,这是它的同类。
+- 现在这类选项在数值可读但取零或负数时,会连它的作用一起说出来:'-5' 报
+  "using -5, which applies no cap",'0' 报 "using the default 0, which
+  applies no cap",与 `max=unlimited` 一致。正数上限不受影响,'4' 仍然报
+  "using 4" 并照常拦截。
+- 顺带补上了这个选项失败关闭那一支的测试:它带 note 但不是 `positive`,
+  所以加引号的 '0' 必须报"没有上限"而不是"自动复制已跳过"——冒烟测试此前
+  只覆盖 '4'、'lots' 与不加引号的 0,把那半个条件删掉整套测试照样全绿。
+- OSC52 上限被封时"什么都没写"的两条断言此前是空断言:$PATH 被清空的同时
+  base64 也没了,任何 OSC52 复制都写不出东西,换个不封的上限它们照样通过。
+  现在 base64 会留在假 $PATH 上、转义序列写进文件,并先用一次正常上限的复制
+  证明这套装置确实写得出来。
+
 ### `simpleclipboard-client --selection` 只对 get 生效,现在会这么说
 
 - `--selection` 此前对所有 action 都照收不误,但只有 `get` 会把它送上线:
