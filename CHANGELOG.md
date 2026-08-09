@@ -8,6 +8,21 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-05
 
+### `simpleclipboard-client --selection` 只对 get 生效,现在会这么说
+
+- `--selection` 此前对所有 action 都照收不误,但只有 `get` 会把它送上线:
+  `PlainRequest::Set` 里根本没有选区字段,守护进程的写入路径写死
+  `Selection::Clipboard`。于是
+  `simpleclipboard-client --action set --selection primary` 写的是
+  CLIPBOARD,PRIMARY 一个字节没动,退出码还是 0——脚本作者最不会去检查的
+  那种结果。
+- 现在给 `get` 以外的 action 指定选区是用法错误（退出码 64,和"守护进程
+  连不上"的 1 分得开）,`--help` 里也写明"只对 get 生效"。README 与
+  `:help simpleclipboard` 同步。
+- 客户端从此有了自己的单元测试:参数解析抽成 `parse_arguments()`,覆盖
+  set/ping 上的选区被拒、不带选区的 set 照常通过、get 把选区带进请求、
+  以及 `--help` 里那句话确实在。
+
 ### 加了引号的 OSC52 上限,报告里不再提那个没有生效的默认值
 
 - `let g:simpleclipboard_osc52_limit = '0'`（或 `'-5'`）此前报的是

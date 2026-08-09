@@ -84,7 +84,10 @@ binary, and places them in the plugin's `lib/` directory:
 `lib/simpleclipboard-client` sends one daemon request per run — `ping`, `set`
 from standard input, or `get` to standard output — reading the pre-shared key
 from `SIMPLECLIPBOARD_TOKEN`. It is the only way to reach a `get`, because
-`libcallnr()` can return nothing but a number.
+`libcallnr()` can return nothing but a number. `--selection clipboard|primary`
+applies to `get` only: SCB1 has no room for a selection in a `set`, so every
+write goes to CLIPBOARD, and naming a selection on a `set` or a `ping` is a
+usage error (exit 64) rather than a silent write to the other selection.
 Note that **the plugin does not drive it yet**: Vim still makes every copy
 through the synchronous library entry points, and no Vim command reads the
 clipboard. Run it yourself if you want a `get`.

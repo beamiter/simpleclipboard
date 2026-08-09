@@ -50,6 +50,9 @@ fn usage() -> String {
         "simpleclipboard-client {}\n\n\
          Usage: simpleclipboard-client --address HOST:PORT --action ping|set|get\n\
          \x20                          [--selection clipboard|primary]\n\n\
+         --selection applies to `get` only; SCB1 has no room for a selection in a\n\
+         `set`, so every write goes to CLIPBOARD and naming a selection there is a\n\
+         usage error rather than a silent write to the wrong place.\n\n\
          The text of a `set` is read from standard input; the text of a `get` is\n\
          written to standard output.  The pre-shared key is read from\n\
          {TOKEN_VARIABLE}; it is deliberately not a command-line argument.\n\n\
@@ -61,10 +64,13 @@ fn usage() -> String {
 }
 
 fn parse_options() -> Result<Option<Options>, String> {
+    parse_arguments(env::args().skip(1))
+}
+
+fn parse_arguments(mut arguments: impl Iterator<Item = String>) -> Result<Option<Options>, String> {
     let mut address = None;
     let mut action = None;
-    let mut selection = Selection::Clipboard;
-    let mut arguments = env::args().skip(1);
+    let mut selection = None;
 
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -80,8 +86,10 @@ fn parse_options() -> Result<Option<Options>, String> {
             "--action" => action = Some(next_value(&mut arguments, "--action")?),
             "--selection" => {
                 let value = next_value(&mut arguments, "--selection")?;
-                selection = Selection::parse(&value)
-                    .ok_or_else(|| format!("unknown selection: {value}"))?;
+                selection = Some(
+                    Selection::parse(&value)
+                        .ok_or_else(|| format!("unknown selection: {value}"))?,
+                );
             }
             other => return Err(format!("unknown option: {other}")),
         }
@@ -92,10 +100,23 @@ fn parse_options() -> Result<Option<Options>, String> {
     if address.is_empty() {
         return Err("--address must not be empty".to_owned());
     }
+    // Only Get carries a selection on the wire: PlainRequest::Set is a bare
+    // length-prefixed string and the daemon's set path hardcodes CLIPBOARD.
+    // Accepting `--action set --selection primary` therefore wrote CLIPBOARD
+    // and exited 0, which is the worst possible answer for someone scripting a
+    // PRIMARY write - the one outcome they would never check for.  Refuse it
+    // instead, and keep the refusal a usage error so it cannot be mistaken for
+    // an unreachable daemon.
+    if selection.is_some() && action != "get" {
+        return Err(format!(
+            "--selection applies to --action get; a `{action}` always writes the \
+             clipboard selection"
+        ));
+    }
     Ok(Some(Options {
         address,
         action,
-        selection,
+        selection: selection.unwrap_or_default(),
     }))
 }
 
@@ -186,5 +207,87 @@ fn main() -> ExitCode {
             eprintln!("{}", usage());
             ExitCode::from(EXIT_USAGE)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ADDRESS: [&str; 2] = ["--address", "127.0.0.1:12343"];
+
+    fn parse(rest: &[&str]) -> Result<Option<Options>, String> {
+        let arguments = ADDRESS
+            .iter()
+            .chain(rest.iter())
+            .map(|argument| (*argument).to_owned());
+        parse_arguments(arguments)
+    }
+
+    // The selection only reaches the wire for Get: PlainRequest::Set is a bare
+    // length-prefixed string, and the daemon's set path hardcodes CLIPBOARD.
+    // Parsing --selection for a set therefore used to write the clipboard and
+    // exit 0, which is the one answer a caller scripting a PRIMARY write would
+    // never think to check.
+    #[test]
+    fn a_selection_is_refused_where_it_cannot_reach_the_wire() {
+        for action in ["set", "ping"] {
+            for selection in ["primary", "clipboard"] {
+                let arguments = ["--action", action, "--selection", selection];
+                let Err(error) = parse(&arguments) else {
+                    panic!("--selection was accepted for --action {action}");
+                };
+                assert!(
+                    error.contains("--selection applies to --action get"),
+                    "{action}/{selection}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_set_without_a_selection_is_still_accepted() {
+        let options = parse(&["--action", "set"])
+            .expect("a plain set must parse")
+            .expect("a plain set is not --help");
+        assert_eq!(options.action, "set");
+        assert_eq!(options.selection, Selection::Clipboard);
+    }
+
+    #[test]
+    fn a_get_carries_its_selection_into_the_request() {
+        let options = parse(&["--action", "get", "--selection", "primary"])
+            .expect("a get with a selection must parse")
+            .expect("a get is not --help");
+        assert_eq!(
+            build_request(&options),
+            Ok(PlainRequest::Get {
+                selection: Selection::Primary
+            })
+        );
+    }
+
+    #[test]
+    fn a_get_defaults_to_the_clipboard_selection() {
+        let options = parse(&["--action", "get"])
+            .expect("a bare get must parse")
+            .expect("a get is not --help");
+        assert_eq!(
+            build_request(&options),
+            Ok(PlainRequest::Get {
+                selection: Selection::Clipboard
+            })
+        );
+    }
+
+    // The usage text advertised --selection as a general option, which is how a
+    // caller learned to pass it to a set in the first place.
+    #[test]
+    fn usage_says_the_selection_is_for_get_only() {
+        let usage = usage();
+        assert!(
+            usage.contains("--selection applies to `get` only"),
+            "{usage}"
+        );
     }
 }
