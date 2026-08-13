@@ -1340,6 +1340,15 @@ export def CopyToSystemClipboard(text: string): bool
   return BeginCopy(text, true)
 enddef
 
+# Stable suite integration API: callers provide text, SimpleClipboard owns the
+# unnamed register and the best available local/daemon/OSC52 clipboard route.
+# It deliberately does not echo so the originating plugin can describe the
+# semantic action.
+export def CopyText(text: string): bool
+  setreg('"', text)
+  return CopyToSystemClipboard(text)
+enddef
+
 export def CompleteRegister(arglead: string, _cmdline: string,
     _cursorpos: number): list<string>
   var candidates = ['unnamed', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',

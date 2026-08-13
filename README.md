@@ -622,3 +622,10 @@ toolchain as a hard error, which failed every run before compiling a line.
 
 SimpleClipboard builds on arboard, RustCrypto AES-GCM, Tokio, and the Vim
 job/channel interfaces.
+
+## simple* plugin integration
+
+Other simple* plugins can call `simpleclipboard#CopyText(text)`. The function
+writes the unnamed Vim register, routes the payload through the configured
+daemon/native/OSC52 clipboard backend, and returns whether the copy was
+accepted. It is safe to feature-detect and remains optional.
