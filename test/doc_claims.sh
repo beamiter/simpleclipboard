@@ -39,6 +39,29 @@ for helper in pbpaste wl-paste 'xclip -o' 'xsel -o' 'xsel --output'; do
 done
 
 # ---------------------------------------------------------------------------
+# 1b. The documentation promises that wl-copy and wl-paste are offered only in
+#     a Wayland session.  That promise was false for as long as the gate was
+#     written getenv('WAYLAND_DISPLAY') !=# '': inside a compiled :def getenv()
+#     answers v:null for an unset variable and `v:null !=# ''` is true, so the
+#     gate admitted every machine that had the binaries.  $WAYLAND_DISPLAY is
+#     an empty string when unset and is the only form that gates.  Behaviour is
+#     pinned by tests/vim_remote.vim; this keeps the shape that broke it from
+#     coming back by hand.
+# ---------------------------------------------------------------------------
+if grep -rqF 'WAYLAND_DISPLAY' "${user_docs[@]}"; then
+  if ! grep -rqF '$WAYLAND_DISPLAY !=#' "${vim_side[@]}"; then
+    fail "Documentation says wl-copy/wl-paste need \$WAYLAND_DISPLAY, but nothing under autoload/ or plugin/ gates on it."
+  fi
+  # Comment lines are skipped: the one at the gate explains this very trap.
+  wayland_getenv="$(grep -rn "getenv( *'WAYLAND_DISPLAY' *)" "${vim_side[@]}" \
+    | grep -vE ':[0-9]+:[[:space:]]*#' || true)"
+  if [[ -n "$wayland_getenv" ]]; then
+    fail "getenv('WAYLAND_DISPLAY') is not a gate in a compiled :def - it answers v:null, and v:null !=# '' is true:" \
+      "$wayland_getenv"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 2. Every :Simple… command the user documentation mentions must be defined.
 #    A paste command promised in prose and missing from plugin/ is exactly the
 #    shape of the SECURITY.md defect.

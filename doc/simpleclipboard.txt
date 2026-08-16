@@ -68,7 +68,7 @@ Debian/Ubuntu 构建依赖可安装为： >
 可选外部命令：
 
 - macOS：pbcopy；
-- Wayland：wl-copy；
+- Wayland：wl-copy（只在 $WAYLAND_DISPLAY 非空时才作为候选）；
 - X11：xsel 或 xclip；
 - WSL：clip.exe；
 - OSC52：base64，以及允许 OSC52 剪贴板写入的终端。
@@ -469,6 +469,11 @@ g:simpleclipboard_paste_timeout_ms
 	|simpleclipboard#PasteText()| 等待一个粘贴程序退出的最长毫秒数；超时的
 	程序会被停止并按失败处理，继续尝试下一个候选。必须为正数。
 
+	停止是逐级升级的：先 SIGTERM，忽略它的程序 500 ms 后收到 SIGKILL，
+	若连标准输出都仍未关闭（例如程序把它交给了另一个会话里的子进程），
+	再过 500 ms 该 job 被彻底放弃并按超时失败处理。因此回调恰好一次的
+	保证不依赖粘贴程序是否响应信号，最坏情况比本选项多约 1 秒。
+
 					*g:simpleclipboard_disable_osc52*
 g:simpleclipboard_disable_osc52
 	默认：0
@@ -601,7 +606,8 @@ RUST_LOG
 	error、warn、info、debug、trace，或 simpleclipboard=<level>。
 
 daemon 不可用时，插件按环境选择外部命令。内置候选顺序为 pbcopy、
-wl-copy、WSL 的 clip.exe、xsel、xclip。用户配置的
+wl-copy（需要 $WAYLAND_DISPLAY，X11 会话下不作为候选）、WSL 的 clip.exe、
+xsel、xclip。用户配置的
 |g:simpleclipboard_copy_command| 最先尝试；若异步命令以失败状态退出，会继续
 尝试后续平台候选，最后才使用 OSC52。外部 job 串行执行；等待期间的多次请求
 只保留最新文本，防止较慢的旧命令反向覆盖新复制。
@@ -871,7 +877,8 @@ simpleclipboard#PasteText({Cb} [, {selection}])
 	否则依次运行 |g:simpleclipboard_paste_command|、pbpaste、wl-paste
 	（需要 $WAYLAND_DISPLAY）、xsel、xclip，取第一个以 0 退出的程序的标准
 	输出（大于管道缓冲的输出会完整收齐）。失败或超过
-	|g:simpleclipboard_paste_timeout_ms| 的程序换下一个；全部失败时 reason
+	|g:simpleclipboard_paste_timeout_ms| 的程序换下一个（停止方式见该选项，
+	忽略 SIGTERM 的程序不会拖住回调）；全部失败时 reason
 	说明最后一个失败原因，有 +clipboard 时还会指出寄存器为空。既没有
 	+clipboard 也没有任何程序时，reason 列出需要的程序。
 

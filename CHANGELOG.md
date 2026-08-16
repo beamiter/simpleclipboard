@@ -8,6 +8,45 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-16
 
+### wl-copy / wl-paste 的 $WAYLAND_DISPLAY 判据此前从不生效
+
+- 判据写成 `getenv('WAYLAND_DISPLAY') !=# ''`,而在编译过的 `:def` 里
+  `getenv()` 对未设置的变量返回 `v:null`,`v:null !=# ''` 为真——于是只要机器
+  上装了 wl-clipboard,X11 会话也会把 wl-copy / wl-paste 排进候选。实际后果:
+  每次复制、每次粘贴都先 fork 一个只能失败的程序(日志里是
+  `wl-paste exited with status 1.` 后面跟着 `Paste route: xclip`),
+  `:SimpleCopyStatus` 打印 `paste: wl-paste -> xclip`,与文档、README 里
+  "需要 $WAYLAND_DISPLAY" 的说法相反;若 wl-paste 是 `$PATH` 上唯一的粘贴
+  程序,`PasteText()` 回答的是 `wl-paste exited with status 1` 而不是
+  "没有可用的粘贴后端"。
+- 现在两处都走同一个 `OnWayland()`,用 `$WAYLAND_DISPLAY !=# ''` 判断:未设置
+  和设为空串都不算 Wayland 会话。文档与 README 补上复制侧同样的说明。
+
+### 忽略 SIGTERM 的粘贴程序不再让回调一次也不发生
+
+- `simpleclipboard#PasteText()` 承诺回调恰好一次,但超时只做一次
+  `job_stop()`(SIGTERM)。程序忽略它时 exit_cb / close_cb 都不会触发,
+  `FinishPaste()` 永远完不成,整条候选链停在那里,后面没有任何期限——
+  `g:simpleclipboard_paste_timeout_ms = 300` 配上
+  `['/bin/sh', '-c', 'trap "" TERM; exec sleep 20']` 时回调始终不来。
+- 期限改成逐级升级:SIGTERM,500 ms 后 SIGKILL,再 500 ms 后彻底放弃该
+  job 并直接走失败分支(先置 closed/exited,所以"恰好一次"的守卫依旧成立,
+  迟到的 exit_cb / close_cb 不会再开一条链)。放弃时状态强制为非零,已经收到
+  的半截输出不会被当成剪贴板内容。只有用户自己配置的
+  `g:simpleclipboard_paste_command` 能触发这一路;内置候选都不忽略 SIGTERM。
+
+### 测试:粘贴一节不再随开发机的剪贴板决定跑多少
+
+- `tests/vim_remote.vim` 的 PasteText 段落此前整体被
+  `has('clipboard') && getreg('+') !=# ''` 分成两支:剪贴板恰好非空的
+  +clipboard Vim 只跑一条寄存器断言,自定义程序、候选链、超时、空剪贴板全部
+  跳过,`make vim-remote` 照样是绿的。现在寄存器路径用写进去的已知值来测,
+  然后清空(测完在 teardown 里还原),程序相关的断言无条件执行,清不空剪贴板
+  会直接报错而不是静默跳过。
+- 新增覆盖:$WAYLAND_DISPLAY 的有/无/空三种取值下 `:SimpleCopyStatus` 的
+  `external commands:` 与 `paste:` 两行以及实际选中的粘贴程序;忽略 SIGTERM
+  的程序被 SIGKILL 收走;标准输出被另一个会话里的子进程占住的 job 被放弃。
+
 ### SimpleRemote 的远端 buffer 里,路径命令复制的是远端路径
 
 - `:SimpleCopyPath` / `:SimpleCopyLocation` / `:SimpleCopyFormat` 此前一律

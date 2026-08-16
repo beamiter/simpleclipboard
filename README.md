@@ -36,7 +36,7 @@ commands, and OSC52 as progressively more portable fallbacks.
 | Environment | Preferred path | Available fallbacks |
 | --- | --- | --- |
 | Linux/X11 | Rust daemon with arboard | `xsel`, `xclip`, OSC52 |
-| Linux/Wayland | Rust daemon with arboard `wayland-data-control` | `wl-copy`, XWayland tools, OSC52 |
+| Linux/Wayland | Rust daemon with arboard `wayland-data-control` | `wl-copy` (only when `$WAYLAND_DISPLAY` is set), XWayland tools, OSC52 |
 | macOS | Rust daemon with arboard | `pbcopy`, OSC52 |
 | WSL | `clip.exe` | Explicit authenticated daemon, OSC52 |
 | SSH | Explicit address or loopback `RemoteForward` | OSC52, remote copy command |
@@ -401,7 +401,8 @@ Runtime configuration is provided through environment variables:
 
 If the daemon path is disabled or unavailable, SimpleClipboard chooses an
 environment-appropriate native command. The built-in candidate order is
-`pbcopy` → `wl-copy` → WSL's `clip.exe` → `xsel` → `xclip`. A configured
+`pbcopy` → `wl-copy` (offered only when `$WAYLAND_DISPLAY` is set, since it
+cannot reach an X11 session) → WSL's `clip.exe` → `xsel` → `xclip`. A configured
 `g:simpleclipboard_copy_command` is tried first. If a queued command exits with
 an error, SimpleClipboard advances through the remaining platform candidates
 before its final OSC52 fallback. External jobs are serialized and multiple
@@ -674,7 +675,10 @@ fall back to your own register handling when SimpleClipboard is absent.
   `$WAYLAND_DISPLAY`), `xsel`, `xclip`; the first program exiting 0 wins,
   output larger than a pipe buffer is collected whole, and a program that fails
   or exceeds `g:simpleclipboard_paste_timeout_ms` yields to the next. The
-  daemon is never asked (see [Security](#security)). SimpleRemote may later use
+  deadline escalates — SIGTERM, SIGKILL 500 ms later, and the job abandoned
+  500 ms after that — so the exactly-once callback does not depend on the paste
+  program honouring a signal. The daemon is never asked (see
+  [Security](#security)). SimpleRemote may later use
   it for a `gp` key in its remote tree that pastes local clipboard text or a
   local path into a remote directory.
 

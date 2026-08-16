@@ -1072,6 +1072,17 @@ def ValidCommand(value: any): bool
   return true
 enddef
 
+# wl-copy and wl-paste talk to a Wayland compositor; on an X11 session they
+# fork, fail and cost every copy and every paste a wasted process before the
+# next candidate is tried.  The gate is written as $WAYLAND_DISPLAY rather
+# than getenv('WAYLAND_DISPLAY') because inside a compiled :def getenv()
+# answers v:null for a variable that is not set, and `v:null !=# ''` is true -
+# the getenv() form is not a gate at all.  $NAME is an empty string when the
+# variable is unset, so this one is.
+def OnWayland(): bool
+  return $WAYLAND_DISPLAY !=# ''
+enddef
+
 def DetectCopyCmd(): void
   if cached_copy_cmd_checked
     return
@@ -1084,7 +1095,7 @@ def DetectCopyCmd(): void
   if executable('pbcopy') == 1
     AddCopyCandidate(['pbcopy'], 'pbcopy')
   endif
-  if getenv('WAYLAND_DISPLAY') !=# '' && executable('wl-copy') == 1
+  if OnWayland() && executable('wl-copy') == 1
     AddCopyCandidate(['wl-copy'], 'wl-copy')
   endif
   if executable('clip.exe') == 1
@@ -1889,6 +1900,14 @@ def PasteTimeoutMs(): number
   return NumberOption('simpleclipboard_paste_timeout_ms')
 enddef
 
+# The deadline cannot be a single job_stop(): that sends SIGTERM, a program is
+# free to ignore it, and a program that does never runs exit_cb or close_cb -
+# so the callback this API promises to run exactly once would run zero times,
+# with nothing behind it.  Each step of the deadline therefore has a step
+# behind it: SIGTERM, then SIGKILL, then giving up on the job entirely and
+# taking the failure path from the timer itself.
+const PASTE_KILL_GRACE_MS = 500
+
 def AddPasteCandidate(candidates: list<dict<any>>, argv: list<string>,
     name: string): void
   add(candidates, {argv: argv, name: name})
@@ -1907,7 +1926,7 @@ def PasteCandidates(selection: string): list<dict<any>>
   if !primary && executable('pbpaste') == 1
     AddPasteCandidate(candidates, ['pbpaste'], 'pbpaste')
   endif
-  if getenv('WAYLAND_DISPLAY') !=# '' && executable('wl-paste') == 1
+  if OnWayland() && executable('wl-paste') == 1
     AddPasteCandidate(candidates,
       primary ? ['wl-paste', '--primary', '--no-newline'] : ['wl-paste', '--no-newline'],
       'wl-paste')
@@ -1968,9 +1987,41 @@ def OnPasteClosed(state: dict<any>): void
   FinishPaste(state)
 enddef
 
+# The last step: the job outlived SIGTERM and SIGKILL, or its standard output
+# is still held open by something the signals did not reach.  Waiting longer
+# would not make it answer, so the chain continues without it.  state.closed
+# and state.exited are set here so that FinishPaste() completes on this call
+# and the exactly-once guard (state.done) is what a late exit_cb/close_cb from
+# the abandoned job then finds; the status is forced non-zero so that whatever
+# partial output arrived is not passed off as the clipboard.
+def OnPasteAbandoned(state: dict<any>): void
+  state.timer = -1
+  if state.done
+    return
+  endif
+  state.closed = true
+  state.exited = true
+  state.status = -1
+  FinishPaste(state)
+enddef
+
+def OnPasteKilled(state: dict<any>, paste_job: job): void
+  state.timer = -1
+  if state.done
+    return
+  endif
+  job_stop(paste_job, 'kill')
+  state.timer = timer_start(PASTE_KILL_GRACE_MS, (_) => OnPasteAbandoned(state))
+enddef
+
 def OnPasteTimeout(state: dict<any>, paste_job: job): void
+  state.timer = -1
+  if state.done
+    return
+  endif
   state.timed_out = true
   job_stop(paste_job)
+  state.timer = timer_start(PASTE_KILL_GRACE_MS, (_) => OnPasteKilled(state, paste_job))
 enddef
 
 def OnPasteExited(state: dict<any>, status: number): void

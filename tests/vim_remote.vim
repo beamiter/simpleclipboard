@@ -4,10 +4,16 @@
 " Covers the parts of SimpleClipboard that other simple* plugins lean on:
 " remote-aware :SimpleCopyPath / :SimpleCopyLocation / :SimpleCopyFormat,
 " simpleclipboard#CopyText(), simpleclipboard#LastCopy() and
-" simpleclipboard#PasteText().  SimpleRemote itself is never on the
-" runtimepath here; the buffer variables it would set and the one global
-" function these paths consult are created by hand, so the suite passes in a
-" checkout that has no sibling plugins at all.
+" simpleclipboard#PasteText() - including the deadline behind PasteText()'s
+" exactly-once callback and the $WAYLAND_DISPLAY gate both route tables use.
+" SimpleRemote itself is never on the runtimepath here; the buffer variables
+" it would set and the one global function these paths consult are created by
+" hand, so the suite passes in a checkout that has no sibling plugins at all.
+"
+" Nothing here is allowed to depend on the developer's machine: $PATH is
+" replaced by a directory this file fills, $WAYLAND_DISPLAY is set and unset
+" deliberately, and the clipboard registers are written and emptied rather
+" than read - a green run means every assertion ran.
 "
 " Run:  vim -Nu NONE -n -i NONE -es -S tests/vim_remote.vim
 " ============================================================================
@@ -315,96 +321,157 @@ function! s:PasteAndWait(...) abort
   return get(s:pastes, 0, [v:false, 'no callback'])
 endfunction
 
-" A Vim built with +clipboard whose "+ register holds text answers from the
-" register, before any program runs; that is the only route this suite cannot
-" fake, so it is exercised only where it exists.  Everywhere else the
-" programs are all there is, and $PATH is emptied of the real ones so that a
-" developer's desktop clipboard cannot leak into an assertion.
+" $PATH is emptied of the real clipboard programs so that a developer's
+" desktop clipboard cannot leak into an assertion, and the paste candidates
+" are whatever this suite puts in s:fake_bin.  setsid is looked up while the
+" real $PATH is still in place, because one case below needs it by name.
+let s:setsid = executable('setsid') ? exepath('setsid') : ''
 let $PATH = s:fake_bin
 if s:had_wayland
   unlet $WAYLAND_DISPLAY
 endif
-let s:register_backed = has('clipboard') && getreg('+') !=# ''
+
+" A Vim built with +clipboard answers from the "+ / "* register before any
+" program runs.  Which text that register happens to hold used to decide how
+" much of this section ran: `has('clipboard') && getreg('+') !=# ''` took a
+" one-assertion branch and skipped the program, chain, deadline and
+" empty-clipboard paths entirely, so on a desktop Vim whose clipboard was not
+" empty `make vim-remote` went green having proved nothing about them.  The
+" register route is now driven with a known value instead of a found one, and
+" then emptied so that every assertion below reaches the programs; the
+" teardown puts the user's clipboard back.
+let s:saved_plus = ['', 'v']
+let s:saved_star = ['', 'v']
+if has('clipboard')
+  let s:saved_plus = [getreg('+'), getregtype('+')]
+  let s:saved_star = [getreg('*'), getregtype('*')]
+  call setreg('+', "register text\n")
+  call setreg('*', 'primary text')
+  " A +clipboard Vim with no reachable selection owner writes an ordinary
+  " register instead; then there is no register route to test, but there is
+  " also nothing to hide the programs, so say so and carry on.
+  if getreg('+') ==# "register text\n" && getreg('*') ==# 'primary text'
+    call assert_equal([v:true, "register text\n"], s:PasteAndWait())
+    call assert_equal([v:true, 'primary text'], s:PasteAndWait('primary'))
+  else
+    echom 'vim_remote: the clipboard registers do not keep what is written'
+          \ .. ' to them; the register route was not run'
+  endif
+  call setreg('+', '')
+  call setreg('*', '')
+  " Everything below reads the paste programs, and only an empty register
+  " gets that far: a clipboard that refuses to be emptied must fail loudly
+  " rather than pass with the whole section unrun.
+  call assert_equal('', getreg('+'), 'could not empty the "+ register')
+  call assert_equal('', getreg('*'), 'could not empty the "* register')
+endif
 " A +clipboard Vim whose register is empty still consults it first, and a
 " final failure says so; every other Vim reports the program failure alone.
 let s:empty_register = has('clipboard') ? 'the "+ register is empty and ' : ''
-if s:register_backed
-  let s:from_register = s:PasteAndWait()
-  call assert_equal([v:true, getreg('+')], s:from_register)
-else
-  " The custom paste program's standard output is the answer, byte for byte:
-  " trailing newlines and UTF-8 included, and no register is written.
-  let g:simpleclipboard_paste_command = ['/bin/sh', '-c', 'printf "héllo\nworld\n"']
-  call setreg('"', 'untouched')
-  call assert_equal([v:true, "héllo\nworld\n"], s:PasteAndWait())
-  call assert_equal([v:true, "héllo\nworld\n"], s:PasteAndWait('clipboard'))
-  call assert_equal('untouched', getreg('"'))
+" The custom paste program's standard output is the answer, byte for byte:
+" trailing newlines and UTF-8 included, and no register is written.
+let g:simpleclipboard_paste_command = ['/bin/sh', '-c', 'printf "héllo\nworld\n"']
+call setreg('"', 'untouched')
+call assert_equal([v:true, "héllo\nworld\n"], s:PasteAndWait())
+call assert_equal([v:true, "héllo\nworld\n"], s:PasteAndWait('clipboard'))
+call assert_equal('untouched', getreg('"'))
 
-  " The callback runs after PasteText() returns when a program is involved.
-  let s:pastes = []
-  call simpleclipboard#PasteText(function('s:OnPaste'))
-  call assert_equal([], s:pastes, 'a program-backed paste is asynchronous')
-  call assert_true(s:Wait('!empty(s:pastes)', 3000))
+" The callback runs after PasteText() returns when a program is involved.
+let s:pastes = []
+call simpleclipboard#PasteText(function('s:OnPaste'))
+call assert_equal([], s:pastes, 'a program-backed paste is asynchronous')
+call assert_true(s:Wait('!empty(s:pastes)', 3000))
 
-  " Output larger than a pipe buffer arrives complete.
+" Output larger than a pipe buffer arrives complete.
+let g:simpleclipboard_paste_command = ['/bin/sh', '-c',
+      \ 'PATH=/usr/bin:/bin; head -c 200000 /dev/zero | tr "\0" x']
+let s:big = s:PasteAndWait()
+call assert_equal(v:true, s:big[0])
+call assert_equal(200000, strlen(s:big[1]))
+
+" A failing program is reported with its status; a program that cannot be
+" started counts as failed too.  Neither leaks partial output as success.
+let g:simpleclipboard_paste_command = ['/bin/sh', '-c', 'printf partial; exit 3']
+call assert_equal([v:false, s:empty_register .. 'custom paste command exited with status 3'],
+      \ s:PasteAndWait())
+let g:simpleclipboard_paste_command = ['/nonexistent/simpleclipboard-paste']
+let s:missing = s:PasteAndWait()
+call assert_equal(v:false, s:missing[0])
+call assert_match('^' .. s:empty_register .. 'custom paste command exited with status', s:missing[1])
+
+" A program that never answers is stopped at the deadline and reported as
+" such; partial output is not passed off as the clipboard.
+let g:simpleclipboard_paste_timeout_ms = 300
+let g:simpleclipboard_paste_command = ['/bin/sh', '-c',
+      \ 'PATH=/usr/bin:/bin; printf partial; exec sleep 30']
+let s:started = reltime()
+call assert_equal([v:false, s:empty_register .. 'custom paste command did not answer within 300 ms'],
+      \ s:PasteAndWait())
+call assert_true(reltimefloat(reltime(s:started)) < 2.5, 'deadline was not enforced')
+
+" The deadline used to be one job_stop(), which sends SIGTERM and is free to
+" be ignored: a program that ignores it never ran exit_cb or close_cb, so the
+" callback promised exactly once ran zero times and nothing stood behind it.
+" The deadline escalates to SIGKILL, so this answers instead of hanging.
+let g:simpleclipboard_paste_command = ['/bin/sh', '-c',
+      \ 'PATH=/usr/bin:/bin; trap "" TERM; printf partial; exec sleep 30']
+let s:started = reltime()
+call assert_equal([v:false, s:empty_register .. 'custom paste command did not answer within 300 ms'],
+      \ s:PasteAndWait())
+call assert_true(reltimefloat(reltime(s:started)) < 2.5,
+      \ 'a SIGTERM-ignoring paste program was never killed')
+
+" And behind SIGKILL, the job is abandoned: here a grandchild in its own
+" session holds the standard output open, so the pipe never closes and
+" close_cb never runs however dead the direct child is.  The grandchild
+" outlives s:PasteAndWait()'s budget, so without the last step this waits in
+" vain rather than answering late.  setsid is the only portable way to escape
+" the process group Vim signals, so where it is missing this one case is
+" announced rather than silently skipped.
+if s:setsid !=# ''
   let g:simpleclipboard_paste_command = ['/bin/sh', '-c',
-        \ 'PATH=/usr/bin:/bin; head -c 200000 /dev/zero | tr "\0" x']
-  let s:big = s:PasteAndWait()
-  call assert_equal(v:true, s:big[0])
-  call assert_equal(200000, strlen(s:big[1]))
-
-  " A failing program is reported with its status; a program that cannot be
-  " started counts as failed too.  Neither leaks partial output as success.
-  let g:simpleclipboard_paste_command = ['/bin/sh', '-c', 'printf partial; exit 3']
-  call assert_equal([v:false, s:empty_register .. 'custom paste command exited with status 3'],
-        \ s:PasteAndWait())
-  let g:simpleclipboard_paste_command = ['/nonexistent/simpleclipboard-paste']
-  let s:missing = s:PasteAndWait()
-  call assert_equal(v:false, s:missing[0])
-  call assert_match('^' .. s:empty_register .. 'custom paste command exited with status', s:missing[1])
-
-  " A program that never answers is stopped at the deadline and reported as
-  " such; partial output is not passed off as the clipboard.
-  let g:simpleclipboard_paste_timeout_ms = 300
-  let g:simpleclipboard_paste_command = ['/bin/sh', '-c',
-        \ 'PATH=/usr/bin:/bin; printf partial; exec sleep 30']
+        \ 'PATH=/usr/bin:/bin; trap "" TERM; ' .. s:setsid
+        \ .. ' sleep 10 & printf partial; exec sleep 30']
   let s:started = reltime()
   call assert_equal([v:false, s:empty_register .. 'custom paste command did not answer within 300 ms'],
         \ s:PasteAndWait())
-  call assert_true(reltimefloat(reltime(s:started)) < 2.5, 'deadline was not enforced')
-  let g:simpleclipboard_paste_timeout_ms = 10000
-
-  " A failed custom program advances to the platform candidates: a fake xclip
-  " on $PATH answers next, with the selection it was asked for.
-  call writefile(['#!/bin/sh', 'printf "xclip:%s" "$2"'], s:fake_bin .. '/xclip')
-  call setfperm(s:fake_bin .. '/xclip', 'rwx------')
-  let g:simpleclipboard_paste_command = ['/bin/false']
-  call assert_equal([v:true, 'xclip:clipboard'], s:PasteAndWait())
-  call assert_equal([v:true, 'xclip:primary'], s:PasteAndWait('primary'))
-
-  " The custom command serves CLIPBOARD only; PRIMARY skips it.
-  let g:simpleclipboard_paste_command = ['/bin/sh', '-c', 'printf custom']
-  call assert_equal([v:true, 'custom'], s:PasteAndWait('clipboard'))
-  call assert_equal([v:true, 'xclip:primary'], s:PasteAndWait('primary'))
-  call delete(s:fake_bin .. '/xclip')
-
-  " With no program at all the answer depends on whether a register was
-  " consulted: an empty "+ register with nothing to contradict it is an empty
-  " clipboard, no register and no program is a failure that says what would
-  " be needed.  A malformed custom command is ignored, not run.
-  for s:no_program in [[], ['/bin/sh', '-c', '']]
-    let g:simpleclipboard_paste_command = s:no_program
-    let s:none = s:PasteAndWait()
-    if has('clipboard')
-      call assert_equal([v:true, ''], s:none)
-    else
-      call assert_equal(v:false, s:none[0])
-      call assert_match('no clipboard paste backend is available', s:none[1])
-    endif
-  endfor
-  call assert_match('g:simpleclipboard_paste_command must be a list of non-empty strings',
-        \ join(simpleclipboard#ValidateOptions(), "\n"))
+  call assert_true(reltimefloat(reltime(s:started)) < 2.5,
+        \ 'a paste job whose output stayed open was never abandoned')
+else
+  echom 'vim_remote: setsid missing, the abandoned-paste-job case was not run'
 endif
+let g:simpleclipboard_paste_timeout_ms = 10000
+
+" A failed custom program advances to the platform candidates: a fake xclip
+" on $PATH answers next, with the selection it was asked for.
+call writefile(['#!/bin/sh', 'printf "xclip:%s" "$2"'], s:fake_bin .. '/xclip')
+call setfperm(s:fake_bin .. '/xclip', 'rwx------')
+let g:simpleclipboard_paste_command = ['/bin/false']
+call assert_equal([v:true, 'xclip:clipboard'], s:PasteAndWait())
+call assert_equal([v:true, 'xclip:primary'], s:PasteAndWait('primary'))
+
+" The custom command serves CLIPBOARD only; PRIMARY skips it.
+let g:simpleclipboard_paste_command = ['/bin/sh', '-c', 'printf custom']
+call assert_equal([v:true, 'custom'], s:PasteAndWait('clipboard'))
+call assert_equal([v:true, 'xclip:primary'], s:PasteAndWait('primary'))
+call delete(s:fake_bin .. '/xclip')
+
+" With no program at all the answer depends on whether a register was
+" consulted: an empty "+ register with nothing to contradict it is an empty
+" clipboard, no register and no program is a failure that says what would
+" be needed.  A malformed custom command is ignored, not run.
+for s:no_program in [[], ['/bin/sh', '-c', '']]
+  let g:simpleclipboard_paste_command = s:no_program
+  let s:none = s:PasteAndWait()
+  if has('clipboard')
+    call assert_equal([v:true, ''], s:none)
+  else
+    call assert_equal(v:false, s:none[0])
+    call assert_match('no clipboard paste backend is available', s:none[1])
+  endif
+endfor
+call assert_match('g:simpleclipboard_paste_command must be a list of non-empty strings',
+      \ join(simpleclipboard#ValidateOptions(), "\n"))
 
 " An unknown selection is refused synchronously, whatever the environment.
 let g:simpleclipboard_paste_command = []
@@ -418,10 +485,75 @@ messages clear
 SimpleCopyStatus
 call assert_match('\[SimpleClipboard\] paste: ', execute('messages'))
 
+" ------------------------------------------------- the Wayland gate ---
+
+" wl-copy and wl-paste talk to a Wayland compositor and can do nothing
+" without one, so both candidates are offered only when $WAYLAND_DISPLAY
+" names a session.  The gate used to be written getenv('WAYLAND_DISPLAY')
+" !=# '', and inside a compiled :def getenv() answers v:null for a variable
+" that is not set: `v:null !=# ''` is true, so the gate admitted everything
+" and every copy and every paste on an X11 machine with wl-clipboard
+" installed forked a program that could only fail.  Both routes are read
+" back from :SimpleCopyStatus, which is where a user would see the claim.
+call writefile(['#!/bin/sh', 'exit 0'], s:fake_bin .. '/wl-copy')
+call writefile(['#!/bin/sh', 'printf wayland'], s:fake_bin .. '/wl-paste')
+call writefile(['#!/bin/sh', 'printf "xclip:%s" "$2"'], s:fake_bin .. '/xclip')
+for s:program in ['wl-copy', 'wl-paste', 'xclip']
+  call setfperm(s:fake_bin .. '/' .. s:program, 'rwx------')
+endfor
+let g:simpleclipboard_copy_command = []
+let g:simpleclipboard_paste_command = []
+
+function! s:StatusLine(label) abort
+  call simpleclipboard#Refresh()
+  messages clear
+  SimpleCopyStatus
+  for l:line in split(execute('messages'), "\n")
+    if l:line =~# '^\[SimpleClipboard\] ' .. a:label
+      return l:line
+    endif
+  endfor
+  return ''
+endfunction
+
+" No Wayland session: neither program is a candidate, and the X11 one that
+" can work is still found - so the absence is the gate, not a broken $PATH.
+if exists('$WAYLAND_DISPLAY')
+  unlet $WAYLAND_DISPLAY
+endif
+call assert_notmatch('wl-copy', s:StatusLine('external commands: '))
+call assert_match('xclip', s:StatusLine('external commands: '))
+call assert_notmatch('wl-paste', s:StatusLine('paste: '))
+call assert_match('xclip', s:StatusLine('paste: '))
+call assert_equal([v:true, 'xclip:clipboard'], s:PasteAndWait())
+
+" A Wayland session: both are offered, ahead of the X11 candidate.  The copy
+" line is only asked whether wl-copy is there, because WSL's clip.exe is
+" found by absolute path and can sit between the two.
+let $WAYLAND_DISPLAY = 'wayland-0'
+call assert_match('wl-copy', s:StatusLine('external commands: '))
+call assert_match('xclip', s:StatusLine('external commands: '))
+call assert_match('wl-paste -> xclip', s:StatusLine('paste: '))
+call assert_equal([v:true, 'wayland'], s:PasteAndWait())
+
+" Set but empty is no session either.
+let $WAYLAND_DISPLAY = ''
+call assert_notmatch('wl-copy', s:StatusLine('external commands: '))
+call assert_notmatch('wl-paste', s:StatusLine('paste: '))
+call assert_equal([v:true, 'xclip:clipboard'], s:PasteAndWait())
+unlet $WAYLAND_DISPLAY
+
 let $PATH = s:old_path
 if s:had_wayland
   let $WAYLAND_DISPLAY = s:old_wayland
 endif
+if has('clipboard')
+  call setreg('+', s:saved_plus[0], s:saved_plus[1])
+  call setreg('*', s:saved_star[0], s:saved_star[1])
+endif
+let g:simpleclipboard_copy_command = ['tee', s:capture]
+let g:simpleclipboard_paste_command = []
+call simpleclipboard#Refresh()
 
 " ------------------------------------------------------------- teardown ---
 
