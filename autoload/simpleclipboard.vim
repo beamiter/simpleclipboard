@@ -80,6 +80,9 @@ const OPTION_SPECS: list<dict<any>> = [
   {name: 'simpleclipboard_address', kind: 'string', default: ''},
   {name: 'simpleclipboard_copy_command', kind: 'list', default: [],
     elements: 'argv', note: 'the configured command is ignored'},
+  {name: 'simpleclipboard_paste_command', kind: 'list', default: [],
+    elements: 'argv', note: 'the configured command is ignored'},
+  {name: 'simpleclipboard_paste_timeout_ms', kind: 'number', default: 10000, positive: true},
   {name: 'simpleclipboard_debounce_ms', kind: 'number', default: 50},
   {name: 'simpleclipboard_container_host', kind: 'string', default: ''},
 ]
@@ -1426,7 +1429,77 @@ export def ClearClipboard(): void
   endif
 enddef
 
+# The remote path a SimpleRemote buffer stands for, or '' for any other buffer.
+#
+# SimpleRemote fills two kinds of buffer from a remote workspace, and neither
+# is the file the buffer name suggests.  In virtual mode the buffer is named
+# remote:///abs/path, has &buftype acwrite, and carries
+# b:vimrc_remote = {path, uri, generation}; the filesystem check below would
+# refuse it outright.  In the projected modes (sshfs, docker-bind, local-map)
+# the buffer is an ordinary local file under the workspace mount and carries
+# b:simpleremote_path; its name would pass every check and copy the local
+# mount path - which is exactly what nobody on the remote side can open.  Both
+# variables are plain buffer state, so nothing here needs SimpleRemote loaded,
+# and a buffer without them takes the ordinary filesystem route.
+def RemoteFilePath(): string
+  var virtual = getbufvar('%', 'vimrc_remote', {})
+  var path: any = type(virtual) == v:t_dict ? get(virtual, 'path', '') : ''
+  if type(path) == v:t_string && path !=# ''
+    return path
+  endif
+  var projected = getbufvar('%', 'simpleremote_path', '')
+  if type(projected) != v:t_string || projected ==# ''
+    return ''
+  endif
+  # b:simpleremote_path is stamped on BufEnter for the workspace connected at
+  # the time and is not removed when that workspace goes away, so it can
+  # outlive a switch to another one.  A buffer stamped for a generation other
+  # than the workspace now connected is a plain local file again; with no
+  # workspace connected there is nothing to contradict it.  Both ids are
+  # compared only once both are numbers: Vim9 raises E1030 on a number/string
+  # comparison, and that error is not catchable where it happens, so a
+  # workspace dictionary of an unexpected shape would break the copy itself.
+  var workspace = get(g:, 'simpleremote_workspace', {})
+  var stamped = getbufvar('%', 'simpleremote_workspace_id', '')
+  if type(workspace) == v:t_dict && type(stamped) == v:t_number
+    var connected: any = get(workspace, 'id', v:null)
+    if type(connected) == v:t_number && stamped != connected
+      return ''
+    endif
+  endif
+  return projected
+enddef
+
+# A remote path is never relative to the local cwd, so the relative form is
+# root-relative: strip the workspace root SimpleRemote reports.  Without a
+# connected SimpleRemote (a session restored before its workspace reconnected)
+# or for a path outside the root, the absolute path is the only honest answer.
+def RelativeRemotePath(path: string): string
+  if !exists('*g:SimpleRemoteWorkspaceRoot')
+    return path
+  endif
+  var root: any = ''
+  try
+    root = g:SimpleRemoteWorkspaceRoot()
+  catch
+    return path
+  endtry
+  if type(root) != v:t_string || root ==# ''
+    return path
+  endif
+  var clean_root = root ==# '/' ? '/' : substitute(root, '/\+$', '', '')
+  var prefix = clean_root ==# '/' ? '/' : clean_root .. '/'
+  if stridx(path, prefix) == 0 && strlen(path) > strlen(prefix)
+    return strpart(path, strlen(prefix))
+  endif
+  return path
+enddef
+
 def CurrentFilePath(absolute: bool): string
+  var remote = RemoteFilePath()
+  if remote !=# ''
+    return absolute ? remote : RelativeRemotePath(remote)
+  endif
   # A URI-like scratch, terminal or help buffer can have a name while still
   # not representing a filesystem path. Refuse it rather than copying a
   # plausible-looking value that downstream tools cannot open.
@@ -1463,10 +1536,20 @@ def CopyFileValue(text: string, description: string): void
   endif
 enddef
 
+# "file path" / "absolute remote file location": the message names what was
+# copied, and a remote path deserves the word, because the local mount path
+# it is not is what the user may have expected.
+def FileValueDescription(kind: string, absolute: bool): string
+  var origin = RemoteFilePath() !=# '' ? 'remote file' : 'file'
+  return absolute ? $'absolute {origin} {kind}' : $'{origin} {kind}'
+enddef
+
 # Copy the current file path relative to the effective cwd. Bang uses an
 # absolute path, useful when the receiver is outside Vim's project context.
+# In a SimpleRemote buffer the value is the remote path, relative to the
+# workspace root rather than to the local cwd.
 export def CopyPathToClipboard(absolute: bool = false): void
-  CopyFileValue(CurrentFilePath(absolute), absolute ? 'absolute file path' : 'file path')
+  CopyFileValue(CurrentFilePath(absolute), FileValueDescription('path', absolute))
 enddef
 
 # Copy an editor/tool-friendly 1-based path:line:column location. Column is a
@@ -1478,7 +1561,7 @@ export def CopyLocationToClipboard(absolute: bool = false): void
   endif
   var character_col = strchars(strpart(getline('.'), 0, col('.') - 1)) + 1
   CopyFileValue($'{path}:{line(".")}:{character_col}',
-    absolute ? 'absolute file location' : 'file location')
+    FileValueDescription('location', absolute))
 enddef
 
 def FormatError(message: string): string
@@ -1560,7 +1643,8 @@ export def CopyFormatToClipboard(template: string, absolute: bool = false): void
   if expanded[0] !=# ''
     return
   endif
-  CopyFileValue(expanded[1], 'formatted file reference')
+  CopyFileValue(expanded[1], RemoteFilePath() !=# ''
+    ? 'formatted remote file reference' : 'formatted file reference')
 enddef
 
 # -----------------------------------------------------------------------------
@@ -1782,8 +1866,232 @@ export def CopyRangeToClipboard(first_line: number, last_line: number)
 enddef
 
 # -----------------------------------------------------------------------------
+# Paste: reading the system clipboard
+# -----------------------------------------------------------------------------
+
+# Reading the clipboard is not the mirror image of writing it.  Every copy
+# route above ends in a process or terminal that owns the destination; a read
+# has to come back with text, and the daemon deliberately answers a read only
+# over an authenticated connection (see |simpleclipboard-security|), which the
+# default local setup does not have.  So PasteText() never asks the daemon.  It
+# reads the "+ / "* register when this Vim has +clipboard and something behind
+# it, and otherwise runs a paste program as an asynchronous job whose standard
+# output is the answer: the user's own g:simpleclipboard_paste_command, then
+# pbpaste, wl-paste, xsel --output and xclip -o.  Nothing that could hold
+# clipboard text or a secret ever appears on a command line, and the text is
+# handed to the callback only - no register, no buffer, no log entry.
+
+const PASTE_SELECTIONS = ['clipboard', 'primary']
+
+# A paste program that never exits would otherwise hold its callback forever;
+# the copy side has no such deadline because its jobs are fire-and-forget.
+def PasteTimeoutMs(): number
+  return NumberOption('simpleclipboard_paste_timeout_ms')
+enddef
+
+def AddPasteCandidate(candidates: list<dict<any>>, argv: list<string>,
+    name: string): void
+  add(candidates, {argv: argv, name: name})
+enddef
+
+# The custom command serves the CLIPBOARD selection only: it is configured for
+# the common case, and running it for PRIMARY would silently return the wrong
+# selection.  pbpaste has no PRIMARY at all.
+def PasteCandidates(selection: string): list<dict<any>>
+  var primary = selection ==# 'primary'
+  var candidates: list<dict<any>> = []
+  var configured = get(g:, 'simpleclipboard_paste_command', [])
+  if !primary && ValidCommand(configured)
+    AddPasteCandidate(candidates, copy(configured), 'custom paste command')
+  endif
+  if !primary && executable('pbpaste') == 1
+    AddPasteCandidate(candidates, ['pbpaste'], 'pbpaste')
+  endif
+  if getenv('WAYLAND_DISPLAY') !=# '' && executable('wl-paste') == 1
+    AddPasteCandidate(candidates,
+      primary ? ['wl-paste', '--primary', '--no-newline'] : ['wl-paste', '--no-newline'],
+      'wl-paste')
+  endif
+  if executable('xsel') == 1
+    AddPasteCandidate(candidates,
+      ['xsel', primary ? '--primary' : '--clipboard', '--output'], 'xsel')
+  endif
+  if executable('xclip') == 1
+    AddPasteCandidate(candidates,
+      ['xclip', '-selection', primary ? 'primary' : 'clipboard', '-o'], 'xclip')
+  endif
+  return candidates
+enddef
+
+def PasteCandidateNames(selection: string): list<string>
+  var names: list<string> = []
+  for candidate in PasteCandidates(selection)
+    add(names, candidate.name)
+  endfor
+  return names
+enddef
+
+# Output may still be delivered after exit_cb runs, and close_cb runs when the
+# output ends whether or not the process has been reaped, so the answer is
+# complete only once both have happened.  A stopped-by-deadline job reports a
+# non-zero status and takes the failure path like any other.
+def FinishPaste(state: dict<any>): void
+  if state.done || !state.closed || !state.exited
+    return
+  endif
+  state.done = true
+  if state.timer >= 0
+    timer_stop(state.timer)
+    state.timer = -1
+  endif
+  var name: string = state.candidates[state.index].name
+  if state.status == 0
+    var text = join(state.chunks, '')
+    Trace($'Paste route: {name} ({strlen(text)} bytes).')
+    call(state.Cb, [true, text])
+    return
+  endif
+  var detail = state.timed_out
+    ? $'{name} did not answer within {PasteTimeoutMs()} ms'
+    : $'{name} exited with status {state.status}'
+  Trace(detail .. '.', 'WarningMsg')
+  StartPasteCandidate(state.candidates, state.index + 1, state.Cb,
+    state.register, detail)
+enddef
+
+def OnPasteOutput(state: dict<any>, data: string): void
+  add(state.chunks, data)
+enddef
+
+def OnPasteClosed(state: dict<any>): void
+  state.closed = true
+  FinishPaste(state)
+enddef
+
+def OnPasteTimeout(state: dict<any>, paste_job: job): void
+  state.timed_out = true
+  job_stop(paste_job)
+enddef
+
+def OnPasteExited(state: dict<any>, status: number): void
+  state.exited = true
+  state.status = status
+  FinishPaste(state)
+enddef
+
+def PasteJobStarted(state: dict<any>, argv: list<string>): bool
+  var paste_job: job
+  try
+    paste_job = job_start(argv, {
+      in_io: 'null',
+      out_io: 'pipe',
+      out_mode: 'raw',
+      err_io: 'null',
+      out_cb: (_, data) => OnPasteOutput(state, data),
+      close_cb: (_) => OnPasteClosed(state),
+      exit_cb: (_, status) => OnPasteExited(state, status),
+    })
+  catch
+    Trace($'Could not start {argv[0]}: {v:exception}', 'WarningMsg')
+    return false
+  endtry
+  if job_status(paste_job) ==# 'fail'
+    Trace($'Could not start {argv[0]}.', 'WarningMsg')
+    return false
+  endif
+  if exists('*timer_start')
+    state.timer = timer_start(PasteTimeoutMs(), (_) => OnPasteTimeout(state, paste_job))
+  endif
+  return true
+enddef
+
+# {register} is the "+ or "* register that was consulted first and found
+# empty, or '' when this Vim has no +clipboard; a final failure names it so
+# that "the clipboard is empty" and "nothing could read the clipboard" stay
+# distinguishable in the message the caller shows.
+def StartPasteCandidate(candidates: list<dict<any>>, index: number,
+    Cb: func, register: string, previous_error: string): void
+  var current = index
+  while current < len(candidates)
+    var state: dict<any> = {candidates: candidates, index: current, Cb: Cb,
+      register: register, chunks: [], closed: false, exited: false,
+      status: -1, done: false, timer: -1, timed_out: false}
+    if PasteJobStarted(state, candidates[current].argv)
+      return
+    endif
+    # A job that failed to start has no live callbacks; should one arrive
+    # anyway it must not start a second chain beside the one continuing here.
+    state.done = true
+    current += 1
+  endwhile
+  var reason = previous_error ==# ''
+    ? 'no clipboard paste program could be started' : previous_error
+  Cb(false, register ==# '' ? reason
+    : $'the "{register} register is empty and {reason}')
+enddef
+
+# Suite integration API, the reading counterpart of CopyText(): hand the system
+# clipboard's text to {Cb} as Cb(true, text), or Cb(false, reason) when no
+# backend could read it.  {selection} is 'clipboard' (the default) or
+# 'primary'.  The callback runs exactly once - before PasteText() returns when
+# the answer is immediate (a filled "+ / "* register, an unusable selection, no
+# backend at all), otherwise from the paste program's exit - and receives the
+# text untouched: no register is written and nothing is echoed, so the caller
+# owns both the message and what the text becomes.  The daemon is never asked;
+# see |simpleclipboard-security|.
+export def PasteText(Cb: func, selection: string = 'clipboard'): void
+  if index(PASTE_SELECTIONS, selection) < 0
+    Cb(false, $'selection must be "clipboard" or "primary", not "{selection}"')
+    return
+  endif
+  var register = ''
+  if has('clipboard')
+    register = selection ==# 'primary' ? '*' : '+'
+    var text = ''
+    try
+      text = getreg(register)
+    catch
+      text = ''
+    endtry
+    if text !=# ''
+      Trace($'Paste route: "{register} register ({strlen(text)} bytes).')
+      Cb(true, text)
+      return
+    endif
+  endif
+  var candidates = PasteCandidates(selection)
+  if empty(candidates)
+    if register !=# ''
+      # Nothing contradicts the register: the clipboard is empty.
+      Trace($'Paste route: "{register} register (empty).')
+      Cb(true, '')
+    else
+      Cb(false, 'no clipboard paste backend is available'
+        .. ' (this Vim has no +clipboard and no pbpaste, wl-paste, xsel or xclip)')
+    endif
+    return
+  endif
+  StartPasteCandidate(candidates, 0, Cb, register, '')
+enddef
+
+# -----------------------------------------------------------------------------
 # Diagnostics and cache refresh
 # -----------------------------------------------------------------------------
+
+# Suite integration API: how the most recent copy went, for a caller that wants
+# to describe it - CopyText() answers true for a copy that is merely queued
+# behind a slower external program, or one whose daemon write is uncertain, and
+# a message saying "copied" for either is a promise this plugin has not kept
+# yet.  outcome is one of 'none' (nothing copied yet), 'pending', 'queued',
+# 'success', 'uncertain' and 'failed'; method names the backend ('daemon',
+# 'xclip', 'OSC52', 'custom command', ...) or 'failed'; bytes is the size of
+# the last payload; error is the last backend failure, '' when there was none;
+# at is a local timestamp, '' before the first copy.  The values are the ones
+# :SimpleCopyStatus prints, so it never reveals more than that command does.
+export def LastCopy(): dict<any>
+  return {method: last_method, outcome: last_outcome, bytes: last_copy_bytes,
+    error: last_error, at: last_copy_at}
+enddef
 
 export def Status(): void
   DetectEnvironment()
@@ -1807,6 +2115,13 @@ export def Status(): void
     ? $'invalid ({substitute(token_problem, "^g:simpleclipboard_token ", "", "")})'
     : configured_token ==# '' ? 'off' : 'configured'
   var command_summary = empty(cached_copy_names) ? 'none' : join(cached_copy_names, ' -> ')
+  var paste_names = PasteCandidateNames('clipboard')
+  var paste_summary = (has('clipboard') ? ['"+ register'] : [])
+    ->extend(paste_names)
+    ->join(' -> ')
+  if paste_summary ==# ''
+    paste_summary = 'none'
+  endif
   var osc52_state = BoolOption('simpleclipboard_disable_osc52') ? 'disabled'
     : !Osc52Limit().valid ? 'blocked (invalid limit)'
     : executable('base64') != 1 ? 'unavailable (base64 missing)'
@@ -1831,6 +2146,7 @@ export def Status(): void
     $'client library: {client_lib ==# "" ? "not found" : client_lib}',
     $'daemon executable: {daemon_exe_path ==# "" ? "not found" : daemon_exe_path}',
     $'external commands: {command_summary}',
+    $'paste: {paste_summary}',
     $'OSC52: {osc52_state}',
     $'automatic copy: registers={register_policy}; max={limit_policy}',
     $'last copy: method={last_method}, outcome={last_outcome}, bytes={last_copy_bytes}, at={last_copy_at ==# "" ? "never" : last_copy_at}',

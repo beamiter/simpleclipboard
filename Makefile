@@ -1,6 +1,6 @@
-.PHONY: check rust-check vim-check installer-check shell-check help-tags vim-core defcompile core-verify doc-check skip-rules-check
+.PHONY: check rust-check vim-check vim-remote installer-check shell-check help-tags vim-core defcompile core-verify doc-check skip-rules-check
 
-check: core-verify rust-check vim-check installer-check shell-check help-tags defcompile vim-core doc-check skip-rules-check
+check: core-verify rust-check vim-check vim-remote installer-check shell-check help-tags defcompile vim-core doc-check skip-rules-check
 
 rust-check:
 	cargo fmt --all -- --check
@@ -10,6 +10,13 @@ rust-check:
 
 vim-check:
 	vim -Nu NONE -i NONE -n -es -S test/vim_smoke.vim
+
+# The suite API other simple* plugins call (CopyText, LastCopy, PasteText) and
+# the SimpleRemote-aware path commands.  SimpleRemote is never on the
+# runtimepath: the test creates the buffer variables and the one global
+# function those paths consult itself.
+vim-remote:
+	vim -Nu NONE -i NONE -n -es -S tests/vim_remote.vim
 
 installer-check:
 	bash -n install.sh test/install_args.sh test/tcp_e2e.sh \

@@ -20,6 +20,8 @@ Repository: https://github.com/beamiter/simpleclipboard
 12. 状态、刷新与日志			|simpleclipboard-diagnostics|
 13. 疑难解答				|simpleclipboard-troubleshooting|
 14. 从 0.1 升级				|simpleclipboard-upgrade|
+15. simple* 插件 API			|simpleclipboard-plugin-api|
+16. SimpleRemote 远程工作区		|simpleclipboard-simpleremote|
 
 ==============================================================================
 1. 简介							*simpleclipboard*
@@ -210,19 +212,22 @@ tunnel 端口，也必须同步修改。
 :SimpleCopyPath[!]
 	复制当前文件路径；默认相对当前窗口/标签页/全局生效的 cwd，! 改为绝对
 	路径。空格与 UTF-8 原样复制，不做 shell 转义；无名或非文件 buffer 会明确
-	拒绝。
+	拒绝。SimpleRemote 打开的远端 buffer 复制的是远端路径，相对形式相对于
+	工作区根目录，见 |simpleclipboard-simpleremote|。
 
 						*:SimpleCopyLocation*
 :SimpleCopyLocation[!]
 	复制 path:line:column。行、列均从 1 开始，列按字符而不是 Vim byte column
-	计数；! 使用绝对路径。与其他显式命令一样走完整确认与回退链。
+	计数；! 使用绝对路径。与其他显式命令一样走完整确认与回退链。远端
+	buffer 的 path 同 |:SimpleCopyPath|。
 
 						*:SimpleCopyFormat*
 :SimpleCopyFormat[!] {template}
 	用 {path}、{dir}、{file}、{line}、{column} 生成并复制自定义文件引用；
 	! 令 path/dir 使用绝对路径。{{ 与 }} 表示字面大括号。空模板、未知
 	占位符、嵌套或不配对大括号会在进入剪贴板流水线之前拒绝，因此不会复制
-	半成品；路径自身包含的占位符样文本不会被二次展开。
+	半成品；路径自身包含的占位符样文本不会被二次展开。远端 buffer 的
+	{path}/{dir}/{file} 取自远端路径。
 
 						*:SimpleCopyToggle*
 :SimpleCopyToggle
@@ -446,6 +451,24 @@ g:simpleclipboard_copy_command
 <
 	插件直接启动 argv，不经过 shell。进程必须保持附着，直到剪贴板写入完成。
 
+					*g:simpleclipboard_paste_command*
+g:simpleclipboard_paste_command
+	默认：[]
+	自定义读取剪贴板的命令，类型必须为 list<string> argv，标准输出即剪贴板
+	文本，例如：
+>
+	  let g:simpleclipboard_paste_command = ['wl-paste', '--no-newline']
+<
+	只被 |simpleclipboard#PasteText()| 使用，且只服务 CLIPBOARD 选区；插件
+	本身没有粘贴命令，读取 PRIMARY 时跳过它而使用内置候选。列表元素校验与
+	|g:simpleclipboard_copy_command| 相同。
+
+					*g:simpleclipboard_paste_timeout_ms*
+g:simpleclipboard_paste_timeout_ms
+	默认：10000
+	|simpleclipboard#PasteText()| 等待一个粘贴程序退出的最长毫秒数；超时的
+	程序会被停止并按失败处理，继续尝试下一个候选。必须为正数。
+
 					*g:simpleclipboard_disable_osc52*
 g:simpleclipboard_disable_osc52
 	默认：0
@@ -639,6 +662,9 @@ WSL 默认可探测 clip.exe。也可显式设置：
   VPN 或其他可信传输作为纵深防御；
 - 不要把 token 写入公开 vimrc、shell 历史或问题报告；
 - 剪贴板内容可能包含密码、密钥和个人信息；
+- 读取剪贴板不是写入的镜像：daemon 只对带 token 认证的连接回答 get，
+  而 |simpleclipboard#PasteText()| 从不询问 daemon，只读 "+/"* 寄存器或
+  运行本机粘贴程序，文本只交给回调，不写寄存器、不进日志；
 - OSC52 是否生效由终端或 multiplexer 安全策略决定；
 - :SimpleCopyStop 只停止当前 Vim 启动的 job，不根据 PID 或端口杀进程。
 
@@ -698,6 +724,9 @@ unit 文件。
 - 最终 daemon 地址；
 - daemon 是否启用、是否可达；
 - 当前检测到的命令和 OSC52 条件；
+- paste: |simpleclipboard#PasteText()| 读取 CLIPBOARD 选区时会依次尝试的
+  途径（"+ 寄存器与粘贴程序），none 表示一个都没有；PRIMARY 的候选略有
+  不同，见 |simpleclipboard#PasteText()|；
 - configuration: 一行汇总选项校验结果，ok 或 N problem(s) 加逐条说明。
 
 daemon 的 reachable 来自真实协议 ping；命令与 OSC52 仅表示检测到候选或
@@ -797,6 +826,94 @@ daemon 协议消息上限为 10 MiB。OSC52 默认上限是 75000 个 UTF-8 字�
 
 0.1 与 0.2 的 client/daemon 不应混用。0.2 没有 socket activation
 兼容层。
+
+==============================================================================
+15. simple* 插件 API				*simpleclipboard-plugin-api*
+
+其他 simple* 插件（SimpleTree、SimpleRemote 等）通过下面三个函数使用
+SimpleClipboard。它们都是可选集成点：调用方应先用 exists() 特性检测，
+SimpleClipboard 不在时退回自己的寄存器逻辑。
+
+					*simpleclipboard#CopyText()*
+simpleclipboard#CopyText({text})
+	把 {text} 写入无名寄存器，并沿 daemon、外部命令、OSC52 的完整路由送往
+	系统剪贴板。返回复制是否被接受；被接受的复制包括仍在外部命令后排队
+	（queued）和 daemon 结果不确定（uncertain）两种情况，是否真正落到
+	剪贴板用 |simpleclipboard#LastCopy()| 查看。函数本身不回显，由调用方
+	描述语义动作。
+
+					*simpleclipboard#LastCopy()*
+simpleclipboard#LastCopy()
+	返回最近一次复制的去向，一个字典： >
+
+	  {method:  'daemon' | 'xclip' | 'OSC52' | 'custom command' | ...
+	            | 'failed',
+	   outcome: 'none' | 'pending' | 'queued' | 'success'
+	            | 'uncertain' | 'failed',
+	   bytes:   最近一次 payload 的 UTF-8 字节数,
+	   error:   最近一次后端失败的说明，没有则为 '',
+	   at:      本地时间戳，尚未复制过时为 ''}
+<
+	取值与 |:SimpleCopyStatus| 打印的 last copy 行一致，因此不会泄露该命令
+	以外的信息。outcome 为 queued 表示外部命令仍在运行，其退出后变为
+	success 或 failed；调用方据此可以把"已复制"改说成"排队中"。
+
+					*simpleclipboard#PasteText()*
+simpleclipboard#PasteText({Cb} [, {selection}])
+	读取系统剪贴板，是 CopyText 的反向：把文本交给 {Cb}(true, text)，
+	没有任何途径能读到时交给 {Cb}(false, reason)。{selection} 为
+	'clipboard'（默认）或 'primary'。回调恰好调用一次；答案立即可得时
+	（"+/"* 寄存器非空、selection 不合法、完全没有后端）在函数返回前调用，
+	否则在粘贴程序退出后异步调用。文本原样交付：不写任何寄存器、不回显，
+	消息与文本的用途都由调用方决定。
+
+	读取顺序：本 Vim 有 |+clipboard| 且对应寄存器非空时直接返回寄存器；
+	否则依次运行 |g:simpleclipboard_paste_command|、pbpaste、wl-paste
+	（需要 $WAYLAND_DISPLAY）、xsel、xclip，取第一个以 0 退出的程序的标准
+	输出（大于管道缓冲的输出会完整收齐）。失败或超过
+	|g:simpleclipboard_paste_timeout_ms| 的程序换下一个；全部失败时 reason
+	说明最后一个失败原因，有 +clipboard 时还会指出寄存器为空。既没有
+	+clipboard 也没有任何程序时，reason 列出需要的程序。
+
+	daemon 从不参与：它只对带 token 认证的连接回答 get，而默认本地部署没有
+	token（见 |simpleclipboard-security|）。剪贴板文本与 token 都不会出现
+	在任何命令行参数中。
+
+	SimpleRemote 之后可能用它实现远端树的 gp（把本地剪贴板文本或本地路径
+	粘贴到远端目录）。
+
+==============================================================================
+16. SimpleRemote 远程工作区			*simpleclipboard-simpleremote*
+
+SimpleClipboard 与 SimpleRemote 的协作全部是特性检测的：没有 SimpleRemote
+时一切照旧。
+
+复制方向：SimpleRemote 的远端树（y/Y/gy）与下载完成的本地路径通过
+|simpleclipboard#CopyText()| 复制；复制仍在排队时它可以用
+|simpleclipboard#LastCopy()| 把"已复制"改说成"排队中"。CopyText 只看文本、不看
+buffer，因此在 remote:// buffer 或远端树里 yank 时，TextYankPost 自动复制和
+显式命令与在本地文件里完全一样。
+
+路径命令：|:SimpleCopyPath|、|:SimpleCopyLocation| 与 |:SimpleCopyFormat|
+识别 SimpleRemote 的两种 buffer，复制远端路径而不是拒绝或复制本地挂载路径：
+
+- 虚拟模式 buffer 名为 remote:///abs/path，&buftype 为 acwrite，带
+  b:vimrc_remote = {path, uri, generation}；取其 path；
+- 投影模式（sshfs、docker-bind、local-map）buffer 是工作区挂载下的普通本地
+  文件，带 b:simpleremote_path（远端路径）与 b:simpleremote_workspace_id；
+  取 b:simpleremote_path。当前已连接的 g:simpleremote_workspace.id 与
+  buffer 上盖的 id 不同（工作区已切换）时忽略它，按普通本地文件处理；
+  没有连接工作区时不做此判断。
+
+两种 buffer 同时带两个变量时 b:vimrc_remote 优先；变量形状不对（不是字典、
+path 为空或不是字符串）时忽略，按普通 buffer 判断。
+
+! 形式复制绝对远端路径；不带 ! 时相对 SimpleRemote 全局函数
+SimpleRemoteWorkspaceRoot() 返回的工作区根目录（根为 / 时只去掉开头的 /），
+SimpleRemote 未加载、未连接、根目录不是该路径的前缀或该函数出错时退回
+绝对路径——远端路径永远不会相对本地 cwd 解释。{dir}/{file}、line:column 的
+计算与本地相同。消息会写明 remote file path/location，例如
+"Copied remote file path."。
 
 ==============================================================================
 
@@ -909,10 +1026,3 @@ supervisor, clone it beside the plugins, edit it there, and re-vendor: >
 <
 
 vim:tw=78:ts=8:noet:ft=help:norl:
-
-SIMPLE PLUGIN API                              *simpleclipboard-plugin-api*
-
-simpleclipboard#CopyText({text})
-        Write {text} to the unnamed register and route it to the best system
-        clipboard backend.  Returns true when the copy was accepted.  This is
-        the stable optional integration point for SimpleTree and SimpleRemote.

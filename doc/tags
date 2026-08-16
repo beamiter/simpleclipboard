@@ -46,10 +46,15 @@ g:simpleclipboard_osc52_selection	simpleclipboard.txt	/*g:simpleclipboard_osc52_
 g:simpleclipboard_osc52_terminator	simpleclipboard.txt	/*g:simpleclipboard_osc52_terminator*
 g:simpleclipboard_osc52_truncate	simpleclipboard.txt	/*g:simpleclipboard_osc52_truncate*
 g:simpleclipboard_osc52_tty	simpleclipboard.txt	/*g:simpleclipboard_osc52_tty*
+g:simpleclipboard_paste_command	simpleclipboard.txt	/*g:simpleclipboard_paste_command*
+g:simpleclipboard_paste_timeout_ms	simpleclipboard.txt	/*g:simpleclipboard_paste_timeout_ms*
 g:simpleclipboard_port	simpleclipboard.txt	/*g:simpleclipboard_port*
 g:simpleclipboard_token	simpleclipboard.txt	/*g:simpleclipboard_token*
 g:simpleclipboard_tunnel_port	simpleclipboard.txt	/*g:simpleclipboard_tunnel_port*
 simpleclipboard	simpleclipboard.txt	/*simpleclipboard*
+simpleclipboard#CopyText()	simpleclipboard.txt	/*simpleclipboard#CopyText()*
+simpleclipboard#LastCopy()	simpleclipboard.txt	/*simpleclipboard#LastCopy()*
+simpleclipboard#PasteText()	simpleclipboard.txt	/*simpleclipboard#PasteText()*
 simpleclipboard-architecture	simpleclipboard.txt	/*simpleclipboard-architecture*
 simpleclipboard-commands	simpleclipboard.txt	/*simpleclipboard-commands*
 simpleclipboard-contents	simpleclipboard.txt	/*simpleclipboard-contents*
@@ -68,6 +73,7 @@ simpleclipboard-remote	simpleclipboard.txt	/*simpleclipboard-remote*
 simpleclipboard-requirements	simpleclipboard.txt	/*simpleclipboard-requirements*
 simpleclipboard-security	simpleclipboard.txt	/*simpleclipboard-security*
 simpleclipboard-simplecore	simpleclipboard.txt	/*simpleclipboard-simplecore*
+simpleclipboard-simpleremote	simpleclipboard.txt	/*simpleclipboard-simpleremote*
 simpleclipboard-status	simpleclipboard.txt	/*simpleclipboard-status*
 simpleclipboard-systemd	simpleclipboard.txt	/*simpleclipboard-systemd*
 simpleclipboard-troubleshooting	simpleclipboard.txt	/*simpleclipboard-troubleshooting*

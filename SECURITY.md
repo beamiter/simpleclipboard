@@ -71,11 +71,17 @@ password, a recovery code, an access token. The daemon therefore answers a
 with `get_requires_authentication`. A `get` is therefore useful only where
 `g:simpleclipboard_token` is set on both ends.
 
-Reading is a capability of the protocol and of `simpleclipboard-client`, not of
-the plugin. SimpleClipboard ships no paste command and no local paste fallback:
-every command in `plugin/simpleclipboard.vim` writes the clipboard, and nothing
-in it puts daemon-side clipboard text into a buffer. `get` is reachable only by
-running `simpleclipboard-client --action get` yourself.
+Reading through the daemon is a capability of the protocol and of
+`simpleclipboard-client`, not of the plugin. SimpleClipboard ships no paste
+command: every command in `plugin/simpleclipboard.vim` writes the clipboard, and
+nothing in it puts daemon-side clipboard text into a buffer. `get` is reachable
+only by running `simpleclipboard-client --action get` yourself. The one reading
+entry point on the Vim side, `simpleclipboard#PasteText()`, is a function for
+other simple* plugins that never contacts the daemon: it reads the `"+`/`"*`
+register when Vim has `+clipboard`, otherwise runs a local paste program
+(`g:simpleclipboard_paste_command`, `pbpaste`, `wl-paste`, `xsel`, `xclip`)
+with its standard output as the answer, and hands the text to the caller's
+callback only — no register, no buffer, no log entry.
 
 The pre-shared key reaches `simpleclipboard-client` through the environment and
 the clipboard payload through its standard input. Neither is ever a command-line

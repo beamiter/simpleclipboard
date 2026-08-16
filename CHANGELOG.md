@@ -6,7 +6,54 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 SimpleClipboard uses semantic versioning for the Vim interface, TCP protocol,
 and packaged Rust components.
 
-## Unreleased - 2026-08-05
+## Unreleased - 2026-08-16
+
+### SimpleRemote 的远端 buffer 里,路径命令复制的是远端路径
+
+- `:SimpleCopyPath` / `:SimpleCopyLocation` / `:SimpleCopyFormat` 此前一律
+  拒绝 `&buftype` 非空的 buffer,于是 SimpleRemote 虚拟模式的
+  `remote:///abs/path` buffer(buftype 为 acwrite)只会得到 "Current buffer
+  is not a named file";而 sshfs、docker-bind 等投影模式下,它们复制的是本地
+  挂载路径——恰好是远端那头谁也打不开的那一个。
+- 现在这三个命令先看 SimpleRemote 留在 buffer 上的变量:虚拟 buffer 取
+  `b:vimrc_remote.path`,投影 buffer 取 `b:simpleremote_path`(两者都有时前者
+  优先;形状不对时忽略,按普通 buffer 判断)。不带 `!` 时相对 SimpleRemote
+  报告的工作区根目录,SimpleRemote 未加载、未连接、根不是前缀或它出错时退回
+  绝对路径;远端路径永远不会相对本地 cwd 解释。投影 buffer 上盖的
+  `b:simpleremote_workspace_id` 与当前连接的 `g:simpleremote_workspace.id`
+  不同(工作区已切换)时,按普通本地文件处理。消息写明 remote file
+  path/location。全部特性检测,没有 SimpleRemote 时一切照旧。
+
+### 新增 `simpleclipboard#LastCopy()` 与 `simpleclipboard#PasteText()`
+
+- `simpleclipboard#CopyText()` 对排在外部命令后面的复制和 daemon 结果不确定
+  的复制同样返回 true,调用方(SimpleRemote 的远端树 y/Y/gy)因此在 xclip
+  还没退出时就说"已复制"。`simpleclipboard#LastCopy()` 返回
+  `{method, outcome, bytes, error, at}`,与 `:SimpleCopyStatus` 的 last copy
+  行同源,调用方可据此把 queued 说成"排队中"。
+- `simpleclipboard#PasteText(Cb [, selection])` 是 CopyText 的反向:读系统
+  剪贴板,交给 `Cb(true, text)` 或 `Cb(false, reason)`,回调恰好一次,文本
+  不写寄存器、不回显、不进日志。有 `+clipboard` 且寄存器非空时直接返回寄存
+  器;否则依次异步运行新增选项 `g:simpleclipboard_paste_command`、pbpaste、
+  wl-paste、xsel、xclip,取第一个以 0 退出者的标准输出,失败或超过新增选项
+  `g:simpleclipboard_paste_timeout_ms`(默认 10000)的程序换下一个。daemon
+  从不参与——它只对带 token 的连接回答 get,默认本地部署没有 token;剪贴板
+  文本与 token 都不会出现在命令行参数里。插件本身仍然没有粘贴命令,
+  SECURITY.md 同步。SimpleRemote 之后可能用它实现远端树的 `gp`。
+- `:SimpleCopyStatus` 多一行 `paste:`,列出 PasteText 读取 CLIPBOARD 选区时
+  会依次尝试的途径。
+
+### 文档:插件 API 章节移到 modeline 之前并进目录
+
+- `*simpleclipboard-plugin-api*` 此前跟在 `vim:tw=78:...` modeline 后面,也
+  不在目录里。现在是第 15 章,新增第 16 章 `*simpleclipboard-simpleremote*`
+  说明与 SimpleRemote 的协作;`:help simpleclipboard#CopyText()` 等函数标签
+  可直接跳转。
+- 新增 `tests/vim_remote.vim`(`make vim-remote`,已并入 `make check`):覆盖
+  远端 buffer 的三个路径命令、`CopyText` 写无名寄存器、`LastCopy` 的
+  queued → success/failed、`PasteText` 的寄存器/自定义程序/候选链/超时/
+  非法选区。SimpleRemote 不在 runtimepath 上,由测试自己造 buffer 变量与
+  桩函数。
 
 ### 取零或负数的自动复制上限,报告里不再当成一个上限
 

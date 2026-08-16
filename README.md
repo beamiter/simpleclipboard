@@ -28,6 +28,8 @@ commands, and OSC52 as progressively more portable fallbacks.
 - Falls back to a configured command, `pbcopy`, `wl-copy`, `clip.exe`, `xsel`,
   `xclip`, or OSC52 when the daemon path is unavailable.
 - Exposes status and refresh commands for diagnostics.
+- Copies the remote path, not the local mount path, from files SimpleRemote
+  opens, and offers the other simple* plugins a stable copy/paste API.
 
 ## Compatibility
 
@@ -175,7 +177,7 @@ xmap <leader>Y <Plug>(SimpleCopyVisual)
 | `:SimpleCopyVisual` | Copy the most recent Visual selection exactly. |
 | `:[range]SimpleCopyRange` | Copy complete lines in the range; without a range, copy the whole buffer. |
 | `:SimpleCopyClear` | Clear the system clipboard through the normal confirmed/fallback pipeline. |
-| `:SimpleCopyPath[!]` | Copy the current file path relative to the effective cwd; use `!` for absolute. |
+| `:SimpleCopyPath[!]` | Copy the current file path relative to the effective cwd; use `!` for absolute. In a SimpleRemote buffer, the remote path relative to the workspace root. |
 | `:SimpleCopyLocation[!]` | Copy `path:line:column` with 1-based character positions; use `!` for absolute. |
 | `:SimpleCopyFormat[!] {template}` | Copy a custom file reference using `{path}`, `{dir}`, `{file}`, `{line}`, and `{column}`; `!` makes path fields absolute. |
 | `:SimpleCopyToggle` | Turn automatic copy on or off immediately and report the new state. |
@@ -189,7 +191,10 @@ xmap <leader>Y <Plug>(SimpleCopyVisual)
 Path and location commands preserve spaces and UTF-8 literally rather than
 copying shell-escaped text. They fail visibly for unnamed and non-file buffers,
 and use the same acknowledged daemon, serialized external-command, and OSC52
-fallback pipeline as every other explicit copy. Optional Normal-mode mapping
+fallback pipeline as every other explicit copy. In a buffer that
+[SimpleRemote](https://github.com/beamiter/simpleremote) opened from a remote
+workspace they copy the remote path — see
+[SimpleRemote workspaces](#simpleremote-workspaces). Optional Normal-mode mapping
 targets are `<Plug>(SimpleCopyPath)` and `<Plug>(SimpleCopyLocation)`.
 `<Plug>(SimpleCopyFormat)` opens a prefilled command line so a template can be
 entered interactively, and `<Plug>(SimpleCopyToggle)` switches automatic copy.
@@ -236,6 +241,8 @@ any other option run `:SimpleCopyRefresh`.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `g:simpleclipboard_copy_command` | `[]` | Custom copy command as `list<string>` argv, for example `['wl-copy']`. No shell is used; the process must stay attached until its clipboard write is complete. |
+| `g:simpleclipboard_paste_command` | `[]` | Custom clipboard-reading command as `list<string>` argv whose standard output is the clipboard text, for example `['wl-paste', '--no-newline']`. Used only by `simpleclipboard#PasteText()`, and only for the CLIPBOARD selection; the plugin itself defines no paste command. |
+| `g:simpleclipboard_paste_timeout_ms` | `10000` | How long `simpleclipboard#PasteText()` waits for one paste program before stopping it and trying the next. Must be positive. |
 | `g:simpleclipboard_disable_osc52` | `0` | Disable the OSC52 fallback. |
 | `g:simpleclipboard_osc52_limit` | `75000` | Maximum UTF-8 payload bytes accepted by the OSC52 path. Must be a positive number; `0`, a negative number or a value that cannot be read as one blocks OSC52 entirely rather than falling back to the default. |
 | `g:simpleclipboard_osc52_truncate` | `0` | When `0`, reject oversized OSC52 payloads without data loss; when `1`, truncate to the configured limit on a character boundary. |
@@ -307,6 +314,9 @@ only, never by value: `token=off`, `token=configured`, or
 `token=invalid (must be a string)`.
 Its daemon health is a real protocol ping; command and OSC52 entries only show
 detected candidates or basic prerequisites, not a guaranteed clipboard write.
+The `paste:` line lists what `simpleclipboard#PasteText()` would try for the
+CLIPBOARD selection, in order — the `"+` register when this Vim has
+`+clipboard`, then the paste programs found — or `none`.
 Use `:SimpleCopyRefresh` after changing routing options or after an SSH tunnel,
 display server, or container network becomes available. If this Vim owns a
 running daemon, refresh stops it and restarts it with the new local
@@ -463,6 +473,12 @@ designed authenticated proxy rather than exposing an unauthenticated TCP port.
 - OSC52 asks the terminal to modify the clipboard. Terminal and multiplexer
   policies may reject it. Oversized OSC52 payloads fail by default instead of
   being silently truncated.
+- Reading the clipboard is not the mirror image of writing it. The daemon
+  answers a `get` only over an authenticated connection, and
+  `simpleclipboard#PasteText()` never asks it: it reads the `"+`/`"*` register
+  or runs a local paste program, hands the text to its callback only, and
+  writes no register and no log entry with it. Neither clipboard text nor the
+  token ever appears on a command line.
 - `:SimpleCopyStop` never kills a daemon merely discovered by PID or port; it
   only stops the job started by that Vim instance.
 
@@ -607,6 +623,9 @@ The source layout is:
 - `src/simpleclipboard/protocol.rs` — framing and authenticated protocol logic
 - `src/simpleclipboard/simpleclipboard_daemon.rs` — clipboard daemon
 - `test/` — Vim, installer, and real TCP protocol smoke tests
+- `tests/vim_remote.vim` — the suite API (`CopyText`, `LastCopy`,
+  `PasteText`) and the SimpleRemote-aware path commands, with SimpleRemote
+  simulated by buffer variables and one stub function
 - `doc/simpleclipboard.txt` — Vim help
 
 The GitHub Actions workflow runs a fixed Vim 9.0 baseline smoke test, the Rust
@@ -625,7 +644,72 @@ job/channel interfaces.
 
 ## simple* plugin integration
 
-Other simple* plugins can call `simpleclipboard#CopyText(text)`. The function
-writes the unnamed Vim register, routes the payload through the configured
-daemon/native/OSC52 clipboard backend, and returns whether the copy was
-accepted. It is safe to feature-detect and remains optional.
+Other simple* plugins use three functions. All are optional integration
+points: feature-detect them with `exists('*simpleclipboard#CopyText')` and
+fall back to your own register handling when SimpleClipboard is absent.
+
+- `simpleclipboard#CopyText(text)` writes the unnamed Vim register, routes the
+  payload through the configured daemon/native/OSC52 clipboard backend, and
+  returns whether the copy was accepted. "Accepted" includes a copy still
+  queued behind a slower external command and a daemon write whose outcome is
+  uncertain; the function does not echo, so the caller describes the action.
+- `simpleclipboard#LastCopy()` returns how the most recent copy went, as
+  `{method, outcome, bytes, error, at}`: `method` names the backend
+  (`'daemon'`, `'xclip'`, `'OSC52'`, `'custom command'`, ... or `'failed'`),
+  `outcome` is one of `'none'`, `'pending'`, `'queued'`, `'success'`,
+  `'uncertain'`, `'failed'`, `bytes` is the payload size, `error` the last
+  backend failure or `''`, and `at` a local timestamp. The values are the ones
+  `:SimpleCopyStatus` prints. A caller can say "queued" instead of "copied"
+  while `outcome` is `'queued'`; it turns into `'success'` or `'failed'` when
+  the external command exits.
+- `simpleclipboard#PasteText(Cb [, selection])` is the reading counterpart:
+  it hands the system clipboard's text to `Cb(true, text)`, or `Cb(false,
+  reason)` when nothing could read it. `selection` is `'clipboard'` (default)
+  or `'primary'`. The callback runs exactly once — before the function returns
+  when the answer is immediate (a filled `"+`/`"*` register, an unusable
+  selection, no backend at all), otherwise from the paste program's exit — and
+  receives the text untouched: no register is written, nothing is echoed. The
+  order is the `"+`/`"*` register when this Vim has `+clipboard` and it holds
+  text, then `g:simpleclipboard_paste_command`, `pbpaste`, `wl-paste` (with
+  `$WAYLAND_DISPLAY`), `xsel`, `xclip`; the first program exiting 0 wins,
+  output larger than a pipe buffer is collected whole, and a program that fails
+  or exceeds `g:simpleclipboard_paste_timeout_ms` yields to the next. The
+  daemon is never asked (see [Security](#security)). SimpleRemote may later use
+  it for a `gp` key in its remote tree that pastes local clipboard text or a
+  local path into a remote directory.
+
+### SimpleRemote workspaces
+
+Everything here is feature-detected; without SimpleRemote nothing changes.
+
+Copying: SimpleRemote's remote tree (`y`, `Y`, `gy`) and its finished
+downloads copy through `simpleclipboard#CopyText()`, and can consult
+`simpleclipboard#LastCopy()` to say "queued" rather than "copied" while a copy
+is still in flight. `CopyText()` looks at the
+text only, never at the buffer, so yanking inside a `remote://` buffer or the
+remote tree — automatic `TextYankPost` copies included — behaves exactly as in
+a local file.
+
+Path commands: `:SimpleCopyPath`, `:SimpleCopyLocation` and
+`:SimpleCopyFormat` recognise both kinds of SimpleRemote buffer and copy the
+remote path instead of refusing or copying the local mount path:
+
+- a virtual-mode buffer is named `remote:///abs/path`, has `buftype=acwrite`
+  and carries `b:vimrc_remote = {path, uri, generation}`; its `path` is used;
+- a projected-mode buffer (sshfs, docker-bind, local-map) is an ordinary local
+  file under the workspace mount carrying `b:simpleremote_path` (the remote
+  path) and `b:simpleremote_workspace_id`; `b:simpleremote_path` is used,
+  except while a workspace with a different `g:simpleremote_workspace.id` is
+  connected — the stamp outlives a workspace switch, and the buffer is then a
+  plain local file again. With no workspace connected the stamp is trusted.
+
+`b:vimrc_remote` wins when both are present; a variable of the wrong shape (not
+a dictionary, empty or non-string `path`) is ignored and the buffer is judged
+like any other. `!` copies the absolute remote path; without it the path is
+relative to the workspace root SimpleRemote reports through its global
+`SimpleRemoteWorkspaceRoot()` function (a root of `/` strips only the leading
+slash), and it stays absolute when SimpleRemote is not loaded, not connected,
+the root is not a prefix of the path, or that function throws — a remote path
+is never resolved against the local cwd. `{dir}`, `{file}` and
+`line:column` are computed as for local files, and the message says so:
+`Copied remote file path.`
