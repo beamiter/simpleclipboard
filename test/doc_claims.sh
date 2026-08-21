@@ -49,7 +49,7 @@ done
 #     coming back by hand.
 # ---------------------------------------------------------------------------
 if grep -rqF 'WAYLAND_DISPLAY' "${user_docs[@]}"; then
-  if ! grep -rqF '$WAYLAND_DISPLAY !=#' "${vim_side[@]}"; then
+  if ! grep -rqF "\$WAYLAND_DISPLAY !=#" "${vim_side[@]}"; then
     fail "Documentation says wl-copy/wl-paste need \$WAYLAND_DISPLAY, but nothing under autoload/ or plugin/ gates on it."
   fi
   # Comment lines are skipped: the one at the gate explains this very trap.

@@ -22,7 +22,8 @@ commands, and OSC52 as progressively more portable fallbacks.
   selections.
 - Can explicitly copy any Vim register, clear the system clipboard, and limit
   automatic copying by source register or payload size.
-- Uses a framed, acknowledged TCP protocol with a 10 MiB message limit.
+- Uses a framed, acknowledged TCP protocol with a 10 MiB frame limit; a Set
+  request accepts at most 10,485,722 UTF-8 text bytes after protocol overhead.
 - Supports X11, native Wayland data control, macOS, and WSL.
 - Detects local, SSH, container, and nested SSH/container environments.
 - Falls back to a configured command, `pbcopy`, `wl-copy`, `clip.exe`, `xsel`,
@@ -44,7 +45,10 @@ commands, and OSC52 as progressively more portable fallbacks.
 
 SimpleClipboard is a Vim9 plugin and does not support Neovim. The supported
 baseline is Vim 9.0 or newer with `+job` and `+channel`. `+timers` enables
-debouncing; without it, automatic copies run immediately.
+debouncing, temporary pauses, deferred daemon autostart, and paste deadlines.
+Without it, automatic copies and daemon autostart run immediately,
+`:SimpleCopyPause` reports that pausing is unavailable, and
+`simpleclipboard#PasteText()` cannot enforce its timeout.
 `+libcall` is required for the Rust client library; command and OSC52
 fallbacks can still be used when `+libcall` is unavailable. The Rust daemon
 path also requires Vim's `&encoding` to be `utf-8`.
@@ -367,7 +371,8 @@ Messages use the `SCB1` framing protocol:
 2. Each frame starts with the four ASCII bytes `SCB1` and a four-byte,
    big-endian payload length.
 3. The client sends a strictly decoded, hand-written binary request no larger
-   than 10 MiB.
+   than 10 MiB. Clipboard text is capped at 10,485,722 UTF-8 bytes so the same
+   input fits both plain and authenticated Set frames.
 4. The daemon returns a separately framed acknowledgement; hello and
    acknowledgement payloads are capped at 4 KiB.
 
@@ -563,8 +568,9 @@ Common issues:
   it explicitly as `['clip.exe']`.
 - **OSC52 has no effect:** allow clipboard access in the terminal; in tmux,
   enable passthrough as appropriate for the installed tmux version.
-- **Large copy fails:** the daemon protocol limit is 10 MiB. OSC52 has a
-  separate 75,000-byte default and does not truncate unless explicitly
+- **Large copy fails:** daemon frames are limited to 10 MiB; Set text is limited
+  to 10,485,722 UTF-8 bytes after authentication and encoding overhead. OSC52
+  has a separate 75,000-byte default and does not truncate unless explicitly
   enabled.
 - **Automatic copy feels delayed:** lower
   `g:simpleclipboard_debounce_ms`, or set `g:simpleclipboard_auto_copy = 0`

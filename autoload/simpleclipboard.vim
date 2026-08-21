@@ -98,7 +98,10 @@ def OptionSpec(name: string): dict<any>
   return option_specs_by_name[name]
 enddef
 
-const NUMERIC_STRING = '^\s*-\?\d\+\s*$'
+# Internal parsing must not inherit the user's search-magic preference.
+# Without \m, :set nomagic makes the `*` quantifiers literal; the same quoted
+# option then validates or fails solely according to an unrelated UI setting.
+const NUMERIC_STRING = '\m^\s*-\?\d\+\s*$'
 
 def Coercible(raw: any): bool
   # A quoted number is a vimrc habit, not a different intent.
@@ -484,7 +487,7 @@ def InContainer(): bool
     else
       try
         cached_in_container = readfile('/proc/1/cgroup')->join("\n")
-          =~# '\<docker\>\|\<containerd\>\|\<kubepods\>\|\<libpod\>\|\<podman\>\|\<lxc\>' ? 1 : 0
+          =~# '\m\<docker\>\|\<containerd\>\|\<kubepods\>\|\<libpod\>\|\<podman\>\|\<lxc\>' ? 1 : 0
       catch
         cached_in_container = 0
       endtry
@@ -505,19 +508,19 @@ def IsWSL(): bool
 enddef
 
 def HostPort(host: string, port: number): string
-  if host =~# ':' && host !~# '^\[.*\]$'
+  if host =~# ':' && host !~# '\m^\[.*\]$'
     return '[' .. host .. ']:' .. string(port)
   endif
   return host .. ':' .. string(port)
 enddef
 
 def IsIpv4Loopback(host: string): bool
-  var parts = split(host, '\.', true)
+  var parts = split(host, '\m\.', true)
   if len(parts) != 4 || parts[0] !=# '127'
     return false
   endif
   for part in parts
-    if part !~# '^\d\{1,3}$' || str2nr(part, 10) > 255
+    if part !~# '\m^\d\{1,3}$' || str2nr(part, 10) > 255
       return false
     endif
   endfor
@@ -554,7 +557,7 @@ def ResolveContainerHostIP(): string
 
   if executable('ip') == 1
     for line in systemlist('ip route')
-      if line =~# '^default\s'
+      if line =~# '\m^default\s'
         var fields = split(line)
         var via = index(fields, 'via')
         if via >= 0 && via + 1 < len(fields)
@@ -957,7 +960,7 @@ def MarkSuccess(method: string)
   last_method = method
   last_error = ''
   last_copy_at = strftime('%Y-%m-%d %H:%M:%S')
-  last_outcome = method =~# '(queued)' ? 'queued' : 'success'
+  last_outcome = method =~# '\m(queued)' ? 'queued' : 'success'
   Record($'Copy route: {method} ({last_copy_bytes} bytes).')
 enddef
 
@@ -1162,7 +1165,7 @@ def InScreen(): bool
   # $STY is set by screen itself, but a user who runs screen through a wrapper,
   # or reattaches from a different environment, can end up with only $TERM to
   # go on - and getting this wrong means a silently truncated clipboard.
-  return $STY !=# '' || &term =~# '^screen' || $TERM =~# '^screen'
+  return $STY !=# '' || &term =~# '\m^screen' || $TERM =~# '\m^screen'
 enddef
 
 def ChunkBytes(text: string, size: number): list<string>
@@ -1258,7 +1261,7 @@ def CopyViaOsc52(text: string): bool
 
   var encoded = trim(system('base64 -w0', payload))
   if v:shell_error != 0
-    encoded = substitute(system('base64', payload), '\n', '', 'g')
+    encoded = substitute(system('base64', payload), '\m\n', '', 'g')
   endif
   if v:shell_error != 0
     MarkFailure('base64 encoding failed')
@@ -1498,7 +1501,7 @@ def RelativeRemotePath(path: string): string
   if type(root) != v:t_string || root ==# ''
     return path
   endif
-  var clean_root = root ==# '/' ? '/' : substitute(root, '/\+$', '', '')
+  var clean_root = root ==# '/' ? '/' : substitute(root, '\m/\+$', '', '')
   var prefix = clean_root ==# '/' ? '/' : clean_root .. '/'
   if stridx(path, prefix) == 0 && strlen(path) > strlen(prefix)
     return strpart(path, strlen(prefix))
@@ -1712,7 +1715,7 @@ enddef
 
 export def PauseAutoCopy(argument: string): void
   var value = trim(argument)
-  if value !~# '^\d\+$'
+  if value !~# '\m^\d\+$'
     Notify('Usage: :SimpleCopyPause {seconds}', 'ErrorMsg')
     return
   endif
@@ -2096,7 +2099,11 @@ export def PasteText(Cb: func, selection: string = 'clipboard'): void
     return
   endif
   var register = ''
-  if has('clipboard')
+  # +clipboard only says the code was compiled in.  With no reachable X11 or
+  # Wayland selection owner, Vim may make "+ read like the unnamed register;
+  # treating that as clipboard text leaks unrelated editor state to callers.
+  # clipboard_working is Vim's runtime availability probe.
+  if has('clipboard_working')
     register = selection ==# 'primary' ? '*' : '+'
     var text = ''
     try
@@ -2167,7 +2174,7 @@ export def Status(): void
     : configured_token ==# '' ? 'off' : 'configured'
   var command_summary = empty(cached_copy_names) ? 'none' : join(cached_copy_names, ' -> ')
   var paste_names = PasteCandidateNames('clipboard')
-  var paste_summary = (has('clipboard') ? ['"+ register'] : [])
+  var paste_summary = (has('clipboard_working') ? ['"+ register'] : [])
     ->extend(paste_names)
     ->join(' -> ')
   if paste_summary ==# ''

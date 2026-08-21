@@ -119,10 +119,16 @@ if simpleclipboard#BoolOption('simpleclipboard_daemon_enabled')
   augroup SimpleClipboardDaemon
     autocmd!
     if simpleclipboard#BoolOption('simpleclipboard_daemon_autostart')
-      if v:vim_did_enter
-        call timer_start(0, (_) => simpleclipboard#StartDaemon(false, false))
+      if exists('*timer_start')
+        if v:vim_did_enter
+          call timer_start(0, (_) => simpleclipboard#StartDaemon(false, false))
+        else
+          autocmd VimEnter * call timer_start(0, (_) => simpleclipboard#StartDaemon(false, false))
+        endif
+      elseif v:vim_did_enter
+        call simpleclipboard#StartDaemon(false, false)
       else
-        autocmd VimEnter * call timer_start(0, (_) => simpleclipboard#StartDaemon(false, false))
+        autocmd VimEnter * call simpleclipboard#StartDaemon(false, false)
       endif
     endif
     if simpleclipboard#BoolOption('simpleclipboard_daemon_autostop')

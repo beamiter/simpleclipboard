@@ -54,6 +54,15 @@ const WIRE_ACK_AUTH_OVERHEAD: usize = 1 + NONCE_BYTES + NONCE_BYTES + LENGTH_BYT
 const MIN_REQUEST_CIPHERTEXT_BYTES: usize = AEAD_TAG_BYTES + PLAIN_REQUEST_PREFIX_BYTES;
 const MIN_ACK_CIPHERTEXT_BYTES: usize = AEAD_TAG_BYTES + ACK_BODY_MIN_BYTES;
 
+/// Text size that is guaranteed to fit both a plain and an authenticated Set
+/// request.  Authentication adds a nonce, length and AEAD tag; bounding stdin
+/// by the outer frame size would accept text the protocol can never encode.
+pub const MAX_SET_TEXT_BYTES: usize = MAX_FRAME_BYTES
+    - WIRE_REQUEST_AUTH_OVERHEAD
+    - AEAD_TAG_BYTES
+    - PLAIN_REQUEST_PREFIX_BYTES
+    - STRING_PREFIX_BYTES;
+
 const REQUEST_KEY_DOMAIN: &[u8] = b"simpleclipboard/scb1/aes256gcm/request-key/v1\0";
 const ACK_KEY_DOMAIN: &[u8] = b"simpleclipboard/scb1/aes256gcm/ack-key/v1\0";
 const REQUEST_AAD: &[u8] = b"simpleclipboard/scb1/aes256gcm/request/v1";
@@ -1185,6 +1194,25 @@ mod tests {
             encode_request_frame(&oversized),
             Err(ProtocolError::InvalidLength(_))
         ));
+    }
+
+    #[test]
+    fn advertised_set_text_limit_fits_plain_and_authenticated_frames() {
+        let request = PlainRequest::Set {
+            text: "x".repeat(MAX_SET_TEXT_BYTES),
+        };
+        assert!(encode_request_frame(&WireRequest::Plain(request.clone())).is_ok());
+
+        let keys = derive_auth_keys("token");
+        let challenge = [7; CHALLENGE_BYTES];
+        let nonce = [9; NONCE_BYTES];
+        let (wire, _) = seal_request_with_nonce(&keys, &challenge, &request, nonce).unwrap();
+        assert!(encode_request_frame(&wire).is_ok());
+
+        let over = PlainRequest::Set {
+            text: "x".repeat(MAX_SET_TEXT_BYTES + 1),
+        };
+        assert!(seal_request_with_nonce(&keys, &challenge, &over, nonce).is_err());
     }
 
     // A Get reply carries a clipboard, so it needs a frame-sized bound; a ping

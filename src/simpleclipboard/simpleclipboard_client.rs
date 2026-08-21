@@ -24,7 +24,7 @@
 //! argv-carried token or clipboard would be visible to every process on the
 //! machine for as long as this one runs.
 
-use simpleclipboard::protocol::{PlainRequest, Selection};
+use simpleclipboard::protocol::{MAX_SET_TEXT_BYTES, PlainRequest, Selection};
 use simpleclipboard::{ClientError, ClientRequest, ack_result, send_request};
 use std::env;
 use std::io::{Read, Write};
@@ -129,12 +129,23 @@ fn next_value(
         .ok_or_else(|| format!("{option} needs a value"))
 }
 
-fn read_stdin() -> Result<String, String> {
+fn read_text(mut reader: impl Read) -> Result<String, String> {
     let mut bytes = Vec::new();
-    std::io::stdin()
+    reader
+        .by_ref()
+        .take((MAX_SET_TEXT_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("could not read the clipboard text: {error}"))?;
+    if bytes.len() > MAX_SET_TEXT_BYTES {
+        return Err(format!(
+            "clipboard text exceeds the {MAX_SET_TEXT_BYTES}-byte request limit"
+        ));
+    }
     String::from_utf8(bytes).map_err(|_| "the clipboard text is not valid UTF-8".to_owned())
+}
+
+fn read_stdin() -> Result<String, String> {
+    read_text(std::io::stdin())
 }
 
 fn build_request(options: &Options) -> Result<PlainRequest, String> {
@@ -265,6 +276,16 @@ mod tests {
                 selection: Selection::Primary
             })
         );
+    }
+
+    #[test]
+    fn stdin_is_bounded_before_the_request_is_materialized() {
+        let oversized = std::io::repeat(b'x').take((MAX_SET_TEXT_BYTES + 1) as u64);
+        let error = read_text(oversized).unwrap_err();
+        assert!(error.contains("request limit"), "{error}");
+
+        let exact = std::io::repeat(b'x').take(MAX_SET_TEXT_BYTES as u64);
+        assert_eq!(read_text(exact).unwrap().len(), MAX_SET_TEXT_BYTES);
     }
 
     #[test]

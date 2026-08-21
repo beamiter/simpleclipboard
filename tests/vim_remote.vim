@@ -342,7 +342,7 @@ endif
 " teardown puts the user's clipboard back.
 let s:saved_plus = ['', 'v']
 let s:saved_star = ['', 'v']
-if has('clipboard')
+if has('clipboard_working')
   let s:saved_plus = [getreg('+'), getregtype('+')]
   let s:saved_star = [getreg('*'), getregtype('*')]
   call setreg('+', "register text\n")
@@ -367,7 +367,7 @@ if has('clipboard')
 endif
 " A +clipboard Vim whose register is empty still consults it first, and a
 " final failure says so; every other Vim reports the program failure alone.
-let s:empty_register = has('clipboard') ? 'the "+ register is empty and ' : ''
+let s:empty_register = has('clipboard_working') ? 'the "+ register is empty and ' : ''
 " The custom paste program's standard output is the answer, byte for byte:
 " trailing newlines and UTF-8 included, and no register is written.
 let g:simpleclipboard_paste_command = ['/bin/sh', '-c', 'printf "héllo\nworld\n"']
@@ -463,7 +463,7 @@ call delete(s:fake_bin .. '/xclip')
 for s:no_program in [[], ['/bin/sh', '-c', '']]
   let g:simpleclipboard_paste_command = s:no_program
   let s:none = s:PasteAndWait()
-  if has('clipboard')
+  if has('clipboard_working')
     call assert_equal([v:true, ''], s:none)
   else
     call assert_equal(v:false, s:none[0])
@@ -547,7 +547,7 @@ let $PATH = s:old_path
 if s:had_wayland
   let $WAYLAND_DISPLAY = s:old_wayland
 endif
-if has('clipboard')
+if has('clipboard_working')
   call setreg('+', s:saved_plus[0], s:saved_plus[1])
   call setreg('*', s:saved_star[0], s:saved_star[1])
 endif

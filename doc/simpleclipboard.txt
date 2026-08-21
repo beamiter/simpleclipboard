@@ -44,7 +44,8 @@ Unix socket 与 systemd socket activation 说明。
 - 支持 Linux/X11、原生 Wayland、macOS、WSL、SSH 与常见容器环境；
 - 支持自定义 argv 形式的复制命令；
 - 可查询状态并在环境变化后刷新探测缓存；
-- 守护进程消息上限 10 MiB，OSC52 有独立的安全上限。
+- 守护进程帧上限 10 MiB；扣除协议开销后，Set 文本上限为 10,485,722 个
+  UTF-8 字节。OSC52 有独立的安全上限。
 
 ==============================================================================
 2. 要求与兼容性				*simpleclipboard-requirements*
@@ -63,7 +64,9 @@ Debian/Ubuntu 构建依赖可安装为： >
 <
 
 没有 +libcall 时，Rust 客户端不可用，但外部命令和 OSC52 回退仍可使用。
-没有 +timers 时不执行防抖，TextYankPost 自动复制会立即运行。
+没有 +timers 时不执行防抖，TextYankPost 自动复制和 daemon 自动启动会立即
+运行；:SimpleCopyPause 会报告暂停不可用，|simpleclipboard#PasteText()| 仍能
+读取外部程序输出，但无法强制定时终止它。
 
 可选外部命令：
 
@@ -467,7 +470,8 @@ g:simpleclipboard_paste_command
 g:simpleclipboard_paste_timeout_ms
 	默认：10000
 	|simpleclipboard#PasteText()| 等待一个粘贴程序退出的最长毫秒数；超时的
-	程序会被停止并按失败处理，继续尝试下一个候选。必须为正数。
+	程序会被停止并按失败处理，继续尝试下一个候选。必须为正数；没有
+	|+timers| 时仍会读取程序输出，但无法强制执行这个期限。
 
 	停止是逐级升级的：先 SIGTERM，忽略它的程序 500 ms 后收到 SIGKILL，
 	若连标准输出都仍未关闭（例如程序把它交给了另一个会话里的子进程），
@@ -570,7 +574,8 @@ TCP 消息使用 SCB1 帧：
 1. daemon 先返回带 32 字节随机 challenge 的短帧；
 2. 每帧以 4 字节 ASCII 魔术字 SCB1 开头；
 3. 随后是 4 字节大端 payload 长度；
-4. client 发送最大 10 MiB、严格解码的手写二进制请求；
+4. client 发送最大 10 MiB、严格解码的手写二进制请求；为同时容纳普通与认证
+   Set 帧，剪贴板文本最多为 10,485,722 个 UTF-8 字节；
 5. daemon 返回单独带帧边界的 ACK；hello 与 ACK payload 上限为 4 KiB。
 
 token 非空时，协议用 SHA-256 域分离派生 request/ACK 两把密钥，并用
@@ -807,8 +812,9 @@ OSC52 无效 ~
 
 大文本失败 ~
 
-daemon 协议消息上限为 10 MiB。OSC52 默认上限是 75000 个 UTF-8 字节，且默认
-不截断。若一定接受部分内容，显式开启
+daemon 协议帧上限为 10 MiB；扣除认证与编码开销后，Set 文本上限为
+10,485,722 个 UTF-8 字节。OSC52 默认上限是 75000 个 UTF-8 字节，且默认不
+截断。若一定接受部分内容，显式开启
 |g:simpleclipboard_osc52_truncate|。
 
 自动复制有延迟 ~

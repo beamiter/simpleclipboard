@@ -611,18 +611,26 @@ call simpleclipboard#StartDaemon(v:true)
 call assert_match('exceeds 4096 UTF-8 bytes; daemon start refused', execute('messages'))
 
 " The complete IPv4 127/8 range is loopback, matching Rust's exposure check.
+" 'magic' controls interactive search syntax, not host parsing or quoted
+" numeric options.  Under 'nomagic', split(host, '\\.') used to split on every
+" character and reject a safe loopback route.
+set nomagic
 let g:simpleclipboard_address = ''
 let g:simpleclipboard_bind_addr = '127.0.0.2'
+let g:simpleclipboard_port = '12343'
 let g:simpleclipboard_token = ''
+call assert_equal(12343, simpleclipboard#NumberOption('simpleclipboard_port'))
 call simpleclipboard#Refresh()
 messages clear
 call simpleclipboard#Status()
 let s:loopback_status = execute('messages')
 call assert_match('address=127.0.0.2:12343', s:loopback_status)
 call assert_match('daemon route error: none', s:loopback_status)
+set magic
 
 let g:simpleclipboard_address = ''
 let g:simpleclipboard_bind_addr = '127.0.0.1'
+let g:simpleclipboard_port = 12343
 let g:simpleclipboard_token = ''
 let g:simpleclipboard_daemon_enabled = 0
 call simpleclipboard#Refresh()
