@@ -14,13 +14,17 @@ g:loaded_simpleclipboard = 1
 # Configuration defaults. Set these before the plugin is loaded to override.
 g:simpleclipboard_daemon_enabled = get(g:, 'simpleclipboard_daemon_enabled', 1)
 g:simpleclipboard_daemon_autostart = get(g:, 'simpleclipboard_daemon_autostart', 1)
-g:simpleclipboard_daemon_autostop = get(g:, 'simpleclipboard_daemon_autostop', 0)
+# A daemon started by Vim belongs to that editor session by default.  Long-lived
+# service users can opt out explicitly and manage the daemon themselves.
+g:simpleclipboard_daemon_autostop = get(g:, 'simpleclipboard_daemon_autostop', 1)
 g:simpleclipboard_auto_copy = get(g:, 'simpleclipboard_auto_copy', 1)
 # Empty means every yank register except the black-hole register, preserving
 # the historical behaviour.  A non-empty list is an explicit allow-list.
 g:simpleclipboard_auto_copy_registers = get(g:, 'simpleclipboard_auto_copy_registers', [])
-# 0 keeps automatic yanks unlimited; manual commands are never size-limited.
-g:simpleclipboard_auto_copy_max_bytes = get(g:, 'simpleclipboard_auto_copy_max_bytes', 0)
+# Keep accidental whole-buffer yanks from feeding multi-megabyte paste events
+# into browsers and rich editors.  Manual commands are never size-limited, and
+# users who intentionally want the old behaviour can still set this to 0.
+g:simpleclipboard_auto_copy_max_bytes = get(g:, 'simpleclipboard_auto_copy_max_bytes', 262144)
 g:simpleclipboard_libpath = get(g:, 'simpleclipboard_libpath', '')
 g:simpleclipboard_daemon_path = get(g:, 'simpleclipboard_daemon_path', '')
 g:simpleclipboard_no_default_mappings = get(g:, 'simpleclipboard_no_default_mappings', 0)

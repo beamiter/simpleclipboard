@@ -220,10 +220,10 @@ any other option run `:SimpleCopyRefresh`.
 | --- | --- | --- |
 | `g:simpleclipboard_daemon_enabled` | `1` | Enable the Rust daemon backend. |
 | `g:simpleclipboard_daemon_autostart` | `1` | Start a local daemon on `VimEnter` when appropriate. A Vim that finds the address already taken uses that daemon instead of forking a second one. |
-| `g:simpleclipboard_daemon_autostop` | `0` | On exit, stop only the daemon job owned by this Vim instance. |
+| `g:simpleclipboard_daemon_autostop` | `1` | Stop the daemon job owned by this Vim instance when Vim exits, so a Vim-started daemon does not intentionally outlive the editor. Set `0` only when deliberately managing a persistent daemon; a daemon merely discovered at the configured address is never stopped. |
 | `g:simpleclipboard_auto_copy` | `1` | Copy successful yank operations from `TextYankPost`. Re-read on every yank, so runtime changes apply immediately; see `:SimpleCopyToggle` and `:SimpleCopyPause`. |
 | `g:simpleclipboard_auto_copy_registers` | `[]` | Automatic-copy register allow-list; empty preserves all registers except `_`. Use `['unnamed']` to accept only ordinary yanks. |
-| `g:simpleclipboard_auto_copy_max_bytes` | `0` | Maximum automatic-yank payload in UTF-8 bytes; `0` — or any value that reads as zero or less — is unlimited. Explicit copy commands are never capped. |
+| `g:simpleclipboard_auto_copy_max_bytes` | `262144` | Maximum automatic-yank payload in UTF-8 bytes. Oversized yanks are skipped so accidental whole-buffer copies cannot stall browser or rich-editor paste handlers. `0` — or any value that reads as zero or less — restores unlimited automatic copying. Explicit copy commands are never capped. |
 | `g:simpleclipboard_debounce_ms` | `50` | Debounce automatic copy by this many milliseconds. |
 | `g:simpleclipboard_no_default_mappings` | `0` | Do not create the `<leader>y` mappings. |
 

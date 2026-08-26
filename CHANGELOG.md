@@ -8,6 +8,27 @@ and packaged Rust components.
 
 ## Unreleased - 2026-08-16
 
+### Vim 启动的 daemon 默认不再脱离 Vim 常驻
+
+- `g:simpleclipboard_daemon_autostop` 默认从 0 改为 1。此前 Vim 退出后，
+  它自己启动的 daemon 会继续以孤儿进程常驻，并可长期持有 X11
+  CLIPBOARD；现在 `VimLeave` 会停止所有 Vim 负责的 job，`stoponexit`
+  也使用 TERM 作为退出保护。只是在配置地址上被探测到的外部 daemon 仍不会
+  被某个 Vim 停止。
+- 需要 systemd 等机制管理的全局 daemon 时，仍可显式设置
+  `g:simpleclipboard_daemon_autostart = 0` 和
+  `g:simpleclipboard_daemon_autostop = 0`。
+
+### 大 yank 不再默认卡死浏览器粘贴
+
+- `g:simpleclipboard_auto_copy_max_bytes` 默认从 0（无限制）改为
+  262144（256 KiB）。此前误 yank 整个大 buffer 会直接替换系统剪贴板，
+  Chrome 等浏览器把近 1 MiB 文本交给 contenteditable/paste 脚本后可让单个
+  标签长时间无响应。现在超限的自动 yank 会被跳过并记入诊断日志。
+- 上限只影响 `TextYankPost` 自动复制；`:SimpleCopyRegister`、
+  `:SimpleCopyRange` 等显式操作仍可复制任意大小。需要旧行为时仍可显式
+  设为 0。
+
 ### wl-copy / wl-paste 的 $WAYLAND_DISPLAY 判据此前从不生效
 
 - 判据写成 `getenv('WAYLAND_DISPLAY') !=# ''`,而在编译过的 `:def` 里

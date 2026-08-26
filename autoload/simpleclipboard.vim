@@ -6,6 +6,7 @@ const DAEMON_FAILURE = 0
 const DAEMON_SUCCESS = 1
 const DAEMON_UNCERTAIN = 2
 const MAX_TOKEN_BYTES = 4096
+const DEFAULT_AUTO_COPY_MAX_BYTES = 262144
 
 def TokenValidationError(token: any): string
   if type(token) != v:t_string
@@ -46,7 +47,7 @@ enddef
 const OPTION_SPECS: list<dict<any>> = [
   {name: 'simpleclipboard_daemon_enabled', kind: 'bool', default: 1},
   {name: 'simpleclipboard_daemon_autostart', kind: 'bool', default: 1},
-  {name: 'simpleclipboard_daemon_autostop', kind: 'bool', default: 0},
+  {name: 'simpleclipboard_daemon_autostop', kind: 'bool', default: 1},
   {name: 'simpleclipboard_auto_copy', kind: 'bool', default: 1},
   {name: 'simpleclipboard_auto_copy_registers', kind: 'list', default: [],
     elements: 'string', note: 'automatic copy is skipped until it is fixed'},
@@ -54,7 +55,8 @@ const OPTION_SPECS: list<dict<any>> = [
   # whose consumer switches off rather than clamps: the cap is enforced by
   # `bytes > 0`, so reporting "using -5" alone would put a cap on screen that
   # :SimpleCopyStatus prints as max=unlimited two lines later.
-  {name: 'simpleclipboard_auto_copy_max_bytes', kind: 'number', default: 0,
+  {name: 'simpleclipboard_auto_copy_max_bytes', kind: 'number',
+    default: DEFAULT_AUTO_COPY_MAX_BYTES,
     note: 'automatic copy is skipped until it is fixed',
     nonpositive: 'applies no cap'},
   {name: 'simpleclipboard_libpath', kind: 'string', default: ''},
@@ -191,7 +193,7 @@ enddef
 # is honoured, anything else is unreadable and `valid` is false so automatic
 # copy stops rather than guessing "no cap".
 def AutoCopyLimit(): dict<any>
-  var raw = get(g:, 'simpleclipboard_auto_copy_max_bytes', 0)
+  var raw = get(g:, 'simpleclipboard_auto_copy_max_bytes', DEFAULT_AUTO_COPY_MAX_BYTES)
   if type(raw) == v:t_string && raw =~# NUMERIC_STRING
     return {valid: true, bytes: str2nr(trim(raw), 10)}
   endif
@@ -896,7 +898,10 @@ export def StartDaemon(interactive: bool = true, wait_for_ready: bool = true): v
       env: job_env,
       out_io: 'null',
       err_io: 'null',
-      stoponexit: 'none',
+      # VimLeave normally stops the owned job explicitly.  stoponexit is the
+      # second line of defence for exit paths where that autocommand cannot
+      # finish; persistence remains an explicit autostop=0 choice.
+      stoponexit: BoolOption('simpleclipboard_daemon_autostop') ? 'term' : 'none',
       exit_cb: DaemonExitCallback,
     })
   catch

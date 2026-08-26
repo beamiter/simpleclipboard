@@ -39,6 +39,9 @@ let g:simpleclipboard_debug = 1
 let g:simpleclipboard_debug_to_file = 1
 runtime plugin/simpleclipboard.vim
 
+call assert_equal(262144, g:simpleclipboard_auto_copy_max_bytes)
+call assert_equal(1, g:simpleclipboard_daemon_autostop)
+
 " Default debug output belongs to a private per-user state directory.
 call simpleclipboard#DetectEnvironment()
 let s:debug_dir = s:state_home .. '/simpleclipboard'
@@ -88,6 +91,13 @@ call assert_equal("abc\nabX\nab1", simpleclipboard#GetVisualSelection())
 
 call setline(1, ['alpha', 'beta', 'gamma'])
 call delete(s:capture)
+call simpleclipboard#CopyYankedToClipboardEvent({
+      \ 'operator': 'y', 'regname': '',
+      \ 'regcontents': [repeat('x', g:simpleclipboard_auto_copy_max_bytes + 1)],
+      \ 'regtype': 'v',
+      \ })
+call assert_false(filereadable(s:capture),
+      \ 'the default cap skips an accidental oversized automatic yank')
 normal! gg0yy
 sleep 200m
 call assert_true(filereadable(s:capture))
@@ -183,7 +193,7 @@ call assert_false(filereadable(s:capture), 'an unreadable cap fails closed')
 let g:simpleclipboard_auto_copy_max_bytes = '0'
 call assert_equal(
       \ ['g:simpleclipboard_auto_copy_max_bytes must be a number, but is a string ("0"); '
-      \ .. 'using the default 0, which applies no cap'],
+      \ .. 'using 0, which applies no cap'],
       \ simpleclipboard#ValidateOptions())
 messages clear
 call simpleclipboard#Status()

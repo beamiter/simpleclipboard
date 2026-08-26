@@ -353,9 +353,10 @@ g:simpleclipboard_daemon_autostart
 
 					*g:simpleclipboard_daemon_autostop*
 g:simpleclipboard_daemon_autostop
-	默认：0
-	退出 Vim 时，是否停止当前 Vim 自己启动的守护进程 job。即使开启，
-	也不会停止仅被探测到的外部守护进程。
+	默认：1
+	退出 Vim 时停止当前 Vim 自己启动的守护进程 job，使 Vim 启动的
+	daemon 不会在编辑器退出后继续常驻。即使开启，也不会停止仅被探测到的
+	外部守护进程。只有在明确由 systemd 等机制管理常驻 daemon 时才建议设为 0。
 
 					*g:simpleclipboard_auto_copy*
 g:simpleclipboard_auto_copy
@@ -376,8 +377,10 @@ g:simpleclipboard_auto_copy_registers
 
 				*g:simpleclipboard_auto_copy_max_bytes*
 g:simpleclipboard_auto_copy_max_bytes
-	默认：0
-	TextYankPost 自动复制允许的最大 UTF-8 字节数；0 表示不限制。只约束
+	默认：262144（256 KiB）
+	TextYankPost 自动复制允许的最大 UTF-8 字节数；超限的 yank
+	会被跳过，避免误 yank 整个大 buffer 后卡住浏览器或富文本编辑器的
+	paste 处理。0 表示不限制。只约束
 	自动复制，:SimpleCopyRegister、:SimpleCopyRange 等显式操作不截断也不拒绝。
 	写成数字字符串（'4096'）按十进制解释；完全读不出数字时自动复制整体
 	跳过，|:SimpleCopyStatus| 会显示 max=invalid (expected number)。
