@@ -278,12 +278,60 @@ mod tests {
         );
     }
 
+    /// A reader with no end, so that the only thing which can stop a read of it
+    /// is the bound inside `read_text` itself.  It hands over `tripwire` bytes
+    /// and then fails every further read.
+    ///
+    /// The endlessness is the whole point.  A finite fixture — even one exactly
+    /// one byte over the limit — terminates the read on its own, so `read_text`
+    /// returns the same "request limit" error whether or not it ever bounded
+    /// stdin; that is what the earlier version of the test below asserted, and
+    /// it stayed green with the `.take()` deleted.  Against a reader that never
+    /// stops, a `read_text` which has lost its bound walks past `tripwire` and
+    /// comes back with a read error instead, which the assertions reject.
+    /// `tripwire` also keeps that failure cheap: the mistake this guards is
+    /// unbounded growth, and reproducing it faithfully would mean reproducing
+    /// the unbounded growth.
+    struct EndlessReader {
+        delivered: usize,
+        tripwire: usize,
+    }
+
+    impl Read for EndlessReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let Some(allowance) = self.tripwire.checked_sub(self.delivered).filter(|n| *n > 0)
+            else {
+                return Err(std::io::Error::other(
+                    "read_text asked for bytes past the request bound",
+                ));
+            };
+            let handed = buf.len().min(allowance);
+            buf[..handed].fill(b'x');
+            self.delivered += handed;
+            Ok(handed)
+        }
+    }
+
     #[test]
     fn stdin_is_bounded_before_the_request_is_materialized() {
-        let oversized = std::io::repeat(b'x').take((MAX_SET_TEXT_BYTES + 1) as u64);
-        let error = read_text(oversized).unwrap_err();
+        // One byte past the limit is all `read_text` may ever pull: enough to
+        // know the input is over, and nothing beyond it.
+        let allowed = MAX_SET_TEXT_BYTES + 1;
+        let mut endless = EndlessReader {
+            delivered: 0,
+            tripwire: allowed,
+        };
+        let error = read_text(&mut endless).unwrap_err();
         assert!(error.contains("request limit"), "{error}");
+        assert_eq!(
+            endless.delivered, allowed,
+            "read_text pulled {} bytes from an endless stdin; the bound must stop \
+             it at {allowed}",
+            endless.delivered
+        );
 
+        // The bound is one byte past the limit rather than at it, so text of
+        // exactly the largest encodable size still reaches the request.
         let exact = std::io::repeat(b'x').take(MAX_SET_TEXT_BYTES as u64);
         assert_eq!(read_text(exact).unwrap().len(), MAX_SET_TEXT_BYTES);
     }
