@@ -48,6 +48,7 @@ g:simpleclipboard_tunnel_port = get(g:, 'simpleclipboard_tunnel_port', 12345)
 g:simpleclipboard_token = get(g:, 'simpleclipboard_token', '')
 g:simpleclipboard_address = get(g:, 'simpleclipboard_address', '')
 g:simpleclipboard_copy_command = get(g:, 'simpleclipboard_copy_command', [])
+g:simpleclipboard_copy_timeout_ms = get(g:, 'simpleclipboard_copy_timeout_ms', 10000)
 # Read by simpleclipboard#PasteText() only; the plugin defines no paste command.
 g:simpleclipboard_paste_command = get(g:, 'simpleclipboard_paste_command', [])
 g:simpleclipboard_paste_timeout_ms = get(g:, 'simpleclipboard_paste_timeout_ms', 10000)

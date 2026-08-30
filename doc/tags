@@ -30,6 +30,7 @@ g:simpleclipboard_auto_copy_registers	simpleclipboard.txt	/*g:simpleclipboard_au
 g:simpleclipboard_bind_addr	simpleclipboard.txt	/*g:simpleclipboard_bind_addr*
 g:simpleclipboard_container_host	simpleclipboard.txt	/*g:simpleclipboard_container_host*
 g:simpleclipboard_copy_command	simpleclipboard.txt	/*g:simpleclipboard_copy_command*
+g:simpleclipboard_copy_timeout_ms	simpleclipboard.txt	/*g:simpleclipboard_copy_timeout_ms*
 g:simpleclipboard_daemon_autostart	simpleclipboard.txt	/*g:simpleclipboard_daemon_autostart*
 g:simpleclipboard_daemon_autostop	simpleclipboard.txt	/*g:simpleclipboard_daemon_autostop*
 g:simpleclipboard_daemon_enabled	simpleclipboard.txt	/*g:simpleclipboard_daemon_enabled*

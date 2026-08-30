@@ -284,10 +284,39 @@ call assert_equal([v:true, "α line\nsecond\n"], s:CopyTextCaptured("α line\nse
 call assert_equal("α line\nsecond\n", getreg('"'))
 call assert_equal(strlen("α line\nsecond\n"), simpleclipboard#LastCopy().bytes)
 
+" A copy process that accepts stdin but never exits must not own the queue for
+" the rest of Vim's lifetime.  The first payload wedges; the newer queued one
+" exits and writes the capture after the deadline kills the stale owner.
+let g:simpleclipboard_copy_timeout_ms = 100
+let g:simpleclipboard_copy_command = ['/bin/sh', '-c',
+      \ 'payload=$(PATH=/usr/bin:/bin cat); if [ "$payload" = first ]; then '
+      \ .. 'exec /bin/sleep 30; else printf %s "$payload" > '
+      \ .. shellescape(s:capture) .. '; fi']
+call simpleclipboard#Refresh()
+call delete(s:capture)
+call assert_true(simpleclipboard#CopyText('first'))
+call assert_true(simpleclipboard#CopyText('second'))
+call assert_equal('queued', simpleclipboard#LastCopy().outcome)
+call assert_true(s:Wait('simpleclipboard#LastCopy().outcome ==# "success"', 3000),
+      \ 'a timed-out copy backend kept the latest copy queued')
+call assert_equal('second', join(readfile(s:capture, 'b'), "\n"))
+let g:simpleclipboard_copy_timeout_ms = 10000
+let g:simpleclipboard_copy_command = ['tee', s:capture]
+call simpleclipboard#Refresh()
+
 " When every backend fails, CopyText() still owns the register and still
 " answers true - the command did start, so the copy was accepted as queued -
 " and it is LastCopy() that says how it really went, with the backend's error.
 let $PATH = s:fake_bin
+let g:simpleclipboard_copy_timeout_ms = 100
+let g:simpleclipboard_copy_command = ['/bin/sh', '-c',
+      \ 'PATH=/usr/bin:/bin; cat >/dev/null; exec sleep 30']
+call simpleclipboard#Refresh()
+call assert_true(simpleclipboard#CopyText('wedged'))
+call assert_true(s:Wait('simpleclipboard#LastCopy().outcome ==# "failed"', 3000),
+      \ 'a lone timed-out copy command never reached the failure path')
+call assert_match('did not exit within 100 ms', simpleclipboard#LastCopy().error)
+let g:simpleclipboard_copy_timeout_ms = 10000
 let g:simpleclipboard_copy_command = ['/bin/false']
 call simpleclipboard#Refresh()
 messages clear

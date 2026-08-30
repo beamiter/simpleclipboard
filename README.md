@@ -245,6 +245,7 @@ any other option run `:SimpleCopyRefresh`.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `g:simpleclipboard_copy_command` | `[]` | Custom copy command as `list<string>` argv, for example `['wl-copy']`. No shell is used; the process must stay attached until its clipboard write is complete. |
+| `g:simpleclipboard_copy_timeout_ms` | `10000` | Maximum time to wait for one copy command to exit before killing it and trying the next backend or the newest queued copy. Must be positive. |
 | `g:simpleclipboard_paste_command` | `[]` | Custom clipboard-reading command as `list<string>` argv whose standard output is the clipboard text, for example `['wl-paste', '--no-newline']`. Used only by `simpleclipboard#PasteText()`, and only for the CLIPBOARD selection; the plugin itself defines no paste command. |
 | `g:simpleclipboard_paste_timeout_ms` | `10000` | How long `simpleclipboard#PasteText()` waits for one paste program before stopping it and trying the next. Must be positive. |
 | `g:simpleclipboard_disable_osc52` | `0` | Disable the OSC52 fallback. |

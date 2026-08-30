@@ -82,6 +82,8 @@ const OPTION_SPECS: list<dict<any>> = [
   {name: 'simpleclipboard_address', kind: 'string', default: ''},
   {name: 'simpleclipboard_copy_command', kind: 'list', default: [],
     elements: 'argv', note: 'the configured command is ignored'},
+  {name: 'simpleclipboard_copy_timeout_ms', kind: 'number', default: 10000,
+    positive: true},
   {name: 'simpleclipboard_paste_command', kind: 'list', default: [],
     elements: 'argv', note: 'the configured command is ignored'},
   {name: 'simpleclipboard_paste_timeout_ms', kind: 'number', default: 10000, positive: true},
@@ -946,7 +948,7 @@ enddef
 # Copy backends
 # -----------------------------------------------------------------------------
 
-var running_copy_jobs: list<job> = []
+var running_copy_states: list<dict<any>> = []
 var cached_copy_cmds: list<list<string>> = []
 var cached_copy_names: list<string> = []
 var cached_copy_cmd_checked = false
@@ -960,6 +962,10 @@ var pending_copy_text = ''
 var pending_copy_waiting = false
 var debounce_timer = -1
 var pending_yank = ''
+
+def CopyTimeoutMs(): number
+  return NumberOption('simpleclipboard_copy_timeout_ms')
+enddef
 
 def MarkSuccess(method: string)
   last_method = method
@@ -984,7 +990,7 @@ def MarkFailure(detail: string)
 enddef
 
 def StartPendingCopyIfIdle(): void
-  if !pending_copy_waiting || !empty(running_copy_jobs)
+  if !pending_copy_waiting || !empty(running_copy_states)
     return
   endif
   var text = pending_copy_text
@@ -995,21 +1001,32 @@ def StartPendingCopyIfIdle(): void
   endif
 enddef
 
-def CopyJobExitCallback(job: job, status: number, text: string, osc52_fallback: bool,
+def CopyJobExitCallback(state: dict<any>, status: number, text: string,
+    osc52_fallback: bool,
     generation: number, candidate_index: number, command_name: string)
-  var index = index(running_copy_jobs, job)
+  if state.done
+    return
+  endif
+  state.done = true
+  if state.timer >= 0
+    timer_stop(state.timer)
+    state.timer = -1
+  endif
+  var index = index(running_copy_states, state)
   if index >= 0
-    remove(running_copy_jobs, index)
+    remove(running_copy_states, index)
   endif
   if generation != copy_generation
     StartPendingCopyIfIdle()
     return
   endif
-  if status == 0
+  if status == 0 && !state.timed_out
     MarkSuccess(command_name)
     return
   endif
-  MarkFailure($'{command_name} exited with status {status}')
+  MarkFailure(state.timed_out
+    ? $'{command_name} did not exit within {state.timeout_ms} ms'
+    : $'{command_name} exited with status {status}')
   Log(last_error, 'WarningMsg')
   if StartCopyCandidate(candidate_index + 1, text, osc52_fallback, generation)
     return
@@ -1025,23 +1042,59 @@ def CopyJobExitCallback(job: job, status: number, text: string, osc52_fallback: 
   StartPendingCopyIfIdle()
 enddef
 
+def CopyJobTimeout(state: dict<any>, copy_job: job, timer: number)
+  if state.done || state.timer != timer
+    return
+  endif
+  state.timer = -1
+  state.timed_out = true
+  # A copy backend owns the clipboard until it exits.  Kill the wedged owner
+  # before advancing to a fallback or the queued latest copy, otherwise it may
+  # wake later and overwrite the newer value.
+  try
+    job_stop(copy_job, 'kill')
+  catch
+    MarkFailure('Could not stop timed-out copy command: ' .. v:exception)
+    Log(last_error, 'WarningMsg')
+  endtry
+enddef
+
 def StartCopyJob(argv: list<string>, text: string, osc52_fallback: bool,
     generation: number, candidate_index: number, command_name: string): bool
   var callback_owns_fallback = false
   var copy_job: job
+  var state: dict<any> = {
+    done: false,
+    timer: -1,
+    timed_out: false,
+    timeout_ms: CopyTimeoutMs(),
+  }
   try
     copy_job = job_start(argv, {
       in_io: 'pipe',
       out_io: 'null',
       err_io: 'null',
-      exit_cb: (job, status) => CopyJobExitCallback(job, status, text,
+      exit_cb: (_, status) => CopyJobExitCallback(state, status, text,
         osc52_fallback, generation, candidate_index, command_name),
     })
+    # job_start()/job_status() may deliver an exit callback synchronously.  If
+    # it already took ownership of the candidate chain, do not register the
+    # completed job as a live blocker afterwards.
+    if state.done
+      return true
+    endif
     if job_status(copy_job) ==# 'fail'
       return false
     endif
-    add(running_copy_jobs, copy_job)
+    if state.done
+      return true
+    endif
+    add(running_copy_states, state)
     callback_owns_fallback = true
+    if exists('*timer_start')
+      state.timer = timer_start(state.timeout_ms,
+        (timer) => CopyJobTimeout(state, copy_job, timer))
+    endif
     ch_sendraw(copy_job, text)
     ch_close_in(copy_job)
     return true
@@ -1301,7 +1354,7 @@ def BeginCopy(text: string, cancel_pending_yank: bool): bool
   # External copy programs own the clipboard write until they exit.  Queue
   # only the newest request so an older, slower program cannot finish after a
   # newer backend and overwrite it.
-  if !empty(running_copy_jobs)
+  if !empty(running_copy_states)
     pending_copy_text = text
     pending_copy_waiting = true
     MarkSuccess('latest copy (queued)')
@@ -1898,12 +1951,13 @@ enddef
 # output is the answer: the user's own g:simpleclipboard_paste_command, then
 # pbpaste, wl-paste, xsel --output and xclip -o.  Nothing that could hold
 # clipboard text or a secret ever appears on a command line, and the text is
-# handed to the callback only - no register, no buffer, no log entry.
+# handed to the callback only - no register, no buffer, no log entry.  Copy
+# jobs have their own exit deadline above; the paste path additionally has to
+# collect output and guarantee an exactly-once callback.
 
 const PASTE_SELECTIONS = ['clipboard', 'primary']
 
-# A paste program that never exits would otherwise hold its callback forever;
-# the copy side has no such deadline because its jobs are fire-and-forget.
+# A paste program that never exits would otherwise hold its callback forever.
 def PasteTimeoutMs(): number
   return NumberOption('simpleclipboard_paste_timeout_ms')
 enddef
@@ -2209,6 +2263,7 @@ export def Status(): void
     $'client library: {client_lib ==# "" ? "not found" : client_lib}',
     $'daemon executable: {daemon_exe_path ==# "" ? "not found" : daemon_exe_path}',
     $'external commands: {command_summary}',
+    $'copy jobs: {len(running_copy_states)} running; timeout={CopyTimeoutMs()} ms',
     $'paste: {paste_summary}',
     $'OSC52: {osc52_state}',
     $'automatic copy: registers={register_policy}; max={limit_policy}',

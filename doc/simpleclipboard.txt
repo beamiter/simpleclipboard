@@ -457,6 +457,13 @@ g:simpleclipboard_copy_command
 <
 	插件直接启动 argv，不经过 shell。进程必须保持附着，直到剪贴板写入完成。
 
+					*g:simpleclipboard_copy_timeout_ms*
+g:simpleclipboard_copy_timeout_ms
+	默认：10000
+	等待单个复制程序退出的最长毫秒数。超时后先终止该程序，再尝试下一个
+	候选或队列里最新的一次复制，避免失去响应的程序永久堵住后续复制。
+	必须为正数；没有 |+timers| 时无法强制执行这个期限。
+
 					*g:simpleclipboard_paste_command*
 g:simpleclipboard_paste_command
 	默认：[]
