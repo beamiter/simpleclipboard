@@ -77,6 +77,16 @@ help-tags:
 # inside a file the plugin itself owns, like this footer — is recorded as
 # `footer <lines> <sha256>  <path>` and checked against the tail of <path>.
 core-verify:
+	@awk ' \
+	  /^[[:space:]]*(\#|$$)/ { next } \
+	  $$1 == "version" && NF == 2 && $$2 ~ /^[1-9][0-9]*$$/ { versions++; next } \
+	  length($$1) == 64 && $$1 !~ /[^0-9a-f]/ && NF == 2 { files++; next } \
+	  $$1 == "footer" && NF == 4 && $$2 ~ /^[1-9][0-9]*$$/ \
+	    && length($$3) == 64 && $$3 !~ /[^0-9a-f]/ { footers++; next } \
+	  { bad = 1 } \
+	  END { if (bad || versions != 1 || files == 0 || footers != 1) { \
+	    print ".simplecore.manifest: invalid or incomplete bundle records" > "/dev/stderr"; exit 1 } } \
+	' .simplecore.manifest
 	@records=$$(grep -cE '^[0-9a-f]{64}' .simplecore.manifest); \
 	checked=$$(grep -cE '^[0-9a-f]{64}  ' .simplecore.manifest); \
 	test "$$records" = "$$checked" || { \
@@ -87,7 +97,8 @@ core-verify:
 	@grep -E '^[0-9a-f]{64}  ' .simplecore.manifest | sha256sum -c --quiet
 	@awk '$$1 == "footer" { print $$2, $$3, $$4 }' .simplecore.manifest \
 	| while read -r lines sum path; do \
-		test "$$(tail -n "$$lines" "$$path" | sha256sum | cut -d' ' -f1)" = "$$sum" \
+		test -f "$$path" && fragment=$$(tail -n "$$lines" "$$path") || exit 1; \
+		test "$$(printf '%s\n' "$$fragment" | sha256sum | cut -d' ' -f1)" = "$$sum" \
 		|| { echo "$$path: FAILED (simplecore footer)" >&2; exit 1; }; \
 	done
 	@echo "simplecore: bundle v$$(awk '$$1 == "version" { print $$2 }' .simplecore.manifest) verified"
