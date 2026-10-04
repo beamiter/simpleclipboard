@@ -87,7 +87,8 @@ const OPTION_SPECS: list<dict<any>> = [
   {name: 'simpleclipboard_paste_command', kind: 'list', default: [],
     elements: 'argv', note: 'the configured command is ignored'},
   {name: 'simpleclipboard_paste_timeout_ms', kind: 'number', default: 10000, positive: true},
-  {name: 'simpleclipboard_debounce_ms', kind: 'number', default: 50},
+  {name: 'simpleclipboard_debounce_ms', kind: 'number', default: 50,
+    nonpositive: 'disables debounce'},
   {name: 'simpleclipboard_container_host', kind: 'string', default: ''},
 ]
 
@@ -334,7 +335,7 @@ enddef
 def DebugFile(): string
   return UsesDefaultDebugFile()
     ? StateDir() .. '/simpleclipboard.log'
-    : expand(StringOption('simpleclipboard_debug_file'))
+    : fnamemodify(StringOption('simpleclipboard_debug_file'), ':p')
 enddef
 
 def PrepareDefaultDebugFile(path: string): void
@@ -823,6 +824,19 @@ def StopOwnedDaemon(): bool
     endif
     sleep 25m
   endfor
+  # SIGTERM is a request.  A daemon that ignores it (or is stuck in a
+  # non-interruptible syscall) would otherwise survive :SimpleCopyStop and
+  # VimLeave, which is exactly what daemon_autostop = 1 exists to prevent.
+  # SIGKILL is the same last step the paste deadline already takes.
+  if !job_stop(stopped_job, 'kill')
+    return !DaemonJobRunning()
+  endif
+  for _ in range(40)
+    if !DaemonJobRunning()
+      return true
+    endif
+    sleep 25m
+  endfor
   return !DaemonJobRunning()
 enddef
 
@@ -900,10 +914,7 @@ export def StartDaemon(interactive: bool = true, wait_for_ready: bool = true): v
       env: job_env,
       out_io: 'null',
       err_io: 'null',
-      # VimLeave normally stops the owned job explicitly.  stoponexit is the
-      # second line of defence for exit paths where that autocommand cannot
-      # finish; persistence remains an explicit autostop=0 choice.
-      stoponexit: BoolOption('simpleclipboard_daemon_autostop') ? 'term' : 'none',
+      stoponexit: BoolOption('simpleclipboard_daemon_autostop') ? 'kill' : 'none',
       exit_cb: DaemonExitCallback,
     })
   catch
@@ -1104,6 +1115,10 @@ def StartCopyJob(argv: list<string>, text: string, osc52_fallback: bool,
     # Once a live job has an exit callback, let that callback advance the
     # candidate chain.  Advancing here as well could launch a duplicate.
     if callback_owns_fallback
+      if state.timer >= 0
+        timer_stop(state.timer)
+        state.timer = -1
+      endif
       try
         ch_close_in(copy_job)
       catch
@@ -1145,9 +1160,11 @@ def OnWayland(): bool
 enddef
 
 def DetectCopyCmd(): void
-  if cached_copy_cmd_checked
-    return
-  endif
+  # Rebuilt on every copy: the configured argv, $WAYLAND_DISPLAY and $PATH are
+  # all runtime state, and latching them until :SimpleCopyRefresh made a
+  # `:let g:simpleclipboard_copy_command = ...` after the first yank a no-op.
+  cached_copy_cmds = []
+  cached_copy_names = []
   cached_copy_cmd_checked = true
   var configured = get(g:, 'simpleclipboard_copy_command', [])
   if ValidCommand(configured)
@@ -1230,8 +1247,17 @@ def ChunkBytes(text: string, size: number): list<string>
   var chunks: list<string> = []
   var offset = 0
   while offset < strlen(text)
-    add(chunks, strpart(text, offset, size))
-    offset += size
+    var take = size
+    # A chunk that ends on ESC leaves the next byte to be eaten by the DCS
+    # terminator ESC \ that this function's caller appends.  OSC 52's ST
+    # terminator is itself ESC \, so a cut there silently truncated the
+    # clipboard under screen.
+    if take > 1 && offset + take < strlen(text)
+        && strpart(text, offset + take - 1, 1) ==# "\x1b"
+      take -= 1
+    endif
+    add(chunks, strpart(text, offset, take))
+    offset += take
   endwhile
   return chunks
 enddef
@@ -1243,9 +1269,11 @@ export def Osc52Sequence(encoded: string): string
   var terminator = OSC52_TERMINATORS[EnumOption('simpleclipboard_osc52_terminator')]
   var direct = $"\x1b]52;{selection};{encoded}{terminator}"
   if $TMUX !=# ''
-    # tmux passthrough needs each ESC in the payload doubled; OSC 52 contains
-    # exactly one, at the start, so escaping the prefix is sufficient.
-    return "\x1bPtmux;\x1b" .. direct .. "\x1b\\"
+    # tmux passthrough is ESC P tmux; <payload with every ESC doubled> ESC \.
+    # BEL only needs the OSC's leading ESC escaped, but ST is itself ESC \,
+    # and leaving that one single would close the wrapper at the terminator
+    # so the outer terminal never saw a complete OSC 52.
+    return "\x1bPtmux;" .. substitute(direct, "\x1b", "\x1b\x1b", 'g') .. "\x1b\\"
   endif
   if InScreen()
     return join(map(ChunkBytes(direct, SCREEN_DCS_CHUNK_BYTES),
@@ -1262,7 +1290,7 @@ enddef
 def EmitOsc52(sequence: string): bool
   var device = StringOption('simpleclipboard_osc52_tty')
   if device !=# ''
-    return WriteOsc52ToDevice(sequence, expand(device))
+    return WriteOsc52ToDevice(sequence, fnamemodify(device, ':p'))
   endif
   # &term is empty in batch mode (-es), where echoraw has no terminal to reach
   # and would only write escape bytes into whatever is reading stdout.
@@ -1460,6 +1488,16 @@ def AutoCopyRegisterAllowed(name: string): bool
   if empty(configured)
     return true
   endif
+  # ValidateOptions() fail-closes a list whose elements are the wrong type.
+  # Honouring the string entries and dropping the rest would make that warning
+  # a lie: `['unnamed', 1]` would still copy unnamed yanks.
+  for candidate in configured
+    if type(candidate) != v:t_string
+      Trace('g:simpleclipboard_auto_copy_registers must be a list of strings; automatic copy skipped.',
+        'WarningMsg')
+      return false
+    endif
+  endfor
   var actual = name ==# '' ? '"' : name
   for candidate in configured
     if type(candidate) == v:t_string && NormalizeRegisterName(candidate) ==# actual
@@ -2211,6 +2249,14 @@ export def LastCopy(): dict<any>
 enddef
 
 export def Status(): void
+  # This command exists to describe the machine as it is now.  The copy path
+  # latches environment probes so a yank does not redo them; reporting the
+  # latch after $SSH_CONNECTION went away made :SimpleCopyStatus claim ssh
+  # for a local session until someone thought to Refresh.
+  env_detected = false
+  cached_is_ssh = -1
+  cached_in_container = -1
+  cached_is_wsl = -1
   DetectEnvironment()
   TryLoadLib()
   FindDaemonExe()

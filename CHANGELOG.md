@@ -6,6 +6,44 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 SimpleClipboard uses semantic versioning for the Vim interface, TCP protocol,
 and packaged Rust components.
 
+## Unreleased - 2026-10-04
+
+### tmux 透传现在会转义 OSC 52 里的每一个 ESC,ST 终止符不再截断外层序列
+
+- tmux passthrough 要求 payload 里每个 ESC 都写成 ESC ESC。此前只转义了 OSC 的那个前缀,而 `'st'` 终止符本身就是 ESC \\,于是 DCS 包装在终止符处结束,外层终端看不到完整的 OSC 52。BEL 碰巧只有一个 ESC,所以一直是绿的。
+
+### screen 的 DCS 分片不再切在 ST 终止符的 ESC 上
+
+- 769 字节的 OSC(760 字节 payload + 前缀 + 两字节 ST)会把切点落在第 768 字节,第一片以 ESC 结尾,screen 把它当成 DCS 结束,剪贴板被悄悄截成前缀。分片现在不会以 ESC 结尾。
+
+### `g:simpleclipboard_osc52_tty` / `debug_file` 不再走 `expand()`
+
+- `expand()` 会展开 `$HOME`、反引号和 `%`/`#`。设备名或日志路径里带 `$HOME` 的会写到另一个文件,而 `:SimpleCopyStatus` 仍说 OSC52 成功。改成 `fnamemodify(':p')`,只做 `~` 和相对路径。
+
+### 混合类型的自动复制白名单现在真的 fail closed
+
+- `let g:simpleclipboard_auto_copy_registers = ['unnamed', 1]` 的校验早就说"自动复制已跳过",消费端却照样认字符串项、丢掉其余,未命名 yank 继续泄漏。现在整份名单不可用。
+
+### 加了引号的 debounce ≤0,报告里不再像有一个延迟
+
+- `'-5'` 走 `delay > 0` 的判断,实际马上复制;警告只说 "using -5" 会让人以为有 5 毫秒窗口。现在带上 "which disables debounce",和字节上限那条同类。
+
+### 忽略 SIGTERM 的 daemon 不再活过 `:SimpleCopyStop` / VimLeave
+
+- `StopOwnedDaemon()` 只发 TERM,等 2.5 秒就放弃;`stoponexit` 也是 TERM。`trap "" TERM` 的进程会泄漏,而这正是 `daemon_autostop = 1` 要防的。TERM 之后现在跟粘贴期限一样升到 SIGKILL,`stoponexit` 同步改成 kill。
+
+### 改 `g:simpleclipboard_copy_command` 不必再 Refresh 才生效
+
+- 候选表在第一次复制时闩住,之后的 `:let` 是空操作,直到有人想起 `:SimpleCopyRefresh`。`$WAYLAND_DISPLAY` 运行期变化同样如此。每次复制重新组装候选,和粘贴那条路一致。
+
+### `:SimpleCopyStatus` 不再报告上一次探测到的 SSH 环境
+
+- 复制路径闩住环境探测是对的;诊断命令把闩住的 `ssh=true` 一直打到有人 Refresh。现在 Status 先丢掉环境缓存再探测。
+
+### 复制 job 在 `ch_sendraw` 抛错时停掉超时定时器
+
+- 定时器已经挂上、stdin 还没写完就进 catch 时,超时回调仍会去 `job_stop` 一个可能已经不在的 job。现在 catch 里先 `timer_stop`。
+
 ## Unreleased - 2026-08-16
 
 ### Vim 启动的 daemon 默认不再脱离 Vim 常驻

@@ -14,6 +14,10 @@ let s:had_state_home = exists('$XDG_STATE_HOME')
 let s:old_state_home = $XDG_STATE_HOME
 let s:had_ssh_connection = exists('$SSH_CONNECTION')
 let s:old_ssh_connection = $SSH_CONNECTION
+let s:had_ssh_client = exists('$SSH_CLIENT')
+let s:old_ssh_client = $SSH_CLIENT
+let s:had_ssh_tty = exists('$SSH_TTY')
+let s:old_ssh_tty = $SSH_TTY
 
 " Some Vim builds keep a 'Messages maintainer: ...' header after :messages
 " clear; capture the post-clear baseline instead of assuming empty output.
@@ -50,6 +54,18 @@ call assert_true(isdirectory(s:debug_dir))
 call assert_true(filereadable(s:debug_file))
 call assert_equal('rwx------', getfperm(s:debug_dir))
 call assert_equal('rw-------', getfperm(s:debug_file))
+let g:simpleclipboard_debug = 1
+let g:simpleclipboard_debug_to_file = 1
+let s:debug_dollar = s:tmp_prefix .. '-debug-$HOME.log'
+call delete(s:debug_dollar)
+let g:simpleclipboard_debug_file = s:debug_dollar
+call simpleclipboard#Refresh()
+call assert_true(filereadable(s:debug_dollar),
+      \ 'g:simpleclipboard_debug_file must not go through expand()')
+call assert_false(s:debug_dollar ==# expand(s:debug_dollar),
+      \ 'this fixture is worthless if expand() leaves $HOME alone')
+call delete(s:debug_dollar)
+let g:simpleclipboard_debug_file = ''
 let g:simpleclipboard_debug = 0
 let g:simpleclipboard_debug_to_file = 0
 
@@ -103,6 +119,19 @@ sleep 200m
 call assert_true(filereadable(s:capture))
 call assert_equal(0z616C7068610A, readblob(s:capture))
 
+" The copy-command argv is runtime configuration, not a startup latch.
+" Changing it after the first yank must take effect without :SimpleCopyRefresh.
+let s:capture2 = s:tmp_prefix .. '-capture2'
+call delete(s:capture2)
+let g:simpleclipboard_copy_command = ['tee', s:capture2]
+call simpleclipboard#CopyToSystemClipboard('switched-backend')
+sleep 150m
+call assert_true(filereadable(s:capture2),
+      \ 'a new g:simpleclipboard_copy_command must be used on the next copy')
+call assert_equal(['switched-backend'], readfile(s:capture2, 'b'))
+let g:simpleclipboard_copy_command = ['tee', s:capture]
+call delete(s:capture2)
+
 " Automatic copy can be restricted to selected Vim registers without changing
 " the historical all-registers default.  A skipped newer yank must not leave
 " an older debounced copy waiting behind it.
@@ -127,6 +156,22 @@ let g:simpleclipboard_debounce_ms = 0
 normal! gg0yy
 sleep 150m
 call assert_equal(0z616C7068610A, readblob(s:capture))
+
+" A mixed allow-list is the same as an unusable one: ValidateOptions already
+" says automatic copy is skipped, but the consumer used to honour the string
+" entries and only drop the rest, so a typo next to 'unnamed' still leaked
+" unnamed yanks.
+let g:simpleclipboard_auto_copy_registers = ['unnamed', 1]
+call assert_match('must be a list of strings', join(simpleclipboard#ValidateOptions(), "\n"))
+call delete(s:capture)
+call simpleclipboard#CopyYankedToClipboardEvent({
+      \ 'operator': 'y', 'regname': '', 'regcontents': ['leaked'],
+      \ 'regtype': 'v',
+      \ })
+sleep 150m
+call assert_false(filereadable(s:capture),
+      \ 'a malformed allow-list must fail closed, not copy the valid entries')
+let g:simpleclipboard_auto_copy_registers = []
 
 " The byte cap applies only to automatic yanks; explicit register copies keep
 " their exact contents, including a linewise trailing newline.
@@ -224,6 +269,23 @@ call simpleclipboard#CopyYankedToClipboardEvent({
 sleep 150m
 call assert_equal(['far more than five bytes'], readfile(s:capture, 'b'))
 let g:simpleclipboard_auto_copy_max_bytes = 0
+
+" Quoted debounce of zero or less is not a delay: the consumer only arms a
+" timer for delay > 0, so '-5' copies immediately.  Saying "using -5" alone
+" would look like a 5 ms window that does not exist.
+let g:simpleclipboard_debounce_ms = '-5'
+call assert_equal(
+      \ ['g:simpleclipboard_debounce_ms must be a number, but is a string ("-5"); '
+      \ .. 'using -5, which disables debounce'],
+      \ simpleclipboard#ValidateOptions())
+call assert_equal(-5, simpleclipboard#NumberOption('simpleclipboard_debounce_ms'))
+call delete(s:capture)
+call simpleclipboard#CopyYankedToClipboardEvent({
+      \ 'operator': 'y', 'regname': '', 'regcontents': ['no wait'], 'regtype': 'v',
+      \ })
+sleep 50m
+call assert_equal(['no wait'], readfile(s:capture, 'b'))
+let g:simpleclipboard_debounce_ms = 0
 
 " g:simpleclipboard_auto_copy is honoured per yank rather than latched when the
 " plugin loaded, so disabling it immediately before yanking a credential really
@@ -576,12 +638,25 @@ call assert_match('environment: ssh', s:disabled_remote_status)
 call assert_match('address=none', s:disabled_remote_status)
 call assert_match('daemon routing disabled; skipping network probes', s:disabled_remote_status)
 call assert_notmatch('TCP probe', s:disabled_remote_status)
-let g:simpleclipboard_debug = 0
+" Dropping every SSH indicator must show up on the next :SimpleCopyStatus
+" without an intervening Refresh: the diagnostic command used to keep the
+" latched ssh=true until caches were cleared for some other reason.
+unlet $SSH_CONNECTION
+unlet $SSH_CLIENT
+unlet $SSH_TTY
+messages clear
+call simpleclipboard#Status()
+call assert_notmatch('environment: ssh', execute('messages'))
 if s:had_ssh_connection
   let $SSH_CONNECTION = s:old_ssh_connection
-else
-  unlet $SSH_CONNECTION
 endif
+if s:had_ssh_client
+  let $SSH_CLIENT = s:old_ssh_client
+endif
+if s:had_ssh_tty
+  let $SSH_TTY = s:old_ssh_tty
+endif
+let g:simpleclipboard_debug = 0
 let $PATH = s:old_path
 
 " Empty tokens block remote/custom daemon routing before a Ping or Set request.
@@ -683,6 +758,47 @@ try
   call assert_match('No daemon owned by this Vim instance is running.', execute('messages'))
 finally
   call simpleclipboard#StopDaemon(v:false)
+endtry
+
+" A daemon that ignores SIGTERM used to survive :SimpleCopyStop: StopOwnedDaemon
+" sent TERM, waited 2.5s, then gave up, so VimLeave + autostop=1 leaked the
+" process.  SIGKILL is the same last step the paste deadline already takes.
+let s:stubborn_script = s:tmp_prefix .. '-stubborn-daemon'
+let s:stubborn_pidfile = s:tmp_prefix .. '-stubborn-pid'
+call writefile([
+      \ '#!/bin/sh',
+      \ 'trap "" TERM INT HUP',
+      \ 'echo $$ > ' .. shellescape(s:stubborn_pidfile),
+      \ 'while :; do /bin/sleep 1; done',
+      \ ], s:stubborn_script)
+call assert_equal(1, setfperm(s:stubborn_script, 'rwx------'))
+let g:simpleclipboard_daemon_enabled = 1
+let g:simpleclipboard_daemon_autostart = 0
+let g:simpleclipboard_daemon_path = s:stubborn_script
+let g:simpleclipboard_port = s:first_port + 5
+call simpleclipboard#Refresh()
+try
+  call delete(s:stubborn_pidfile)
+  call simpleclipboard#StartDaemon(v:true)
+  let s:got_pid = 0
+  for s:attempt in range(50)
+    if filereadable(s:stubborn_pidfile)
+      let s:got_pid = str2nr(readfile(s:stubborn_pidfile)[0], 10)
+      break
+    endif
+    sleep 20m
+  endfor
+  call assert_true(s:got_pid > 0, 'stubborn daemon never wrote its pid')
+  messages clear
+  call simpleclipboard#StopDaemon(v:true)
+  call assert_match('Stopped daemon owned by this Vim instance.', execute('messages'))
+  call assert_false(filereadable('/proc/' .. s:got_pid .. '/stat'),
+        \ 'a TERM-ignoring daemon must not survive StopDaemon')
+finally
+  call simpleclipboard#StopDaemon(v:false)
+  call delete(s:stubborn_script)
+  call delete(s:stubborn_pidfile)
+  let g:simpleclipboard_daemon_path = s:daemon_script
 endtry
 
 " Another Vim, or a systemd unit, may already own the address. Forking then can
@@ -886,10 +1002,18 @@ call assert_equal("\x1b]52;c;aGVsbG8=\x1b\\", simpleclipboard#Osc52Sequence('aGV
 let g:simpleclipboard_osc52_selection = 'c'
 let g:simpleclipboard_osc52_terminator = 'bel'
 
-" tmux passthrough wraps the whole sequence and escapes its leading ESC.
+" tmux passthrough wraps the whole sequence and doubles every ESC in the
+" payload.  BEL only has the one at the OSC start, so prefix-only escaping
+" happened to work; ST is itself ESC \, and leaving that one unescaped ends
+" the DCS wrapper at the terminator, so the outer terminal never sees a
+" complete OSC 52.
 let $TMUX = '/tmp/tmux-1000/default,1,0'
 call assert_equal("\x1bPtmux;\x1b\x1b]52;c;aGVsbG8=\x07\x1b\\",
       \ simpleclipboard#Osc52Sequence('aGVsbG8='))
+let g:simpleclipboard_osc52_terminator = 'st'
+call assert_equal("\x1bPtmux;\x1b\x1b]52;c;aGVsbG8=\x1b\x1b\\\x1b\\",
+      \ simpleclipboard#Osc52Sequence('aGVsbG8='))
+let g:simpleclipboard_osc52_terminator = 'bel'
 let $TMUX = ''
 
 " screen needs a DCS envelope, and it is detected by $TERM as well as by $STY:
@@ -918,6 +1042,27 @@ for s:envelope in s:envelopes
   let s:rebuilt ..= s:inner
 endfor
 call assert_equal("\x1b]52;c;" .. s:long_b64 .. "\x07", s:rebuilt)
+
+" ST is ESC \.  A 769-byte OSC (760 bytes of payload plus the seven-byte
+" prefix and the two-byte terminator) used to put the cut at byte 768, so the
+" first envelope ended on ESC and the next began with a lone backslash —
+" screen then closed DCS on that ESC and forwarded a truncated clipboard.
+let g:simpleclipboard_osc52_terminator = 'st'
+let s:st_b64 = repeat('A', 760)
+let s:st_sequence = simpleclipboard#Osc52Sequence(s:st_b64)
+let s:st_envelopes = split(s:st_sequence, "\x1bP", 1)[1 : ]
+let s:st_rebuilt = ''
+for s:envelope in s:st_envelopes
+  call assert_equal("\x1b\\", strpart(s:envelope, strlen(s:envelope) - 2),
+        \ 'ST split must not land inside the terminator')
+  let s:inner = strpart(s:envelope, 0, strlen(s:envelope) - 2)
+  call assert_true(strlen(s:inner) <= 768, 'DCS chunk exceeds the screen limit')
+  call assert_notequal("\x1b", strpart(s:inner, strlen(s:inner) - 1),
+        \ 'a DCS chunk must not end on ESC; that is the start of ST')
+  let s:st_rebuilt ..= s:inner
+endfor
+call assert_equal("\x1b]52;c;" .. s:st_b64 .. "\x1b\\", s:st_rebuilt)
+let g:simpleclipboard_osc52_terminator = 'bel'
 let $TERM = 'xterm-256color'
 
 " End to end: with no copy command reachable, a copy really does emit those
@@ -938,6 +1083,22 @@ if executable('base64')
   messages clear
   call simpleclipboard#Status()
   call assert_match('last copy: method=OSC52, outcome=success', execute('messages'))
+
+  " expand() is a wildcard / $VAR / backtick expander.  A device whose name
+  " contains $HOME is a path, not an expression: writing through expand()
+  " landed the sequence in a different file (or nowhere) while :SimpleCopyStatus
+  " still said OSC52 succeeded.
+  let s:osc52_dollar = s:tmp_prefix .. '-osc52-$HOME'
+  call delete(s:osc52_dollar)
+  let g:simpleclipboard_osc52_tty = s:osc52_dollar
+  call assert_true(simpleclipboard#CopyToSystemClipboard('hello'))
+  call assert_true(filereadable(s:osc52_dollar),
+        \ 'OSC52 tty path must not go through expand()')
+  call assert_equal("\x1b]52;c;aGVsbG8=\x07", join(readfile(s:osc52_dollar, 'b'), "\n"))
+  call assert_false(s:osc52_dollar ==# expand(s:osc52_dollar),
+        \ 'this fixture is worthless if expand() leaves $HOME alone')
+  call delete(s:osc52_dollar)
+  let g:simpleclipboard_osc52_tty = s:osc52_tty
 
   " Oversized payloads are refused rather than silently truncated, and nothing
   " is written when they are refused.
@@ -993,6 +1154,16 @@ if s:had_ssh_connection
   let $SSH_CONNECTION = s:old_ssh_connection
 else
   silent! unlet $SSH_CONNECTION
+endif
+if s:had_ssh_client
+  let $SSH_CLIENT = s:old_ssh_client
+else
+  silent! unlet $SSH_CLIENT
+endif
+if s:had_ssh_tty
+  let $SSH_TTY = s:old_ssh_tty
+else
+  silent! unlet $SSH_TTY
 endif
 call delete(s:capture)
 call delete(s:state_home, 'rf')
