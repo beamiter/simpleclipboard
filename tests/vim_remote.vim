@@ -20,6 +20,7 @@
 
 set nocompatible
 set nomore
+set shell=/bin/sh
 set shortmess+=I
 " Character columns are only meaningful in a known encoding; without a vimrc
 " Vim may start in latin1 and count each byte of an accented letter.
@@ -388,6 +389,13 @@ if has('clipboard_working')
   endif
   call setreg('+', '')
   call setreg('*', '')
+  " macOS aliases + and * and Vim may retain the native pasteboard when
+  " setreg is given an empty string. Clear the actual pasteboard through
+  " its native writer, then keep the same strict empty-register assertions.
+  if has('macunix') && executable('/usr/bin/pbcopy')
+    call system('/usr/bin/pbcopy', '')
+    call assert_equal(0, v:shell_error, 'native pasteboard clear failed')
+  endif
   " Everything below reads the paste programs, and only an empty register
   " gets that far: a clipboard that refuses to be emptied must fail loudly
   " rather than pass with the whole section unrun.
@@ -579,6 +587,10 @@ endif
 if has('clipboard_working')
   call setreg('+', s:saved_plus[0], s:saved_plus[1])
   call setreg('*', s:saved_star[0], s:saved_star[1])
+  if has('macunix') && s:saved_star[0] ==# '' && executable('/usr/bin/pbcopy')
+    call system('/usr/bin/pbcopy', '')
+    call assert_equal(0, v:shell_error, 'empty native pasteboard restore failed')
+  endif
 endif
 let g:simpleclipboard_copy_command = ['tee', s:capture]
 let g:simpleclipboard_paste_command = []
