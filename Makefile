@@ -12,7 +12,7 @@ rust-check:
 	cargo build --locked --release
 
 vim-check:
-	vim -Nu NONE -i NONE -n -es -S test/vim_smoke.vim
+	vim -Nu NONE -i NONE -n -es -V1test/vim-smoke.log -S test/vim_smoke.vim || { cat test/vim-smoke.log; exit 1; }
 
 # The suite API other simple* plugins call (CopyText, LastCopy, PasteText) and
 # the SimpleRemote-aware path commands.  SimpleRemote is never on the
