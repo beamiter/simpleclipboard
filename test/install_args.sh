@@ -94,8 +94,11 @@ fi
 # by the failed attempt above.
 mkdir -p "$scratch/ok-root/lib"
 cp "$repo_root/install.sh" "$scratch/ok-root/install.sh"
-PATH="$scratch/stub-bin:$PATH" CARGO_TARGET_DIR="$scratch/ok-target" \
-  SELF_TEST_EXIT=0 "$scratch/ok-root/install.sh" >"$scratch/ok-output" 2>&1
+if ! PATH="$scratch/stub-bin:$PATH" CARGO_TARGET_DIR="$scratch/ok-target" \
+  SELF_TEST_EXIT=0 "$scratch/ok-root/install.sh" >"$scratch/ok-output" 2>&1; then
+  cat "$scratch/ok-output" >&2
+  exit 1
+fi
 for artifact in "$stub_library" simpleclipboard-daemon simpleclipboard-client; do
   if [[ ! -e "$scratch/ok-root/lib/$artifact" ]]; then
     echo "install.sh did not install $artifact" >&2

@@ -110,7 +110,11 @@ jobs:
       - name: Install Vim and GNU checksum utilities
         run: |
           brew install vim shellcheck coreutils
-          echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
+          # Only checksum verification needs GNU flags. Preserve native stat,
+          # whose command line the installer intentionally selects on Darwin.
+          mkdir -p "$RUNNER_TEMP/simpleclipboard-bin"
+          ln -s "$(brew --prefix coreutils)/bin/gsha256sum" "$RUNNER_TEMP/simpleclipboard-bin/sha256sum"
+          echo "$RUNNER_TEMP/simpleclipboard-bin" >> "$GITHUB_PATH"
       - run: make check
       - name: Install host artifacts
         run: |
