@@ -19,7 +19,7 @@ vim-check:
 # runtimepath: the test creates the buffer variables and the one global
 # function those paths consult itself.
 vim-remote:
-	vim -Nu NONE -i NONE -n -es -S tests/vim_remote.vim
+	vim -Nu NONE -i NONE -n -es -V1test/vim-remote.log -S tests/vim_remote.vim || { cat test/vim-remote.log; cat tests/remote-errors.log 2>/dev/null; exit 1; }
 
 installer-check:
 	bash -n install.sh test/install_args.sh test/tcp_e2e.sh \
