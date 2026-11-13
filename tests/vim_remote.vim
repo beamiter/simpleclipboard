@@ -28,7 +28,7 @@ scriptencoding utf-8
 
 let s:root = fnamemodify(expand('<sfile>:p'), ':h:h')
 call delete(s:root .. '/tests/remote-errors.log')
-let s:tmp_prefix = '/tmp/simpleclipboard-vim-remote-' .. getpid()
+let s:tmp_prefix = resolve('/tmp') .. '/simpleclipboard-vim-remote-' .. getpid()
 let s:capture = s:tmp_prefix .. '-capture'
 let s:fake_bin = s:tmp_prefix .. '-bin'
 let s:project = s:tmp_prefix .. '-project'

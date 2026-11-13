@@ -1,7 +1,7 @@
 " Keep shell usable when test cases deliberately replace PATH.
 set shell=/bin/sh
 let s:root = fnamemodify(expand('<sfile>:p'), ':h:h')
-let s:tmp_prefix = '/tmp/simpleclipboard-vim-smoke-' .. getpid()
+let s:tmp_prefix = resolve('/tmp') .. '/simpleclipboard-vim-smoke-' .. getpid()
 let s:capture = s:tmp_prefix .. '-capture'
 let s:state_home = s:tmp_prefix .. '-state'
 let s:fake_bin = s:tmp_prefix .. '-bin'
@@ -815,8 +815,9 @@ if executable('python3')
         \ 'server = socket.socket()',
         \ 'server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)',
         \ 'server.bind(("127.0.0.1", int(sys.argv[1])))',
-        \ 'server.listen(1)',
-        \ 'time.sleep(30)',
+        \ 'server.listen(16)',
+        \ 'connections = []',
+        \ 'while True: connections.append(server.accept()[0])',
         \ ], s:listener_script)
   let s:listener = job_start(['python3', s:listener_script, string(s:listener_port)])
   let s:listening = 0

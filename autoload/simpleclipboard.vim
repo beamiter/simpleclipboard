@@ -2008,16 +2008,17 @@ export def GetVisualSelection(): string
   var yank_zero = getreginfo('0')
   var scratch = getreginfo('z')
   var view = winsaveview()
+  var selection = ''
   try
     execute 'silent noautocmd normal! gv"zy'
-    return getreg('z')
+    selection = getreg('z')
   finally
     setreg('z', scratch)
     setreg('0', yank_zero)
     setreg('"', unnamed)
     winrestview(view)
   endtry
-  return ''
+  return selection
 enddef
 
 export def CopyVisualSelection(): void
