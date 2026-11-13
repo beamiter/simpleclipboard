@@ -856,6 +856,13 @@ if executable('python3')
         \ 'an occupied daemon address must not be forked onto')
   call simpleclipboard#StopDaemon(v:false)
   call job_stop(s:listener, 'kill')
+  for s:attempt in range(100)
+    if job_status(s:listener) !=# 'run'
+      break
+    endif
+    sleep 10m
+  endfor
+  call assert_equal('dead', job_status(s:listener))
   call delete(s:listener_script)
 endif
 
@@ -863,6 +870,8 @@ endif
 " This deliberately non-listening daemon makes the bounded readiness wait
 " observable without relying on a desktop clipboard being available in CI.
 let g:simpleclipboard_daemon_autostart = 1
+let g:simpleclipboard_daemon_async = 0
+let g:simpleclipboard_port = s:first_port + 3
 let g:simpleclipboard_copy_command = []
 let $PATH = s:fake_bin
 call simpleclipboard#Refresh()
@@ -877,6 +886,7 @@ if execute('messages') =~# 'environment: local'
   call simpleclipboard#StopDaemon(v:false)
 endif
 let $PATH = s:old_path
+let g:simpleclipboard_daemon_async = 1
 
 let g:simpleclipboard_daemon_enabled = 0
 let g:simpleclipboard_daemon_path = ''
