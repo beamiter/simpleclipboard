@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Daemon copies prefer the installed asynchronous client, with acknowledged stdin chunks,
+  latest-only queueing and conservative uncertain-outcome handling. Legacy installs
+  retain synchronous compatibility. Added exact-size stdin and Vim regression tests.
+
+
 All notable user-visible changes to SimpleClipboard are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
@@ -213,7 +220,7 @@ and packaged Rust components.
 - 新增 `lib/simpleclipboard-client`。同一个 `send_request` 逐字复用,只是
   搬到了子进程里——`libcallnr()` 只能返回数字,`get` 的文本本来无处可回,
   而子进程也是将来能被异步等待、不必冻住 UI 线程的形状。
-  **但插件目前还没有驱动它**:`autoload/simpleclipboard.vim` 的每一次复制
+  **在该历史版本中，插件尚未接入客户端**:`autoload/simpleclipboard.vim` 的每一次复制
   仍然走同步的 `libcallnr()`,`get` 在 Vim 侧根本没有调用方。也就是说,
   这个版本里它只是一个能从 shell 里手工运行的程序,复制的响应性一如既往。
   README 与 `:help simpleclipboard` 现在都列出了 `lib/simpleclipboard-client`

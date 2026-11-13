@@ -94,9 +94,22 @@ from `SIMPLECLIPBOARD_TOKEN`. It is the only way to reach a `get`, because
 applies to `get` only: SCB1 has no room for a selection in a `set`, so every
 write goes to CLIPBOARD, and naming a selection on a `set` or a `ping` is a
 usage error (exit 64) rather than a silent write to the other selection.
-Note that **the plugin does not drive it yet**: Vim still makes every copy
-through the synchronous library entry points, and no Vim command reads the
-clipboard. Run it yourself if you want a `get`.
+Vim now prefers this installed client for daemon copies, using an asynchronous
+job and the existing latest-only copy queue. Acknowledged 512-byte chunks avoid blocking on a slow stdin consumer or
+leaving a deferred Vim write error when the client exits early. Text goes through stdin, the token
+through the child environment, never argv. `--input-bytes N` lets the client
+consume exactly N bytes without waiting for EOF; it applies only to `set`.
+Exit 2, an unexpected exit or the copy deadline means an uncertain daemon write:
+no fallback or pending copy is replayed automatically. Check the destination
+before copying again. A failed request (exit 1) can use the normal fallbacks.
+Older installs without the client retain synchronous library compatibility;
+`g:simpleclipboard_daemon_async = 0` explicitly selects that legacy path.
+`g:simpleclipboard_client_path` overrides the installed client path. Update the
+client and plugin together. Health checks, environment discovery and legacy
+copy paths are still synchronous; this is not a claim that every plugin path
+is nonblocking. Copy-time synchronous daemon restart is skipped on the async
+path; VimEnter autostart and explicit daemon commands remain available.
+The daemon's `get` remains a shell API, not the Vim paste backend.
 
 Before any artifact is moved into place, the installer runs
 `simpleclipboard-daemon --self-test` on the binary it just built — one
@@ -352,7 +365,7 @@ The preferred local flow is:
 
 ~~~text
 Vim
-  -> libcallnr() client library
+  -> asynchronous simpleclipboard-client (legacy libcallnr() if unavailable)
   -> 127.0.0.1:12343
   -> simpleclipboard-daemon
   -> arboard

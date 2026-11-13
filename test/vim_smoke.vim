@@ -1,3 +1,5 @@
+" Keep shell usable when test cases deliberately replace PATH.
+set shell=/bin/sh
 let s:root = fnamemodify(expand('<sfile>:p'), ':h:h')
 let s:tmp_prefix = '/tmp/simpleclipboard-vim-smoke-' .. getpid()
 let s:capture = s:tmp_prefix .. '-capture'
@@ -490,7 +492,7 @@ messages clear
 call simpleclipboard#Refresh()
 let s:token_type_problem = execute('messages')
 call assert_match('g:simpleclipboard_token must be a string, but is a list of', s:token_type_problem)
-call assert_notmatch('not.*a.*string', s:token_type_problem)
+call assert_notmatch("\\['not', 'a', 'string'\\]",  s:token_type_problem)
 
 " ...and :SimpleCopyStatus survives it. Comparing a list token against '' threw
 " E691 out of the one command whose job is to explain a misconfiguration, so
@@ -503,7 +505,7 @@ call assert_match('token=invalid (must be a string)', s:token_type_status)
 call assert_match('configuration: \d\+ problem(s)', s:token_type_status)
 call assert_match('g:simpleclipboard_token must be a string, but is a list of', s:token_type_status)
 call assert_notmatch('E691', s:token_type_status)
-call assert_notmatch('not.*a.*string', s:token_type_status)
+call assert_notmatch("\\['not', 'a', 'string'\\]",  s:token_type_status)
 
 let g:simpleclipboard_token = ''
 let g:simpleclipboard_port = 12343

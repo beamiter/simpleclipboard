@@ -1,6 +1,9 @@
-.PHONY: check rust-check vim-check vim-remote installer-check shell-check help-tags vim-core defcompile core-verify doc-check skip-rules-check
+.PHONY: vim-async check rust-check vim-check vim-remote installer-check shell-check help-tags vim-core defcompile core-verify doc-check skip-rules-check
 
-check: core-verify rust-check vim-check vim-remote installer-check shell-check help-tags defcompile vim-core doc-check skip-rules-check
+check: core-verify rust-check vim-async vim-check vim-remote installer-check shell-check help-tags defcompile vim-core doc-check skip-rules-check
+
+vim-async:
+	vim -Nu NONE -i NONE -n -es -S tests/vim_async.vim
 
 rust-check:
 	cargo fmt --all -- --check

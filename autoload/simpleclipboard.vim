@@ -46,6 +46,8 @@ enddef
 # someone whose configuration said, however clumsily, "do not".
 const OPTION_SPECS: list<dict<any>> = [
   {name: 'simpleclipboard_daemon_enabled', kind: 'bool', default: 1},
+  {name: 'simpleclipboard_daemon_async', kind: 'bool', default: 1},
+  {name: 'simpleclipboard_client_path', kind: 'string', default: ''},
   {name: 'simpleclipboard_daemon_autostart', kind: 'bool', default: 1},
   {name: 'simpleclipboard_daemon_autostop', kind: 'bool', default: 1},
   {name: 'simpleclipboard_auto_copy', kind: 'bool', default: 1},
@@ -781,6 +783,29 @@ def DaemonRequest(action: string, text: string, address: string = ''): number
   endtry
 enddef
 
+# Prefer the installed client, retaining the library route for older installs.
+def AsyncClient(): string
+  if !BoolOption('simpleclipboard_daemon_async')
+    return ''
+  endif
+  var override = StringOption('simpleclipboard_client_path')
+  var path = override ==# '' ? FindInRuntimepath('lib/simpleclipboard-client') : override
+  return executable(path) == 1 ? path : ''
+enddef
+
+def StartDaemonCopy(text: string, path: string): bool
+  var token = get(g:, 'simpleclipboard_token', '')
+  if TokenValidationError(token) !=# '' || daemon_address ==# ''
+      || stridx(daemon_address, FIELD_SEPARATOR) >= 0
+      || (token ==# '' && (is_remote || custom_address || !IsLoopbackAddress(daemon_address)))
+    return false
+  endif
+  var name = is_remote || custom_address ? 'daemon (routed)' : 'daemon'
+  var started = StartCopyJob([path, '--address', daemon_address, '--action', 'set',
+    '--input-bytes', string(strlen(text)), '--vim-stream'], text, true, copy_generation, -1, name, true)
+  return started
+enddef
+
 def PingDaemon(address: string = ''): bool
   return DaemonRequest('ping', '', address) == DAEMON_SUCCESS
 enddef
@@ -988,7 +1013,7 @@ enddef
 
 def MarkUncertain(method: string)
   last_method = method .. ' (uncertain)'
-  last_error = 'daemon started the clipboard write, but completion is uncertain; fallback suppressed'
+  last_error = 'daemon completion is uncertain; fallback and queued copy suppressed'
   last_copy_at = strftime('%Y-%m-%d %H:%M:%S')
   last_outcome = 'uncertain'
   Notify('Daemon clipboard outcome is uncertain; fallback was suppressed to avoid overwriting it.',
@@ -1026,6 +1051,14 @@ def CopyJobExitCallback(state: dict<any>, status: number, text: string,
   var index = index(running_copy_states, state)
   if index >= 0
     remove(running_copy_states, index)
+  endif
+  # A killed client is not a cancelled daemon write. Never replay on an
+  # ambiguous outcome, including a newer request queued while it was running.
+  if get(state, 'daemon', false) && (state.timed_out || (status != 0 && status != 1 && status != 64))
+    pending_copy_text = ''
+    pending_copy_waiting = false
+    MarkUncertain(command_name)
+    return
   endif
   if generation != copy_generation
     StartPendingCopyIfIdle()
@@ -1070,8 +1103,29 @@ def CopyJobTimeout(state: dict<any>, copy_job: job, timer: number)
   endtry
 enddef
 
+# A ready line acknowledges consumption of the previous chunk. At most one
+# PIPE_BUF-sized write is outstanding, so no background Vim write queue can
+# throw E631 later if the child exits before accepting its input.
+def DaemonInputReady(state: dict<any>, channel: channel, line: string, text: string): void
+  if state.done
+    return
+  endif
+  if line !=# 'ready' || state.sent >= strlen(text)
+    return
+  endif
+  try
+    var chunk = strpart(text, state.sent, 512)
+    ch_sendraw(channel, chunk)
+    state.sent += strlen(chunk)
+  catch
+    state.timed_out = true
+    ch_close_in(channel)
+    job_stop(ch_getjob(channel), 'kill')
+  endtry
+enddef
+
 def StartCopyJob(argv: list<string>, text: string, osc52_fallback: bool,
-    generation: number, candidate_index: number, command_name: string): bool
+    generation: number, candidate_index: number, command_name: string, daemon: bool = false): bool
   var callback_owns_fallback = false
   var copy_job: job
   var state: dict<any> = {
@@ -1079,11 +1133,16 @@ def StartCopyJob(argv: list<string>, text: string, osc52_fallback: bool,
     timer: -1,
     timed_out: false,
     timeout_ms: CopyTimeoutMs(),
+    daemon: daemon,
+    sent: 0,
   }
   try
     copy_job = job_start(argv, {
       in_io: 'pipe',
-      out_io: 'null',
+      noblock: 0,
+      env: daemon ? {SIMPLECLIPBOARD_TOKEN: get(g:, 'simpleclipboard_token', '')} : {},
+      out_io: daemon ? 'pipe' : 'null',
+      out_cb: (channel, line) => DaemonInputReady(state, channel, line, text),
       err_io: 'null',
       exit_cb: (_, status) => CopyJobExitCallback(state, status, text,
         osc52_fallback, generation, candidate_index, command_name),
@@ -1106,8 +1165,15 @@ def StartCopyJob(argv: list<string>, text: string, osc52_fallback: bool,
       state.timer = timer_start(state.timeout_ms,
         (timer) => CopyJobTimeout(state, copy_job, timer))
     endif
-    ch_sendraw(copy_job, text)
-    ch_close_in(copy_job)
+    # Async client requests one bounded chunk at a time via stdout. Other
+    # backends retain their existing stdin/EOF contract.
+    if !daemon
+      ch_sendraw(copy_job, text)
+      ch_close_in(copy_job)
+    endif
+    if !state.done && generation == copy_generation
+      MarkSuccess(command_name .. ' (queued)')
+    endif
     return true
   catch
     MarkFailure('Could not start copy command: ' .. v:exception)
@@ -1200,7 +1266,6 @@ def StartCopyCandidate(candidate_index: number, text: string, osc52_fallback: bo
     var name = cached_copy_names[index]
     if StartCopyJob(cached_copy_cmds[index], text, osc52_fallback,
         generation, index, name)
-      MarkSuccess(name .. ' (queued)')
       return true
     endif
     index += 1
@@ -1393,7 +1458,14 @@ def BeginCopy(text: string, cancel_pending_yank: bool): bool
 
   if BoolOption('simpleclipboard_daemon_enabled') && daemon_address !=# ''
     var daemon_method = is_remote || custom_address ? 'daemon (routed)' : 'daemon'
-    var daemon_result = DaemonRequest('set', text)
+    var async_client = AsyncClient()
+    if async_client !=# ''
+      # Once started, only the callback may advance the fallback chain.
+      if StartDaemonCopy(text, async_client)
+        return true
+      endif
+    endif
+    var daemon_result = async_client ==# '' ? DaemonRequest('set', text) : DAEMON_FAILURE
     if daemon_result == DAEMON_SUCCESS
       MarkSuccess(daemon_method)
       return true
@@ -1408,7 +1480,7 @@ def BeginCopy(text: string, cancel_pending_yank: bool): bool
       if BoolOption('simpleclipboard_daemon_enabled')
         && has('libcall')
         && BoolOption('simpleclipboard_daemon_autostart')
-        && !custom_address && !IsWSL() && !daemon_start_attempted
+        && !custom_address && !IsWSL() && !daemon_start_attempted && AsyncClient() ==# ''
       # Unlike the proactive VimEnter start, this path retries the copy
       # immediately, so do not race the daemon's listener initialization.
       StartDaemon(false, true)

@@ -11,9 +11,8 @@
 //! can return nothing but a number.
 //!
 //! `install.sh` places the binary in `lib/` and it works from a shell.
-//! Note that the plugin does not drive it yet: `autoload/simpleclipboard.vim`
-//! still sends every copy through `libcallnr()`, and Get has no Vim-side
-//! caller at all.  Nothing here reaches a user until that path is written.
+//! The plugin prefers this executable for asynchronous daemon copies. Get
+//! remains a shell API; Vim paste still uses its existing local backends.
 //!
 //! Everything about the request itself — framing, AEAD sealing, the challenge
 //! and the response binding — is the library's `send_request`, verbatim, so the
@@ -43,6 +42,8 @@ struct Options {
     address: String,
     action: String,
     selection: Selection,
+    input_bytes: Option<usize>,
+    vim_stream: bool,
 }
 
 fn usage() -> String {
@@ -50,6 +51,8 @@ fn usage() -> String {
         "simpleclipboard-client {}\n\n\
          Usage: simpleclipboard-client --address HOST:PORT --action ping|set|get\n\
          \x20                          [--selection clipboard|primary]\n\n\
+         --input-bytes N limits set stdin to exactly N bytes, without waiting for EOF.\n\n\
+         --vim-stream enables ready-line flow control with --input-bytes.\n\n\
          --selection applies to `get` only; SCB1 has no room for a selection in a\n\
          `set`, so every write goes to CLIPBOARD and naming a selection there is a\n\
          usage error rather than a silent write to the wrong place.\n\n\
@@ -71,6 +74,8 @@ fn parse_arguments(mut arguments: impl Iterator<Item = String>) -> Result<Option
     let mut address = None;
     let mut action = None;
     let mut selection = None;
+    let mut input_bytes = None;
+    let mut vim_stream = false;
 
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -84,6 +89,15 @@ fn parse_arguments(mut arguments: impl Iterator<Item = String>) -> Result<Option
             }
             "--address" => address = Some(next_value(&mut arguments, "--address")?),
             "--action" => action = Some(next_value(&mut arguments, "--action")?),
+            "--vim-stream" => vim_stream = true,
+            "--input-bytes" => {
+                let value = next_value(&mut arguments, "--input-bytes")?;
+                let size: usize = value.parse().map_err(|_| "invalid --input-bytes")?;
+                if size > MAX_SET_TEXT_BYTES {
+                    return Err("--input-bytes exceeds request limit".to_owned());
+                }
+                input_bytes = Some(size);
+            }
             "--selection" => {
                 let value = next_value(&mut arguments, "--selection")?;
                 selection = Some(
@@ -113,10 +127,18 @@ fn parse_arguments(mut arguments: impl Iterator<Item = String>) -> Result<Option
              clipboard selection"
         ));
     }
+    if vim_stream && input_bytes.is_none() {
+        return Err("--vim-stream requires --input-bytes".to_owned());
+    }
+    if input_bytes.is_some() && action != "set" {
+        return Err("--input-bytes applies to set only".to_owned());
+    }
     Ok(Some(Options {
         address,
         action,
         selection: selection.unwrap_or_default(),
+        input_bytes,
+        vim_stream,
     }))
 }
 
@@ -144,8 +166,43 @@ fn read_text(mut reader: impl Read) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "the clipboard text is not valid UTF-8".to_owned())
 }
 
-fn read_stdin() -> Result<String, String> {
-    read_text(std::io::stdin())
+fn read_sized_text(reader: impl Read, size: usize) -> Result<String, String> {
+    let text = read_text(reader.take(size as u64))?;
+    if text.len() != size {
+        return Err("stdin ended before --input-bytes".to_owned());
+    }
+    Ok(text)
+}
+
+// Acknowledged chunks keep Vim's pipe empty before each <= PIPE_BUF write.
+// This avoids both UI-thread blocking and deferred EPIPE from Vim's internal
+// nonblocking queue if an old client or an invalid request exits early.
+fn read_stream_text(
+    mut reader: impl Read,
+    mut ready: impl Write,
+    size: usize,
+) -> Result<String, String> {
+    if size > MAX_SET_TEXT_BYTES {
+        return Err("input exceeds request limit".to_owned());
+    }
+    let mut bytes = vec![0; size];
+    for chunk in bytes.chunks_mut(512) {
+        ready
+            .write_all(b"ready\n")
+            .and_then(|()| ready.flush())
+            .map_err(|e| format!("could not request input: {e}"))?;
+        reader
+            .read_exact(chunk)
+            .map_err(|e| format!("incomplete stdin: {e}"))?;
+    }
+    String::from_utf8(bytes).map_err(|_| "the clipboard text is not valid UTF-8".to_owned())
+}
+
+fn read_stdin(size: Option<usize>) -> Result<String, String> {
+    match size {
+        Some(size) => read_sized_text(std::io::stdin(), size),
+        None => read_text(std::io::stdin()),
+    }
 }
 
 fn build_request(options: &Options) -> Result<PlainRequest, String> {
@@ -155,7 +212,15 @@ fn build_request(options: &Options) -> Result<PlainRequest, String> {
             selection: options.selection,
         }),
         "set" => Ok(PlainRequest::Set {
-            text: read_stdin()?,
+            text: if options.vim_stream {
+                read_stream_text(
+                    std::io::stdin(),
+                    std::io::stdout(),
+                    options.input_bytes.unwrap(),
+                )?
+            } else {
+                read_stdin(options.input_bytes)?
+            },
         }),
         other => Err(format!("unknown action: {other}")),
     }
@@ -240,6 +305,31 @@ mod tests {
     // Parsing --selection for a set therefore used to write the clipboard and
     // exit 0, which is the one answer a caller scripting a PRIMARY write would
     // never think to check.
+    #[test]
+    fn acknowledged_stream_is_exact_and_bounded() {
+        let text = "a".repeat(9000) + "é";
+        let mut ready = Vec::new();
+        assert_eq!(
+            read_stream_text(text.as_bytes(), &mut ready, text.len()).unwrap(),
+            text
+        );
+        assert_eq!(ready, b"ready\n".repeat(18));
+        assert!(read_stream_text(&b"x"[..], Vec::new(), 2).is_err());
+        assert!(read_stream_text(&b""[..], Vec::new(), MAX_SET_TEXT_BYTES + 1).is_err());
+        assert!(parse(&["--action", "set", "--vim-stream"]).is_err());
+    }
+
+    #[test]
+    fn sized_stdin_does_not_wait_for_eof() {
+        let mut reader = std::io::Cursor::new(b"hello-extra");
+        assert_eq!(read_sized_text(&mut reader, 5).unwrap(), "hello");
+        assert_eq!(reader.position(), 5);
+        assert!(read_sized_text(&b"short"[..], 9).is_err());
+        assert_eq!(read_sized_text(&b""[..], 0).unwrap(), "");
+        assert!(parse(&["--action", "get", "--input-bytes", "0"]).is_err());
+        assert!(parse(&["--action", "set", "--input-bytes", "999999999"]).is_err());
+    }
+
     #[test]
     fn a_selection_is_refused_where_it_cannot_reach_the_wire() {
         for action in ["set", "ping"] {

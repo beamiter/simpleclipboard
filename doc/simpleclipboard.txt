@@ -119,8 +119,16 @@ simpleclipboard-client 每次运行发一个请求（ping、从标准输入读�
 --selection clipboard|primary 只对 get 生效：SCB1 的 set 里没有放选区的
 位置，写入一律进 CLIPBOARD，所以给 set 或 ping 指定选区是用法错误
 （退出码 64），而不是悄悄写到另一个选区。
-注意：插件目前还没有驱动它——Vim 侧的每一次复制仍然走同步的库调用，
-也没有任何命令会读剪贴板。想要 get，请自己在 shell 里运行它。
+Vim 默认用已安装的 simpleclipboard-client 异步复制，复用只保留最新请求的队列。
+正文经 512 字节确认式流控 stdin 发送，token 仅进入子进程环境，不放入 argv。
+--input-bytes N 限定 set 读取的字节数，不必等 EOF。客户端返回 2、异常退出或
+超时都表示结果不确定，此时不自动重试、fallback 或发送排队的复制，请先检查
+目标剪贴板。确定失败（exit 1）才进入通常的后备路线。
+g:simpleclipboard_daemon_async 默认为 1；设为 0 使用旧同步库路线。
+g:simpleclipboard_client_path 默认空，表示发现 lib/simpleclipboard-client；
+可设置为客户端可执行文件路径。插件和客户端应一起更新。旧安装缺少客户端时
+仍兼容同步库。健康检查、环境探测及旧路线仍同步；异步复制不执行同步重启，
+VimEnter 自动启动与手动 daemon 命令不变。get 仍只有 shell 调用方。
 
 插件目录必须位于 'runtimepath'，否则自动发现无法找到 lib/ 下的文件。
 也可以使用 |g:simpleclipboard_libpath| 和
@@ -565,7 +573,7 @@ g:simpleclipboard_debug_file
 本地首选路径：
 
   Vim
-    -> libcallnr() Rust 客户端
+    -> 异步 simpleclipboard-client（缺失时兼容 libcallnr()）
     -> 127.0.0.1:12343
     -> simpleclipboard-daemon
     -> arboard

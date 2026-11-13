@@ -20,8 +20,8 @@ path = "src/simpleclipboard/simpleclipboard_daemon.rs"
 # only shape a Get reply fits, since libcallnr() can return nothing but a
 # number, and the only shape an editor can watch asynchronously instead of
 # blocking its UI thread for the whole request deadline.  It is built,
-# installed and usable from a shell, but the plugin does not drive it yet:
-# every copy still goes through the synchronous libcallnr() entry points.
+# installed and used by Vim jobs for daemon copies; older installations
+# without the executable retain the synchronous libcallnr() compatibility path.
 [[bin]]
 name = "simpleclipboard-client"
 path = "src/simpleclipboard/simpleclipboard_client.rs"
