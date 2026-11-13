@@ -9,7 +9,7 @@ use protocol::{
 use std::ffi::CStr;
 use std::fmt;
 use std::io::{Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::LazyLock;
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
@@ -177,6 +177,16 @@ fn connect_with_timeout(address: &str) -> Result<TcpStream, ClientError> {
     })))
 }
 
+fn at_stage(stage: &'static str, error: ClientError) -> ClientError {
+    match error {
+        ClientError::Io(error) => ClientError::Io(std::io::Error::new(
+            error.kind(),
+            format!("{stage}: {error}"),
+        )),
+        other => other,
+    }
+}
+
 /// Sends one request and returns the daemon's answer.
 ///
 /// Shared verbatim by the in-process `libcall` entry points and by the
@@ -187,9 +197,10 @@ pub fn send_request(address: &str, request: &ClientRequest) -> Result<Ack, Clien
         return Err(ClientError::InvalidPayload);
     }
 
-    let mut stream = connect_with_timeout(address)?;
+    let mut stream = connect_with_timeout(address).map_err(|e| at_stage("connect", e))?;
     let deadline = Instant::now() + IO_TIMEOUT;
-    let hello = read_hello_from_stream(&mut stream, deadline)?;
+    let hello =
+        read_hello_from_stream(&mut stream, deadline).map_err(|e| at_stage("server hello", e))?;
     let (wire_request, request_nonce) = match request.keys.as_ref() {
         Some(keys) => {
             let (wire, nonce) = seal_request(keys, &hello.challenge, &request.request)?;
@@ -198,14 +209,14 @@ pub fn send_request(address: &str, request: &ClientRequest) -> Result<Ack, Clien
         None => (WireRequest::Plain(request.request.clone()), None),
     };
     let frame = encode_request_frame(&wire_request)?;
-    write_all_until(&mut stream, &frame, deadline)?;
+    write_all_until(&mut stream, &frame, deadline)
+        .map_err(|e| at_stage("request frame", e.into()))?;
     after_frame_sent(request, || {
-        stream.set_write_timeout(Some(deadline_remaining(deadline)?))?;
-        stream.flush()?;
-        stream.shutdown(Shutdown::Write)?;
-
+        // Framing already delimits the request. The daemon does not await EOF;
+        // a half-close here only races its reply/close on platforms such as macOS.
         let limit = ack_limit(&request.request);
-        let response = read_ack_from_stream(&mut stream, deadline, limit)?;
+        let response =
+            read_ack_from_stream(&mut stream, deadline, limit).map_err(|e| at_stage("ack", e))?;
         match (request.keys.as_ref(), request_nonce, response) {
             (None, None, WireAck::Plain(ack)) => Ok(ack),
             (Some(keys), Some(nonce), response) => {

@@ -80,8 +80,11 @@ vim_ping "$authenticated_port" 'definitely-wrong-token' "$temporary/wrong"
 # libcall.  A ping needs no display server, so it is asserted unconditionally;
 # a real set/get round trip does, and only a runner without one may skip it —
 # see round_trip_skip_is_allowed in test/e2e_skip_rules.sh.
-SIMPLECLIPBOARD_TOKEN="$token" \
-  "$client" --address "127.0.0.1:$authenticated_port" --action ping
+# Exercise rapid request/response close races, not only one lucky connection.
+for _ in {1..50}; do
+  SIMPLECLIPBOARD_TOKEN="$token" \
+    "$client" --address "127.0.0.1:$authenticated_port" --action ping
+done
 if ! SIMPLECLIPBOARD_TOKEN='definitely-wrong-token' \
   "$client" --address "127.0.0.1:$authenticated_port" --action ping 2>/dev/null; then
   : # A wrong token must not be accepted.
