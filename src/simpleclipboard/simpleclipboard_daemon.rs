@@ -58,6 +58,22 @@ struct ClipboardCommand {
     reply: oneshot::Sender<Result<Option<String>, &'static str>>,
 }
 
+// The connection's outer deadline and shutdown abort can drop run() before
+// its own timeout fires. Cancel only still-queued work in that case; a system
+// clipboard operation that already started cannot safely be rolled back.
+struct CancelQueuedClipboardCommand(Arc<AtomicU8>);
+
+impl Drop for CancelQueuedClipboardCommand {
+    fn drop(&mut self) {
+        let _ = self.0.compare_exchange(
+            COMMAND_QUEUED,
+            COMMAND_CANCELLED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
+
 impl ClipboardWorker {
     fn start() -> io::Result<Self> {
         let mut clipboard = None;
@@ -115,6 +131,7 @@ impl ClipboardWorker {
     ) -> Result<Option<String>, &'static str> {
         let (reply, mut result) = oneshot::channel();
         let phase = Arc::new(AtomicU8::new(COMMAND_QUEUED));
+        let _cancel_if_queued = CancelQueuedClipboardCommand(phase.clone());
         self.sender
             .try_send(ClipboardCommand {
                 operation,
@@ -1061,6 +1078,86 @@ mod tests {
             *seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
             ["first".to_owned(), "barrier".to_owned()]
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropped_queued_clipboard_future_does_not_apply_stale_write() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let worker_seen = seen.clone();
+        let (started, started_rx) = mpsc::sync_channel(1);
+        let (release, release_rx) = mpsc::sync_channel(1);
+        let worker = ClipboardWorker::start_with(move |operation| {
+            let ClipboardOp::Set { text, .. } = operation else {
+                panic!("expected a write");
+            };
+            worker_seen.lock().unwrap().push(text.clone());
+            if text == "first" {
+                started.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            Ok(None)
+        })
+        .unwrap();
+
+        let mut first = Box::pin(worker.run_with_timeout(set_op("first"), Duration::from_secs(5)));
+        std::future::poll_fn(|cx| {
+            assert!(first.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let mut cancelled =
+            Box::pin(worker.run_with_timeout(set_op("cancelled"), Duration::from_secs(5)));
+        std::future::poll_fn(|cx| {
+            assert!(cancelled.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        // Models serve_connection's outer deadline or JoinSet shutdown abort,
+        // both of which drop the worker future before its own deadline.
+        drop(cancelled);
+        release.send(()).unwrap();
+        first.await.unwrap();
+        worker
+            .run_with_timeout(set_op("barrier"), Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(*seen.lock().unwrap(), ["first", "barrier"]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropped_started_clipboard_future_does_not_claim_to_undo_write() {
+        let (started, started_rx) = mpsc::sync_channel(1);
+        let (release, release_rx) = mpsc::sync_channel(1);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let worker_seen = seen.clone();
+        let worker = ClipboardWorker::start_with(move |operation| {
+            let ClipboardOp::Set { text, .. } = operation else {
+                panic!("expected a write");
+            };
+            if text == "started" {
+                started.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            worker_seen.lock().unwrap().push(text);
+            Ok(None)
+        })
+        .unwrap();
+        let mut future =
+            Box::pin(worker.run_with_timeout(set_op("started"), Duration::from_secs(5)));
+        std::future::poll_fn(|cx| {
+            assert!(future.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        drop(future);
+        release.send(()).unwrap();
+        worker
+            .run_with_timeout(set_op("barrier"), Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(*seen.lock().unwrap(), ["started", "barrier"]);
     }
 
     #[tokio::test(flavor = "current_thread")]

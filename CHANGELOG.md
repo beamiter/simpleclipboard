@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Cancel queued clipboard operations when the daemon's waiting task is dropped
+  by an outer timeout or shutdown. This prevents a not-yet-started stale write
+  from running later; already-started system clipboard writes remain uncertain
+  and are not rolled back. Added deterministic worker cancellation regressions.
+
 - Daemon copies prefer the installed asynchronous client, with acknowledged stdin chunks,
   latest-only queueing and conservative uncertain-outcome handling. Legacy installs
   retain synchronous compatibility. Added exact-size stdin and Vim regression tests.
